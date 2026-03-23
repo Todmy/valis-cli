@@ -1,0 +1,36 @@
+{
+  "name": "teamind",
+  "version": "0.1.0",
+  "description": "Shared decision intelligence for AI-augmented engineering teams",
+  "type": "module",
+  "bin": {
+    "teamind": "./dist/bin/teamind.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["teamind", "decisions", "mcp", "ai", "team-knowledge"],
+  "files": ["dist/"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@qdrant/js-client-rest": "^1.13.0",
+    "@supabase/supabase-js": "^2.49.4",
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "picocolors": "^1.1.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.32",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3"
+  }
+}

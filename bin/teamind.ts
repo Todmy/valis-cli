@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+
+import { Command } from 'commander';
+import { initCommand } from '../src/commands/init.js';
+import { serveCommand } from '../src/commands/serve.js';
+import { statusCommand } from '../src/commands/status.js';
+import { dashboardCommand } from '../src/commands/dashboard.js';
+import { searchCommand } from '../src/commands/search-cmd.js';
+import { exportCommand } from '../src/commands/export-cmd.js';
+import { configGetCommand, configSetCommand } from '../src/commands/config-cmd.js';
+import { uninstallCommand } from '../src/commands/uninstall.js';
+
+const program = new Command();
+
+program
+  .name('teamind')
+  .description('Shared decision intelligence for AI-augmented engineering teams')
+  .version('0.1.0');
+
+program
+  .command('init')
+  .description('Create or join an organization and configure the local environment')
+  .option('--join <invite-code>', 'Join an existing org with invite code')
+  .action(async (options) => {
+    try {
+      await initCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('serve')
+  .description('Start the unified MCP + Channel server process')
+  .action(async () => {
+    try {
+      await serveCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('status')
+  .description('Show system health and org info')
+  .action(async () => {
+    try {
+      await statusCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('dashboard')
+  .description('Show aggregated team activity')
+  .action(async () => {
+    try {
+      await dashboardCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('search <query>')
+  .description('Search decisions from the terminal')
+  .option('--type <type>', 'Filter by type (decision/constraint/pattern/lesson)')
+  .option('--limit <n>', 'Max results (default 10)')
+  .action(async (query, options) => {
+    try {
+      await searchCommand(query, options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('export')
+  .description('Export all org decisions')
+  .option('--json', 'Export as JSON (default)')
+  .option('--markdown', 'Export as Markdown')
+  .option('--output <file>', 'Write to file instead of stdout')
+  .action(async (options) => {
+    try {
+      await exportCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const configCmd = program
+  .command('config')
+  .description('Manage configuration');
+
+configCmd
+  .command('get <key>')
+  .description('Get a config value')
+  .action(async (key) => {
+    try {
+      await configGetCommand(key);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+configCmd
+  .command('set <key> <value>')
+  .description('Set a config value')
+  .action(async (key, value) => {
+    try {
+      await configSetCommand(key, value);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('uninstall')
+  .description('Remove all local Teamind configuration')
+  .option('--yes', 'Skip confirmation prompt')
+  .action(async (options) => {
+    try {
+      await uninstallCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program.parse();

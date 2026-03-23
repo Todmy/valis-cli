@@ -339,3 +339,166 @@ export async function getOrgInfo(
     decision_count: org.decision_count,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle methods (Phase 2)
+// ---------------------------------------------------------------------------
+
+/** Row shape returned by get_lifecycle_history and get_audit_trail RPCs. */
+export interface AuditTrailRow {
+  id: string;
+  org_id: string;
+  member_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  reason: string | null;
+  created_at: string;
+  author_name: string;
+  member_role: string;
+}
+
+/**
+ * Update a decision's status with attribution metadata.
+ *
+ * Used by the change-status flow (deprecate, promote, supersede).
+ */
+export async function changeDecisionStatus(
+  supabase: SupabaseClient,
+  orgId: string,
+  decisionId: string,
+  newStatus: DecisionStatus,
+  changedBy: string,
+  reason?: string,
+): Promise<Decision> {
+  await setOrgContext(supabase, orgId);
+
+  const { data, error } = await supabase
+    .from('decisions')
+    .update({
+      status: newStatus,
+      status_changed_by: changedBy,
+      status_changed_at: new Date().toISOString(),
+      status_reason: reason ?? null,
+    })
+    .eq('id', decisionId)
+    .eq('org_id', orgId)
+    .select()
+    .single();
+
+  if (error) throw new Error(`Failed to change decision status: ${error.message}`);
+  return data as Decision;
+}
+
+/**
+ * Retrieve the full lifecycle history for a decision via the
+ * `get_lifecycle_history` RPC function.
+ *
+ * Returns audit entries (with author_name) ordered chronologically (ASC).
+ */
+export async function getDecisionHistory(
+  supabase: SupabaseClient,
+  decisionId: string,
+): Promise<AuditTrailRow[]> {
+  const { data, error } = await supabase
+    .rpc('get_lifecycle_history', { p_decision_id: decisionId });
+
+  if (error) throw new Error(`Failed to get decision history: ${error.message}`);
+  return (data || []) as AuditTrailRow[];
+}
+
+/**
+ * Find decisions that depend on a given decision.
+ *
+ * Uses the Postgres array containment operator: `decisionId = ANY(depends_on)`.
+ */
+export async function findDependents(
+  supabase: SupabaseClient,
+  decisionId: string,
+): Promise<Decision[]> {
+  const { data, error } = await supabase
+    .from('decisions')
+    .select('*')
+    .contains('depends_on', [decisionId]);
+
+  if (error) throw new Error(`Failed to find dependents: ${error.message}`);
+  return (data || []) as Decision[];
+}
+
+/**
+ * Insert an audit entry into the `audit_entries` table.
+ */
+export async function storeAuditEntry(
+  supabase: SupabaseClient,
+  entry: Omit<AuditEntry, 'created_at'>,
+): Promise<AuditEntry> {
+  const { data, error } = await supabase
+    .from('audit_entries')
+    .insert(entry)
+    .select()
+    .single();
+
+  if (error) throw new Error(`Failed to store audit entry: ${error.message}`);
+  return data as AuditEntry;
+}
+
+/**
+ * Find active decisions with overlapping `affects` areas via the
+ * `find_contradictions` RPC function.
+ *
+ * Used by the contradiction detection pipeline (Tier 1 — area overlap).
+ */
+export async function findContradictionCandidates(
+  supabase: SupabaseClient,
+  orgId: string,
+  affects: string[],
+): Promise<Decision[]> {
+  const { data, error } = await supabase
+    .rpc('find_contradictions', {
+      p_org_id: orgId,
+      p_affects: affects,
+    });
+
+  if (error) throw new Error(`Failed to find contradiction candidates: ${error.message}`);
+  return (data || []) as Decision[];
+}
+
+/**
+ * Retrieve the audit trail for an org via the `get_audit_trail` RPC function.
+ *
+ * Returns audit entries with joined member info, ordered by created_at DESC.
+ */
+export async function getAuditTrail(
+  supabase: SupabaseClient,
+  orgId: string,
+  limit?: number,
+): Promise<AuditTrailRow[]> {
+  const { data, error } = await supabase
+    .rpc('get_audit_trail', {
+      p_org_id: orgId,
+      p_limit: limit ?? 50,
+    });
+
+  if (error) throw new Error(`Failed to get audit trail: ${error.message}`);
+  return (data || []) as AuditTrailRow[];
+}
+
+/**
+ * Retrieve all open contradictions for an org.
+ */
+export async function getOpenContradictions(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<Contradiction[]> {
+  const { data, error } = await supabase
+    .from('contradictions')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('status', 'open')
+    .order('detected_at', { ascending: false });
+
+  if (error) throw new Error(`Failed to get open contradictions: ${error.message}`);
+  return (data || []) as Contradiction[];
+}

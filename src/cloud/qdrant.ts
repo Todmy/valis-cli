@@ -205,17 +205,17 @@ export async function getSimilarity(
   decisionIdB: string,
 ): Promise<number> {
   try {
-    const points = await qdrant.getPoints(COLLECTION_NAME, {
+    const points = await qdrant.retrieve(COLLECTION_NAME, {
       ids: [decisionIdA, decisionIdB],
       with_vector: true,
       with_payload: true,
     });
 
-    if (points.points.length < 2) return 0.0;
+    if (points.length < 2) return 0.0;
 
     // Ensure both points belong to the requested org
-    const pointA = points.points.find((p) => p.id === decisionIdA);
-    const pointB = points.points.find((p) => p.id === decisionIdB);
+    const pointA = points.find((p) => p.id === decisionIdA);
+    const pointB = points.find((p) => p.id === decisionIdB);
     if (!pointA || !pointB) return 0.0;
 
     const payloadA = pointA.payload as Record<string, unknown> | undefined;

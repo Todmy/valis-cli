@@ -142,6 +142,34 @@ export function getAccessTokenFn(
 }
 
 // ---------------------------------------------------------------------------
+// refreshToken — refresh if expiring soon, otherwise return cache as-is
+// ---------------------------------------------------------------------------
+
+export async function refreshToken(
+  supabaseUrl: string,
+  apiKey: string,
+  existing: TokenCache,
+): Promise<TokenCache> {
+  if (!isExpiringSoon(existing.jwt.expires_at)) {
+    return existing;
+  }
+
+  const resp = await exchangeToken(supabaseUrl, apiKey);
+  if (!resp) {
+    // Exchange failed (revoked key / network) — keep existing cache
+    return existing;
+  }
+
+  return {
+    jwt: { token: resp.token, expires_at: resp.expires_at },
+    member_id: resp.member_id,
+    org_id: resp.org_id,
+    role: resp.role,
+    author_name: resp.author_name,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // clearTokenCache — for testing
 // ---------------------------------------------------------------------------
 

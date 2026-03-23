@@ -9,6 +9,9 @@ import { searchCommand } from '../src/commands/search-cmd.js';
 import { exportCommand } from '../src/commands/export-cmd.js';
 import { configGetCommand, configSetCommand } from '../src/commands/config-cmd.js';
 import { uninstallCommand } from '../src/commands/uninstall.js';
+import { adminMetricsCommand } from '../src/commands/admin-metrics.js';
+import { migrateAuthCommand } from '../src/commands/migrate-auth.js';
+import { adminAuditCommand } from '../src/commands/admin-audit.js';
 
 const program = new Command();
 
@@ -130,6 +133,51 @@ program
   .action(async (options) => {
     try {
       await uninstallCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('migrate-auth')
+  .description('Migrate from org-level to per-member JWT auth')
+  .action(async () => {
+    try {
+      await migrateAuthCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const adminCmd = program
+  .command('admin')
+  .description('Platform operator commands');
+
+adminCmd
+  .command('metrics')
+  .description('Show platform-wide observability metrics')
+  .option('--json', 'Output raw JSON instead of formatted table')
+  .option('--period <period>', 'Time period: 7d or 30d (default: 7d)')
+  .action(async (options) => {
+    try {
+      await adminMetricsCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('audit')
+  .description('View audit trail for an org')
+  .option('--org <org-id>', 'Target org ID (defaults to local config)')
+  .option('--member <author>', 'Filter by member/author name')
+  .option('--limit <n>', 'Max rows (default 50)')
+  .action(async (options) => {
+    try {
+      await adminAuditCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

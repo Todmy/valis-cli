@@ -1,156 +1,151 @@
 import type {
   ExchangeTokenResponse,
-  TeamindConfig,
   TokenCache,
+  TeamindConfig,
 } from '../types.js';
-import { getCount as getPendingQueueCount } from '../offline/queue.js';
 
 // ---------------------------------------------------------------------------
-// Module-level cache
+// Module-level singleton cache + in-flight refresh guard
 // ---------------------------------------------------------------------------
 
-let tokenCache: TokenCache | null = null;
+let cache: TokenCache | null = null;
+let refreshPromise: Promise<ExchangeTokenResponse | null> | null = null;
 
-/** Visible for testing. */
-export function _resetCache(): void {
-  tokenCache = null;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const REFRESH_MARGIN_MS = 5 * 60 * 1000; // 5 minutes
-
-function isExpiringSoon(expiresAt: string): boolean {
-  const expiryMs = new Date(expiresAt).getTime();
-  return expiryMs - Date.now() <= REFRESH_MARGIN_MS;
-}
+/** 5-minute buffer before expiry triggers a refresh. */
+const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// exchangeToken
+// exchangeToken — call edge function, return response or null
 // ---------------------------------------------------------------------------
 
-/**
- * POST to the `exchange-token` Edge Function, exchanging an API key for a
- * short-lived JWT.
- *
- * On 401 (key revoked): logs a warning with the pending queue count, does
- * **not** throw — the caller should skip the flush and continue gracefully.
- * On any other HTTP error: throws.
- */
 export async function exchangeToken(
   supabaseUrl: string,
   apiKey: string,
-): Promise<ExchangeTokenResponse> {
+): Promise<ExchangeTokenResponse | null> {
   const url = `${supabaseUrl}/functions/v1/exchange-token`;
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: '{}',
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+  } catch (err) {
+    // Network error — offline mode
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[teamind] Token exchange network error: ${msg}`);
+    return null;
+  }
 
   if (res.status === 401) {
-    const pending = await getPendingQueueCount();
-    console.warn(
-      `[teamind] API key rejected (revoked or invalid). ${pending} decision(s) in pending queue — skipping flush.`,
-    );
-    // Return a sentinel that callers can detect — we throw a typed error
-    // so callers can distinguish revoked-key from other failures.
-    const err = new Error('API key revoked or invalid') as Error & { code: string };
-    err.code = 'KEY_REVOKED';
-    throw err;
+    console.error('[teamind] API key revoked or invalid (401)');
+    return null;
   }
 
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(
-      `exchange-token failed (${res.status}): ${body}`,
-    );
+    console.error(`[teamind] Token exchange failed: HTTP ${res.status}`);
+    return null;
   }
 
-  return (await res.json()) as ExchangeTokenResponse;
+  const data = (await res.json()) as ExchangeTokenResponse;
+  return data;
 }
 
 // ---------------------------------------------------------------------------
-// refreshToken
+// Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * If the cached token expires within 5 minutes, exchange a new one.
- * Otherwise return the existing cache as-is.
- */
-export async function refreshToken(
+function isExpiringSoon(expiresAt: string): boolean {
+  const expiryMs = new Date(expiresAt).getTime();
+  return Date.now() + REFRESH_BUFFER_MS >= expiryMs;
+}
+
+async function refresh(
   supabaseUrl: string,
   apiKey: string,
-  cache: TokenCache,
-): Promise<TokenCache> {
-  if (!isExpiringSoon(cache.jwt.expires_at)) {
-    return cache;
-  }
-
+): Promise<ExchangeTokenResponse | null> {
   const resp = await exchangeToken(supabaseUrl, apiKey);
-  return {
-    jwt: { token: resp.token, expires_at: resp.expires_at },
-    member_id: resp.member_id,
-    org_id: resp.org_id,
-    role: resp.role,
-    author_name: resp.author_name,
-  };
+  if (resp) {
+    cache = {
+      jwt: { token: resp.token, expires_at: resp.expires_at },
+      member_id: resp.member_id,
+      org_id: resp.org_id,
+      role: resp.role,
+      author_name: resp.author_name,
+    };
+  }
+  return resp;
 }
 
 // ---------------------------------------------------------------------------
-// getToken
+// getToken — cached JWT string, auto-refreshes
 // ---------------------------------------------------------------------------
 
-/**
- * Return a cached JWT or exchange a new one. Manages the module-level cache.
- */
 export async function getToken(
   supabaseUrl: string,
   apiKey: string,
 ): Promise<string> {
-  if (tokenCache && !isExpiringSoon(tokenCache.jwt.expires_at)) {
-    return tokenCache.jwt.token;
+  // Fast path: cache is valid and not expiring soon
+  if (cache && !isExpiringSoon(cache.jwt.expires_at)) {
+    return cache.jwt.token;
   }
 
-  const resp = await exchangeToken(supabaseUrl, apiKey);
-  tokenCache = {
-    jwt: { token: resp.token, expires_at: resp.expires_at },
-    member_id: resp.member_id,
-    org_id: resp.org_id,
-    role: resp.role,
-    author_name: resp.author_name,
-  };
-  return tokenCache.jwt.token;
+  // Race condition protection: if a refresh is already in-flight, await it
+  if (refreshPromise) {
+    const result = await refreshPromise;
+    if (result) return result.token;
+    // Refresh failed but we still have an unexpired (though soon-to-expire) token
+    if (cache) return cache.jwt.token;
+    throw new Error('Token refresh failed and no cached token available');
+  }
+
+  // Start a new refresh
+  refreshPromise = refresh(supabaseUrl, apiKey).finally(() => {
+    refreshPromise = null;
+  });
+
+  const result = await refreshPromise;
+  if (result) return result.token;
+
+  // Refresh failed — fall back to existing cache if still technically valid
+  if (cache) {
+    const expiryMs = new Date(cache.jwt.expires_at).getTime();
+    if (Date.now() < expiryMs) {
+      return cache.jwt.token;
+    }
+  }
+
+  throw new Error('Token exchange failed and no cached token available');
 }
 
 // ---------------------------------------------------------------------------
-// isJwtMode
+// isJwtMode — check config auth mode
 // ---------------------------------------------------------------------------
 
-/**
- * Return `true` if the config indicates JWT auth mode.
- */
 export function isJwtMode(config: TeamindConfig): boolean {
   return config.auth_mode === 'jwt';
 }
 
 // ---------------------------------------------------------------------------
-// getAccessTokenFn
+// getAccessTokenFn — closure for createClient({ accessToken })
 // ---------------------------------------------------------------------------
 
-/**
- * Returns a function suitable for the Supabase `createClient({ accessToken })`
- * option. Each invocation returns a valid (possibly refreshed) JWT string.
- */
 export function getAccessTokenFn(
   supabaseUrl: string,
   apiKey: string,
 ): () => Promise<string> {
   return () => getToken(supabaseUrl, apiKey);
+}
+
+// ---------------------------------------------------------------------------
+// clearTokenCache — for testing
+// ---------------------------------------------------------------------------
+
+export function clearTokenCache(): void {
+  cache = null;
+  refreshPromise = null;
 }

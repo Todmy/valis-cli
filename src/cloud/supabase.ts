@@ -8,6 +8,7 @@ import type {
   RawDecision,
   DecisionSource,
   DashboardStats,
+  DependencyWarning,
 } from '../types.js';
 import { contentHash } from '../capture/dedup.js';
 import { getAccessTokenFn } from '../auth/jwt.js';
@@ -25,6 +26,41 @@ export function getSupabaseClient(url: string, serviceRoleKey: string): Supabase
 
 export function resetClient(): void {
   client = null;
+}
+
+// ---------------------------------------------------------------------------
+// JWT-authenticated client (Phase 2)
+// ---------------------------------------------------------------------------
+
+let jwtClient: SupabaseClient | null = null;
+
+/**
+ * Create a Supabase client that authenticates via JWT tokens obtained from
+ * the exchange-token Edge Function.
+ *
+ * Uses the `accessToken` callback pattern described in research.md —
+ * each request gets a fresh (or cached) JWT transparently.
+ *
+ * Keep separate from `getSupabaseClient` to avoid breaking legacy
+ * service_role callers.
+ */
+export function getSupabaseJwtClient(
+  url: string,
+  anonKey: string,
+  supabaseUrl: string,
+  apiKey: string,
+): SupabaseClient {
+  if (!jwtClient) {
+    jwtClient = createClient(url, anonKey, {
+      accessToken: getAccessTokenFn(supabaseUrl, apiKey),
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  }
+  return jwtClient;
+}
+
+export function resetJwtClient(): void {
+  jwtClient = null;
 }
 
 async function setOrgContext(supabase: SupabaseClient, orgId: string): Promise<void> {
@@ -185,12 +221,57 @@ export async function getDashboardStats(
     .order('created_at', { ascending: false })
     .limit(5);
 
+  // Lifecycle stats: count by status
+  const allDecisions = await getAllDecisions(supabase, orgId);
+  const byStatus: Record<DecisionStatus, number> = {
+    active: 0,
+    deprecated: 0,
+    superseded: 0,
+    proposed: 0,
+  };
+  for (const d of allDecisions) {
+    const s = (d.status || 'active') as DecisionStatus;
+    if (s in byStatus) {
+      byStatus[s]++;
+    }
+  }
+
+  // Dependency warnings: find decisions whose depends_on includes
+  // a deprecated or superseded decision
+  const deprecatedIds = new Set(
+    allDecisions
+      .filter((d) => d.status === 'deprecated' || d.status === 'superseded')
+      .map((d) => d.id),
+  );
+
+  const dependencyWarnings: DependencyWarning[] = [];
+  for (const d of allDecisions) {
+    if (!d.depends_on || d.depends_on.length === 0) continue;
+    // Only warn about active/proposed decisions depending on deprecated deps
+    if (d.status === 'deprecated' || d.status === 'superseded') continue;
+
+    for (const depId of d.depends_on) {
+      if (deprecatedIds.has(depId)) {
+        const dep = allDecisions.find((x) => x.id === depId);
+        dependencyWarnings.push({
+          decision_id: d.id,
+          decision_summary: d.summary || d.detail.substring(0, 60),
+          dependency_id: depId,
+          dependency_summary: dep ? (dep.summary || dep.detail.substring(0, 60)) : depId,
+          dependency_status: dep?.status || 'deprecated',
+        });
+      }
+    }
+  }
+
   return {
     total_decisions: (stats.total_decisions as number) || 0,
     by_type: (stats.by_type as Record<string, number>) || {},
     by_author: (stats.by_author as Record<string, number>) || {},
     recent: (recent || []) as Decision[],
     pending_count: (stats.pending_count as number) || 0,
+    by_status: byStatus,
+    dependency_warnings: dependencyWarnings,
   };
 }
 

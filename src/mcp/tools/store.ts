@@ -1,21 +1,85 @@
 import { loadConfig } from '../../config/store.js';
 import { detectSecrets } from '../../security/secrets.js';
 import { isDuplicate, markAsSeen } from '../../capture/dedup.js';
-import { getSupabaseClient, storeDecision } from '../../cloud/supabase.js';
+import {
+  getSupabaseClient,
+  storeDecision,
+  getDecisionById,
+  getDecisionsByIds,
+} from '../../cloud/supabase.js';
+import type { StoreExtras } from '../../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../../cloud/qdrant.js';
 import { appendToQueue } from '../../offline/queue.js';
 import { buildNewDecisionEvent } from '../../channel/push.js';
-import type { RawDecision, StoreResponse, StoreErrorResponse } from '../../types.js';
+import { canSupersede } from '../../auth/rbac.js';
+import { getToken } from '../../auth/jwt.js';
+import type {
+  RawDecision,
+  StoreArgs,
+  StoreResponse,
+  StoreErrorResponse,
+  StoreSupersededDetail,
+  DecisionStatus,
+} from '../../types.js';
 
-interface StoreArgs {
-  text: string;
-  type?: 'decision' | 'constraint' | 'pattern' | 'lesson';
-  summary?: string;
-  affects?: string[];
-  confidence?: number;
-  project_id?: string;
-  session_id?: string;
+// ---------------------------------------------------------------------------
+// Supersede helper — POST to change-status edge function
+// ---------------------------------------------------------------------------
+
+async function supersedeDecision(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  decisionId: string,
+  changedBy: string,
+): Promise<{ old_status: DecisionStatus; new_status: 'superseded' }> {
+  const url = `${supabaseUrl}/functions/v1/change-status`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      decision_id: decisionId,
+      new_status: 'superseded',
+      changed_by: changedBy,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(
+      `change-status failed (HTTP ${res.status}): ${body}`,
+    );
+  }
+
+  const data = (await res.json()) as {
+    old_status: DecisionStatus;
+    new_status: 'superseded';
+  };
+  return data;
 }
+
+// ---------------------------------------------------------------------------
+// Resolve member role — JWT mode returns role, legacy defaults to 'member'
+// ---------------------------------------------------------------------------
+
+async function resolveMemberRole(
+  supabaseUrl: string,
+  memberApiKey: string | null | undefined,
+  authMode: string | undefined,
+): Promise<string> {
+  if (authMode === 'jwt' && memberApiKey) {
+    const cache = await getToken(supabaseUrl, memberApiKey);
+    if (cache) return cache.role;
+  }
+  // Legacy mode or token unavailable — default to 'member'
+  return 'member';
+}
+
+// ---------------------------------------------------------------------------
+// Main handler
+// ---------------------------------------------------------------------------
 
 export async function handleStore(
   args: StoreArgs,
@@ -56,12 +120,76 @@ export async function handleStore(
   // 3. Try dual write
   try {
     const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+
+    // -----------------------------------------------------------------------
+    // Phase 2 pre-write validations
+    // -----------------------------------------------------------------------
+
+    // 3a. Validate `replaces` target exists in same org + RBAC check
+    let replacesTarget: { id: string; author: string; status: DecisionStatus } | null = null;
+    if (args.replaces) {
+      const target = await getDecisionById(supabase, config.org_id, args.replaces);
+      if (!target) {
+        return {
+          error: 'replaces_target_not_found',
+          action: 'blocked' as const,
+        };
+      }
+
+      // RBAC: only admin or original author may supersede
+      const memberRole = await resolveMemberRole(
+        config.supabase_url,
+        config.member_api_key,
+        config.auth_mode,
+      );
+      if (!canSupersede(memberRole, config.author_name, target.author)) {
+        return {
+          error: 'permission_denied',
+          action: 'blocked' as const,
+        };
+      }
+      replacesTarget = { id: target.id, author: target.author, status: target.status };
+    }
+
+    // 3b. Validate `depends_on` — all IDs must exist in same org
+    if (args.depends_on && args.depends_on.length > 0) {
+      const found = await getDecisionsByIds(supabase, config.org_id, args.depends_on);
+      const foundIds = new Set(found.map((d) => d.id));
+      const missing = args.depends_on.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        return {
+          error: `depends_on_not_found: ${missing.join(', ')}`,
+          action: 'blocked' as const,
+        };
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Build store extras
+    // -----------------------------------------------------------------------
+
+    const extras: StoreExtras = {};
+    if (args.status) {
+      extras.status = args.status;
+    }
+    if (args.replaces) {
+      extras.replaces = args.replaces;
+    }
+    if (args.depends_on && args.depends_on.length > 0) {
+      extras.depends_on = args.depends_on;
+    }
+
+    // -----------------------------------------------------------------------
+    // Dual write (unchanged pipeline)
+    // -----------------------------------------------------------------------
+
     const decision = await storeDecision(
       supabase,
       config.org_id,
       raw,
       config.author_name,
       'mcp_store',
+      Object.keys(extras).length > 0 ? extras : undefined,
     );
 
     // Qdrant write (best-effort)
@@ -75,7 +203,38 @@ export async function handleStore(
 
     markAsSeen(args.text, args.session_id);
 
+    // -----------------------------------------------------------------------
+    // Phase 2 post-write: supersede the replaced decision
+    // -----------------------------------------------------------------------
+
+    let superseded: StoreSupersededDetail | undefined;
+    if (replacesTarget) {
+      try {
+        const result = await supersedeDecision(
+          config.supabase_url,
+          config.supabase_service_role_key,
+          replacesTarget.id,
+          config.author_name,
+        );
+        superseded = {
+          decision_id: replacesTarget.id,
+          old_status: result.old_status,
+          new_status: 'superseded',
+        };
+      } catch (err) {
+        // Best-effort: the new decision is stored, but the old one
+        // could not be transitioned. Log a warning for operators.
+        console.error(
+          `Warning: failed to supersede decision ${replacesTarget.id}: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Channel push: notify active sessions about new decision
+    // -----------------------------------------------------------------------
+
     try {
       const _event = buildNewDecisionEvent(
         config.author_name,
@@ -89,10 +248,14 @@ export async function handleStore(
       // Channel push is best-effort
     }
 
-    return {
+    const response: StoreResponse = {
       id: decision.id,
       status: 'stored' as const,
     };
+    if (superseded) {
+      response.superseded = superseded;
+    }
+    return response;
   } catch {
     // 4. Offline fallback
     const id = await appendToQueue(raw, config.author_name, 'mcp_store');

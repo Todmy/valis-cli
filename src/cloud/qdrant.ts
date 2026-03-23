@@ -119,6 +119,8 @@ export async function hybridSearch(
         author: payload.author as string,
         affects: (payload.affects as string[]) || [],
         created_at: payload.created_at as string,
+        status: (payload.status as import('../types.js').DecisionStatus) || 'active',
+        replaces: (payload.replaces as string) || null,
       };
     });
   } catch {
@@ -140,6 +142,8 @@ export async function hybridSearch(
         author: payload.author as string,
         affects: (payload.affects as string[]) || [],
         created_at: payload.created_at as string,
+        status: (payload.status as import('../types.js').DecisionStatus) || 'active',
+        replaces: (payload.replaces as string) || null,
       };
     });
   }

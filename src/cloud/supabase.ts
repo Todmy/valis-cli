@@ -1,12 +1,16 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import type {
+  AuditEntry,
+  Contradiction,
   Decision,
+  DecisionStatus,
   RawDecision,
   DecisionSource,
   DashboardStats,
 } from '../types.js';
 import { contentHash } from '../capture/dedup.js';
+import { getAccessTokenFn } from '../auth/jwt.js';
 
 let client: SupabaseClient | null = null;
 
@@ -34,24 +38,74 @@ async function setOrgContext(supabase: SupabaseClient, orgId: string): Promise<v
   }
 }
 
+/** Optional extended fields for Phase 2 store. */
+export interface StoreExtras {
+  status?: 'active' | 'proposed';
+  replaces?: string;
+  depends_on?: string[];
+}
+
+/**
+ * Fetch a single decision by ID, scoped to an org.
+ * Returns `null` when not found.
+ */
+export async function getDecisionById(
+  supabase: SupabaseClient,
+  orgId: string,
+  decisionId: string,
+): Promise<Decision | null> {
+  await setOrgContext(supabase, orgId);
+  const { data, error } = await supabase
+    .from('decisions')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('id', decisionId)
+    .single();
+
+  if (error || !data) return null;
+  return data as Decision;
+}
+
+/**
+ * Fetch multiple decisions by IDs, scoped to an org.
+ * Returns only those that exist.
+ */
+export async function getDecisionsByIds(
+  supabase: SupabaseClient,
+  orgId: string,
+  decisionIds: string[],
+): Promise<Decision[]> {
+  if (decisionIds.length === 0) return [];
+  await setOrgContext(supabase, orgId);
+  const { data, error } = await supabase
+    .from('decisions')
+    .select('*')
+    .eq('org_id', orgId)
+    .in('id', decisionIds);
+
+  if (error) throw new Error(`Supabase fetch by IDs failed: ${error.message}`);
+  return (data || []) as Decision[];
+}
+
 export async function storeDecision(
   supabase: SupabaseClient,
   orgId: string,
   raw: RawDecision,
   author: string,
   source: DecisionSource,
+  extras?: StoreExtras,
 ): Promise<Decision> {
   await setOrgContext(supabase, orgId);
   const id = randomUUID();
   const hash = contentHash(raw.text);
 
-  const record = {
+  const record: Record<string, unknown> = {
     id,
     org_id: orgId,
     type: raw.type || 'pending',
     summary: raw.summary || null,
     detail: raw.text,
-    status: 'active' as const,
+    status: extras?.status || 'active',
     author,
     source,
     project_id: raw.project_id || null,
@@ -60,6 +114,13 @@ export async function storeDecision(
     confidence: raw.confidence || null,
     affects: raw.affects || [],
   };
+
+  if (extras?.replaces) {
+    record.replaces = extras.replaces;
+  }
+  if (extras?.depends_on && extras.depends_on.length > 0) {
+    record.depends_on = extras.depends_on;
+  }
 
   const { data, error } = await supabase
     .from('decisions')

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { handleStore } from './tools/store.js';
 import { handleSearch } from './tools/search.js';
 import { handleContext } from './tools/context.js';
+import { handleLifecycle } from './tools/lifecycle.js';
 
 export function createMcpServer(): McpServer {
   const server = new McpServer(
@@ -63,6 +64,21 @@ export function createMcpServer(): McpServer {
     },
     async (args) => {
       const result = await handleContext(args);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // teamind_lifecycle
+  server.tool(
+    'teamind_lifecycle',
+    'Manage decision lifecycle: deprecate outdated decisions, promote proposed ones to active, or view status change history.',
+    {
+      action: z.enum(['deprecate', 'promote', 'history']).describe('Lifecycle action to perform'),
+      decision_id: z.string().describe('UUID of the target decision'),
+      reason: z.string().optional().describe('Reason for the status change'),
+    },
+    async (args) => {
+      const result = await handleLifecycle(args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

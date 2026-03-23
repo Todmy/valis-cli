@@ -14,6 +14,10 @@ export interface Member {
   author_name: string;
   role: 'admin' | 'member';
   joined_at: string;
+  /** Per-member API key, format `tmm_` + 32 hex. Null for legacy members. */
+  api_key?: string | null;
+  /** When set, member key is revoked and invalid. */
+  revoked_at?: string | null;
 }
 
 export type DecisionType = 'decision' | 'constraint' | 'pattern' | 'lesson' | 'pending';
@@ -36,6 +40,16 @@ export interface Decision {
   affects: string[];
   created_at: string;
   updated_at: string;
+  /** UUID of the decision this one replaces (target becomes superseded). */
+  replaces?: string | null;
+  /** UUIDs of decisions this one depends on. */
+  depends_on?: string[];
+  /** Author who last changed status. */
+  status_changed_by?: string | null;
+  /** Timestamp of last status change. */
+  status_changed_at?: string | null;
+  /** Reason for the last status change. */
+  status_reason?: string | null;
 }
 
 export interface RawDecision {
@@ -47,6 +61,160 @@ export interface RawDecision {
   project_id?: string;
   session_id?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+export type AuditAction =
+  | 'decision_stored'
+  | 'decision_deprecated'
+  | 'decision_superseded'
+  | 'decision_promoted'
+  | 'decision_depends_added'
+  | 'member_joined'
+  | 'member_revoked'
+  | 'key_rotated'
+  | 'org_key_rotated'
+  | 'contradiction_detected'
+  | 'contradiction_resolved';
+
+export type AuditTargetType = 'decision' | 'member' | 'org';
+
+export interface AuditEntry {
+  id: string;
+  org_id: string;
+  member_id: string;
+  action: AuditAction;
+  target_type: AuditTargetType;
+  target_id: string;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  reason: string | null;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Contradiction
+// ---------------------------------------------------------------------------
+
+export type ContradictionStatus = 'open' | 'resolved';
+
+export interface Contradiction {
+  id: string;
+  org_id: string;
+  decision_a_id: string;
+  decision_b_id: string;
+  overlap_areas: string[];
+  similarity_score: number | null;
+  status: ContradictionStatus;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  detected_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Store (MCP tool args — extends RawDecision concept for MCP layer)
+// ---------------------------------------------------------------------------
+
+export interface StoreArgs extends RawDecision {
+  /** UUID of decision being replaced (target transitions to superseded). */
+  replaces?: string;
+  /** UUIDs of dependency decisions. */
+  depends_on?: string[];
+  /** Initial status — defaults to 'active'. */
+  status?: 'active' | 'proposed';
+}
+
+/** Contradiction warning returned alongside a successful store. */
+export interface StoreContradictionWarning {
+  decision_id: string;
+  summary: string;
+  author: string;
+  overlap_areas: string[];
+  similarity: number;
+}
+
+/** Supersession detail returned when `replaces` triggers a transition. */
+export interface StoreSupersededDetail {
+  decision_id: string;
+  old_status: DecisionStatus;
+  new_status: 'superseded';
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle (MCP tool)
+// ---------------------------------------------------------------------------
+
+export type LifecycleAction = 'deprecate' | 'promote' | 'history';
+
+export interface LifecycleArgs {
+  action: LifecycleAction;
+  decision_id: string;
+  reason?: string;
+}
+
+export interface LifecycleStatusChange {
+  decision_id: string;
+  old_status: DecisionStatus;
+  new_status: DecisionStatus;
+  changed_by: string;
+  flagged_dependents: string[];
+}
+
+export interface LifecycleHistoryEntry {
+  from: DecisionStatus;
+  to: DecisionStatus;
+  by: string;
+  reason: string | null;
+  at: string;
+}
+
+export interface LifecycleHistoryResponse {
+  decision_id: string;
+  current_status: DecisionStatus;
+  history: LifecycleHistoryEntry[];
+}
+
+export type LifecycleResponse = LifecycleStatusChange | LifecycleHistoryResponse;
+
+// ---------------------------------------------------------------------------
+// JWT Auth
+// ---------------------------------------------------------------------------
+
+export type AuthMode = 'legacy' | 'jwt';
+
+export type MemberRole = Member['role'];
+
+export interface JwtToken {
+  /** Raw JWT string. */
+  token: string;
+  /** ISO-8601 expiry timestamp. */
+  expires_at: string;
+}
+
+export interface ExchangeTokenResponse {
+  token: string;
+  expires_at: string;
+  member_id: string;
+  org_id: string;
+  org_name: string;
+  role: MemberRole;
+  author_name: string;
+  auth_mode: AuthMode;
+}
+
+export interface TokenCache {
+  jwt: JwtToken;
+  member_id: string;
+  org_id: string;
+  role: MemberRole;
+  author_name: string;
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
 
 export interface TeamindConfig {
   org_id: string;
@@ -60,12 +228,22 @@ export interface TeamindConfig {
   qdrant_api_key: string;
   configured_ides: string[];
   created_at: string;
+  /** Authentication mode: 'legacy' uses org api_key, 'jwt' uses per-member keys. */
+  auth_mode?: AuthMode;
+  /** Per-member API key (format `tmm_` + 32 hex). Null when using legacy mode. */
+  member_api_key?: string | null;
+  /** Member UUID resolved during JWT auth. Null when using legacy mode. */
+  member_id?: string | null;
 }
 
 export interface StoreResponse {
   id: string;
   status: 'stored' | 'duplicate';
   synced?: boolean;
+  /** Contradiction warnings detected after store (Phase 2). */
+  contradictions?: StoreContradictionWarning[];
+  /** Supersession detail when `replaces` triggered a transition (Phase 2). */
+  superseded?: StoreSupersededDetail;
 }
 
 export interface StoreErrorResponse {
@@ -83,6 +261,10 @@ export interface SearchResult {
   author: string;
   affects: string[];
   created_at: string;
+  /** Decision status (Phase 2). */
+  status?: DecisionStatus;
+  /** UUID of the decision this one was replaced by, if superseded (Phase 2). */
+  replaced_by?: string | null;
 }
 
 export interface SearchResponse {

@@ -69,6 +69,9 @@ export async function upsertDecision(
           author,
           affects: raw.affects || [],
           confidence: raw.confidence || null,
+          replaces: null as string | null,
+          depends_on: [] as string[],
+          status: 'active',
           created_at: new Date().toISOString(),
         },
         // Placeholder zero vector — Qdrant Cloud with server-side embedding
@@ -165,5 +168,69 @@ export async function healthCheck(qdrant: QdrantClient): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cosine similarity between two decision vectors
+// ---------------------------------------------------------------------------
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0.0;
+
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  if (normA === 0 || normB === 0) return 0.0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * Retrieve two decision points from Qdrant and compute the cosine similarity
+ * between their dense vectors.
+ *
+ * Returns a value in the range 0.0–1.0. Returns 0.0 when either point is not
+ * found, has no vector, or has a zero-length vector.
+ */
+export async function getSimilarity(
+  qdrant: QdrantClient,
+  orgId: string,
+  decisionIdA: string,
+  decisionIdB: string,
+): Promise<number> {
+  try {
+    const points = await qdrant.getPoints(COLLECTION_NAME, {
+      ids: [decisionIdA, decisionIdB],
+      with_vector: true,
+      with_payload: true,
+    });
+
+    if (points.points.length < 2) return 0.0;
+
+    // Ensure both points belong to the requested org
+    const pointA = points.points.find((p) => p.id === decisionIdA);
+    const pointB = points.points.find((p) => p.id === decisionIdB);
+    if (!pointA || !pointB) return 0.0;
+
+    const payloadA = pointA.payload as Record<string, unknown> | undefined;
+    const payloadB = pointB.payload as Record<string, unknown> | undefined;
+    if (payloadA?.org_id !== orgId || payloadB?.org_id !== orgId) return 0.0;
+
+    // Extract dense vectors (flat number arrays)
+    const vecA = pointA.vector;
+    const vecB = pointB.vector;
+    if (!Array.isArray(vecA) || !Array.isArray(vecB)) return 0.0;
+
+    const similarity = cosineSimilarity(vecA as number[], vecB as number[]);
+    // Clamp to [0, 1] — cosine similarity can be negative for opposed vectors
+    return Math.max(0.0, Math.min(1.0, similarity));
+  } catch {
+    return 0.0;
   }
 }

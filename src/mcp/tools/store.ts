@@ -10,15 +10,18 @@ import {
 import type { StoreExtras } from '../../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../../cloud/qdrant.js';
 import { appendToQueue } from '../../offline/queue.js';
-import { buildNewDecisionEvent } from '../../channel/push.js';
+import { buildNewDecisionEvent, buildContradictionEvent } from '../../channel/push.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
+import { detectContradictions } from '../../contradiction/detect.js';
+import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import type {
   RawDecision,
   StoreArgs,
   StoreResponse,
   StoreErrorResponse,
   StoreSupersededDetail,
+  StoreContradictionWarning,
   DecisionStatus,
 } from '../../types.js';
 
@@ -248,12 +251,82 @@ export async function handleStore(
       // Channel push is best-effort
     }
 
+    // -----------------------------------------------------------------------
+    // Contradiction detection (Phase 2 — US3)
+    // -----------------------------------------------------------------------
+
+    let contradictions: StoreContradictionWarning[] | undefined;
+    try {
+      // Qdrant client — may be null if unavailable (Tier 1 only fallback)
+      let qdrantForDetection = null;
+      try {
+        qdrantForDetection = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+      } catch {
+        // Qdrant unavailable — Tier 1 (area overlap) only
+      }
+
+      const warnings = await detectContradictions(
+        supabase,
+        qdrantForDetection,
+        config.org_id,
+        decision,
+      );
+
+      if (warnings.length > 0) {
+        contradictions = warnings;
+
+        // Build contradiction channel events (best-effort)
+        const newSummary = raw.summary || args.text.substring(0, 80);
+        for (const w of warnings) {
+          try {
+            const _contradictionEvent = buildContradictionEvent(
+              { author: config.author_name, summary: newSummary },
+              { author: w.author, summary: w.summary },
+              w.overlap_areas,
+            );
+            // Channel push wired in serve command
+          } catch {
+            // Channel push is best-effort
+          }
+        }
+
+        // Create audit entries for each detected contradiction (best-effort)
+        for (const w of warnings) {
+          try {
+            const auditPayload = buildAuditPayload(
+              'contradiction_detected',
+              'decision',
+              decision.id,
+              config.member_id || 'unknown',
+              config.org_id,
+              {
+                newState: {
+                  decision_a: decision.id,
+                  decision_b: w.decision_id,
+                  overlap_areas: w.overlap_areas,
+                  similarity: w.similarity,
+                },
+              },
+            );
+            await createAuditEntry(supabase, auditPayload);
+          } catch {
+            // Audit failures are non-fatal
+          }
+        }
+      }
+    } catch {
+      // Contradiction detection is best-effort — never block the store
+    }
+
     const response: StoreResponse = {
       id: decision.id,
       status: 'stored' as const,
     };
     if (superseded) {
       response.superseded = superseded;
+    }
+    if (contradictions && contradictions.length > 0) {
+      response.contradictions = contradictions;
     }
     return response;
   } catch {

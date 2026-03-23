@@ -278,6 +278,8 @@ export interface ContextResponse {
   constraints: SearchResult[];
   patterns: SearchResult[];
   lessons: SearchResult[];
+  /** Deprecated/superseded results kept for historical reference. */
+  historical?: SearchResult[];
   total_in_brain: number;
   note?: string;
   offline?: boolean;
@@ -289,6 +291,20 @@ export interface DashboardStats {
   by_author: Record<string, number>;
   recent: Decision[];
   pending_count: number;
+  /** Counts by lifecycle status (Phase 2). */
+  by_status?: Record<DecisionStatus, number>;
+  /** Decisions whose dependencies include deprecated/superseded decisions. */
+  dependency_warnings?: DependencyWarning[];
+}
+
+export interface DependencyWarning {
+  /** The decision that depends on a deprecated/superseded decision. */
+  decision_id: string;
+  decision_summary: string;
+  /** The deprecated/superseded dependency. */
+  dependency_id: string;
+  dependency_summary: string;
+  dependency_status: DecisionStatus;
 }
 
 export interface ManifestEntry {

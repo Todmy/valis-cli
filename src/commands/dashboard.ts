@@ -17,6 +17,15 @@ export async function dashboardCommand(): Promise<void> {
     console.log(pc.bold(`\nTeamind Dashboard — ${config.org_name}\n`));
     console.log(`  Total decisions: ${pc.bold(String(stats.total_decisions))}`);
 
+    // Lifecycle stats
+    if (stats.by_status) {
+      console.log(pc.cyan('\n  Lifecycle:'));
+      console.log(`    Active:     ${pc.green(String(stats.by_status.active || 0))}`);
+      console.log(`    Proposed:   ${pc.blue(String(stats.by_status.proposed || 0))}`);
+      console.log(`    Deprecated: ${pc.yellow(String(stats.by_status.deprecated || 0))}`);
+      console.log(`    Superseded: ${pc.dim(String(stats.by_status.superseded || 0))}`);
+    }
+
     // By type
     console.log(pc.cyan('\n  By type:'));
     for (const [type, count] of Object.entries(stats.by_type)) {
@@ -41,6 +50,19 @@ export async function dashboardCommand(): Promise<void> {
     // Pending
     if (stats.pending_count > 0) {
       console.log(pc.yellow(`\n  Pending: ${stats.pending_count} decisions awaiting classification`));
+    }
+
+    // Dependency warnings
+    if (stats.dependency_warnings && stats.dependency_warnings.length > 0) {
+      console.log(pc.red(`\n  Dependency Warnings (${stats.dependency_warnings.length}):`));
+      for (const w of stats.dependency_warnings) {
+        const statusLabel = w.dependency_status === 'superseded'
+          ? pc.dim('superseded')
+          : pc.yellow('deprecated');
+        console.log(
+          `    ${pc.bold(w.decision_summary)} depends on ${statusLabel} decision: ${w.dependency_summary}`,
+        );
+      }
     }
 
     console.log();

@@ -1,5 +1,8 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 import { loadConfig, saveConfig, getConfigDir } from '../config/store.js';
 import { trackFile } from '../config/manifest.js';
@@ -13,6 +16,44 @@ import { getQdrantClient, ensureCollection } from '../cloud/qdrant.js';
 import { storeDecision } from '../cloud/supabase.js';
 import { upsertDecision, hybridSearch } from '../cloud/qdrant.js';
 import type { TeamindConfig } from '../types.js';
+
+// ---------------------------------------------------------------------------
+// Hosted Teamind credentials (baked into the CLI for hosted mode)
+// These point to the shared Teamind cloud infrastructure.
+// Community mode users provide their own.
+// ---------------------------------------------------------------------------
+const HOSTED_CREDENTIALS = {
+  supabaseUrl: 'https://teamind.supabase.co',
+  supabaseServiceRoleKey: '',
+  qdrantUrl: 'https://teamind.qdrant.io',
+  qdrantApiKey: '',
+};
+
+function loadEnvFile(): Record<string, string> {
+  const env: Record<string, string> = {};
+  // Try .env in cwd, then in the package directory
+  const candidates = [
+    resolve(process.cwd(), '.env'),
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../.env'),
+  ];
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      const content = readFileSync(path, 'utf-8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
+        }
+      }
+      break;
+    }
+  }
+  return env;
+}
+
+type SetupMode = 'hosted' | 'community';
 
 async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: stdin, output: stdout });
@@ -82,11 +123,42 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     }
   }
 
-  // Get Supabase credentials
-  const supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
-  const qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
-  const qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
+  // Choose setup mode
+  console.log(pc.bold('Choose your setup:\n'));
+  console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
+  console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
+
+  const modeAnswer = await prompt('Your choice (1/2): ');
+  const setupMode: SetupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
+
+  let supabaseUrl: string;
+  let serviceRoleKey: string;
+  let qdrantUrl: string;
+  let qdrantApiKey: string;
+
+  if (setupMode === 'hosted') {
+    // Load from .env file (hosted credentials baked in or provided via .env)
+    const envFile = loadEnvFile();
+    supabaseUrl = process.env.SUPABASE_URL || envFile.SUPABASE_URL || HOSTED_CREDENTIALS.supabaseUrl;
+    serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || envFile.SUPABASE_SERVICE_ROLE_KEY || HOSTED_CREDENTIALS.supabaseServiceRoleKey;
+    qdrantUrl = process.env.QDRANT_URL || envFile.QDRANT_URL || HOSTED_CREDENTIALS.qdrantUrl;
+    qdrantApiKey = process.env.QDRANT_API_KEY || envFile.QDRANT_API_KEY || HOSTED_CREDENTIALS.qdrantApiKey;
+
+    if (!serviceRoleKey) {
+      console.log(pc.red('\n✗ Hosted credentials not configured yet.'));
+      console.log(pc.dim('  Set SUPABASE_SERVICE_ROLE_KEY in .env or switch to Community mode.\n'));
+      return;
+    }
+
+    console.log(pc.green('\n✓ Using hosted Teamind infrastructure'));
+  } else {
+    // Community: user provides their own
+    console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));
+    supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
+    serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
+    qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
+    qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
+  }
 
   let config: TeamindConfig;
 

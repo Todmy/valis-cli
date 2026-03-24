@@ -3,76 +3,54 @@ import {
   recencyDecay,
   importanceScore,
   graphConnectivity,
-  computeInboundCounts,
   normalizeBm25,
 } from '../../src/search/signals.js';
-import type { SearchResult } from '../../src/types.js';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function daysAgo(days: number, now: number = Date.now()): string {
-  return new Date(now - days * 86_400_000).toISOString();
-}
-
-function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
-  return {
-    id: overrides.id ?? 'r1',
-    score: overrides.score ?? 0.8,
-    type: overrides.type ?? 'decision',
-    summary: overrides.summary ?? 'test',
-    detail: overrides.detail ?? 'test detail',
-    author: overrides.author ?? 'alice',
-    affects: overrides.affects ?? ['auth'],
-    created_at: overrides.created_at ?? new Date().toISOString(),
-    status: overrides.status ?? 'active',
-    confidence: overrides.confidence ?? null,
-    pinned: overrides.pinned ?? false,
-    depends_on: overrides.depends_on ?? [],
-  };
-}
 
 // ---------------------------------------------------------------------------
 // recencyDecay
 // ---------------------------------------------------------------------------
 
 describe('recencyDecay', () => {
-  const now = Date.now();
+  const MS_PER_DAY = 86_400_000;
+  const halfLife = 90;
 
-  it('returns 1.0 for a brand-new decision (0 days)', () => {
+  // Fixed reference time for deterministic tests
+  const now = new Date('2026-03-24T00:00:00Z').getTime();
+
+  it('returns 1.0 for a decision created right now', () => {
     const createdAt = new Date(now).toISOString();
-    expect(recencyDecay(createdAt, 90, false, now)).toBeCloseTo(1.0, 5);
+    expect(recencyDecay(createdAt, halfLife, false, now)).toBeCloseTo(1.0, 5);
   });
 
-  it('returns ~0.5 at half-life (90 days)', () => {
-    const createdAt = daysAgo(90, now);
-    expect(recencyDecay(createdAt, 90, false, now)).toBeCloseTo(0.5, 2);
+  it('returns ~0.5 at exactly one half-life (90 days)', () => {
+    const createdAt = new Date(now - 90 * MS_PER_DAY).toISOString();
+    expect(recencyDecay(createdAt, halfLife, false, now)).toBeCloseTo(0.5, 5);
   });
 
-  it('returns ~0.25 at 2x half-life (180 days)', () => {
-    const createdAt = daysAgo(180, now);
-    expect(recencyDecay(createdAt, 90, false, now)).toBeCloseTo(0.25, 2);
+  it('returns ~0.25 at two half-lives (180 days)', () => {
+    const createdAt = new Date(now - 180 * MS_PER_DAY).toISOString();
+    expect(recencyDecay(createdAt, halfLife, false, now)).toBeCloseTo(0.25, 5);
   });
 
   it('returns ~0.794 at 30 days with 90-day half-life', () => {
-    const createdAt = daysAgo(30, now);
-    expect(recencyDecay(createdAt, 90, false, now)).toBeCloseTo(0.794, 2);
+    const createdAt = new Date(now - 30 * MS_PER_DAY).toISOString();
+    const score = recencyDecay(createdAt, halfLife, false, now);
+    expect(score).toBeCloseTo(0.7937, 3);
   });
 
   it('returns 1.0 for pinned decisions regardless of age', () => {
-    const createdAt = daysAgo(365, now);
-    expect(recencyDecay(createdAt, 90, true, now)).toBe(1.0);
+    const createdAt = new Date(now - 365 * MS_PER_DAY).toISOString();
+    expect(recencyDecay(createdAt, halfLife, true, now)).toBe(1.0);
   });
 
-  it('returns 1.0 for future dates', () => {
-    const futureDate = new Date(now + 86_400_000).toISOString();
-    expect(recencyDecay(futureDate, 90, false, now)).toBe(1.0);
+  it('returns 1.0 for future timestamps', () => {
+    const createdAt = new Date(now + 10 * MS_PER_DAY).toISOString();
+    expect(recencyDecay(createdAt, halfLife, false, now)).toBe(1.0);
   });
 
-  it('handles custom half-life (60 days)', () => {
-    const createdAt = daysAgo(60, now);
-    expect(recencyDecay(createdAt, 60, false, now)).toBeCloseTo(0.5, 2);
+  it('returns 1.0 when halfLifeDays is 0', () => {
+    const createdAt = new Date(now - 30 * MS_PER_DAY).toISOString();
+    expect(recencyDecay(createdAt, 0, false, now)).toBe(1.0);
   });
 });
 
@@ -82,32 +60,29 @@ describe('recencyDecay', () => {
 
 describe('importanceScore', () => {
   it('returns 0.5 for null confidence, unpinned', () => {
-    expect(importanceScore(null, false)).toBeCloseTo(0.5, 5);
+    expect(importanceScore(null, false)).toBe(0.5);
   });
 
-  it('returns confidence directly when unpinned', () => {
-    expect(importanceScore(0.8, false)).toBeCloseTo(0.8, 5);
+  it('returns 0.5 for undefined confidence, unpinned', () => {
+    expect(importanceScore(undefined, false)).toBe(0.5);
   });
 
-  it('returns 2x confidence when pinned', () => {
-    expect(importanceScore(0.4, true)).toBeCloseTo(0.8, 5);
+  it('returns confidence value directly when unpinned', () => {
+    expect(importanceScore(0.8, false)).toBe(0.8);
+    expect(importanceScore(0.3, false)).toBe(0.3);
   });
 
-  it('caps at 1.0 when pinned with high confidence', () => {
-    expect(importanceScore(0.8, true)).toBe(1.0);
-    expect(importanceScore(1.0, true)).toBe(1.0);
+  it('doubles and clamps for pinned decision', () => {
+    expect(importanceScore(0.8, true)).toBe(1.0); // 0.8 * 2 = 1.6, clamped
+    expect(importanceScore(0.4, true)).toBe(0.8); // 0.4 * 2 = 0.8
   });
 
-  it('returns 1.0 for pinned with null confidence (0.5 * 2)', () => {
-    expect(importanceScore(null, true)).toBe(1.0);
+  it('returns 1.0 for null confidence with pin boost', () => {
+    expect(importanceScore(null, true)).toBe(1.0); // 0.5 * 2 = 1.0
   });
 
-  it('returns 0.0 for zero confidence, unpinned', () => {
-    expect(importanceScore(0, false)).toBe(0.0);
-  });
-
-  it('handles undefined confidence like null', () => {
-    expect(importanceScore(undefined, false)).toBeCloseTo(0.5, 5);
+  it('clamps negative confidence to 0', () => {
+    expect(importanceScore(-0.5, false)).toBe(0.0);
   });
 });
 
@@ -116,75 +91,65 @@ describe('importanceScore', () => {
 // ---------------------------------------------------------------------------
 
 describe('graphConnectivity', () => {
-  it('returns 0.0 when no results have depends_on', () => {
-    const results = [makeResult({ id: 'a' }), makeResult({ id: 'b' })];
-    expect(graphConnectivity('a', results)).toBe(0.0);
+  it('returns 0 when no results have depends_on', () => {
+    const results = [
+      { id: 'a', depends_on: [] },
+      { id: 'b', depends_on: [] },
+    ];
+    expect(graphConnectivity('a', results)).toBe(0);
+    expect(graphConnectivity('b', results)).toBe(0);
   });
 
   it('returns 1.0 for the most-referenced decision', () => {
     const results = [
-      makeResult({ id: 'a', depends_on: [] }),
-      makeResult({ id: 'b', depends_on: ['a'] }),
-      makeResult({ id: 'c', depends_on: ['a'] }),
+      { id: 'a', depends_on: [] },
+      { id: 'b', depends_on: ['a'] },
+      { id: 'c', depends_on: ['a'] },
     ];
-    expect(graphConnectivity('a', results)).toBe(1.0);
+    // a has 2 inbound, b and c have 0; max = 2
+    // graphConnectivity('a') = log1p(2) / log1p(2) = 1.0
+    expect(graphConnectivity('a', results)).toBeCloseTo(1.0, 5);
   });
 
-  it('returns 0.0 for unreferenced decisions when others are referenced', () => {
+  it('returns 0 for a decision with no inbound references', () => {
     const results = [
-      makeResult({ id: 'a', depends_on: [] }),
-      makeResult({ id: 'b', depends_on: ['a'] }),
-      makeResult({ id: 'c', depends_on: [] }),
+      { id: 'a', depends_on: [] },
+      { id: 'b', depends_on: ['a'] },
+      { id: 'c', depends_on: ['a'] },
     ];
-    expect(graphConnectivity('c', results)).toBe(0.0);
+    expect(graphConnectivity('b', results)).toBe(0);
   });
 
-  it('normalizes between 0 and 1 with log1p', () => {
+  it('returns value between 0 and 1 for partial connectivity', () => {
     const results = [
-      makeResult({ id: 'a', depends_on: [] }),
-      makeResult({ id: 'b', depends_on: ['a'] }),
-      makeResult({ id: 'c', depends_on: ['a'] }),
-      makeResult({ id: 'd', depends_on: ['a', 'b'] }),
+      { id: 'a', depends_on: [] },
+      { id: 'b', depends_on: ['a'] },
+      { id: 'c', depends_on: ['a', 'b'] },
+      { id: 'd', depends_on: ['a'] },
     ];
-    // 'a' has 3 inbound (b, c, d reference it)
-    // 'b' has 1 inbound (d references it)
-    const scoreA = graphConnectivity('a', results);
+    // a has 3 inbound, b has 1 inbound; max = 3
     const scoreB = graphConnectivity('b', results);
-    expect(scoreA).toBe(1.0); // max
     expect(scoreB).toBeGreaterThan(0);
-    expect(scoreB).toBeLessThan(1.0);
+    expect(scoreB).toBeLessThan(1);
+    // log1p(1) / log1p(3) = 0.6931 / 1.3863 ≈ 0.5
+    expect(scoreB).toBeCloseTo(Math.log1p(1) / Math.log1p(3), 5);
   });
 
-  it('ignores depends_on references to IDs outside the result set', () => {
+  it('handles missing depends_on gracefully', () => {
     const results = [
-      makeResult({ id: 'a', depends_on: ['x-outside'] }),
-      makeResult({ id: 'b', depends_on: [] }),
-    ];
-    expect(graphConnectivity('a', results)).toBe(0.0);
-    expect(graphConnectivity('b', results)).toBe(0.0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// computeInboundCounts
-// ---------------------------------------------------------------------------
-
-describe('computeInboundCounts', () => {
-  it('returns empty map for empty results', () => {
-    const counts = computeInboundCounts([]);
-    expect(counts.size).toBe(0);
+      { id: 'a' },
+      { id: 'b' },
+    ] as Array<{ id: string; depends_on?: string[] }>;
+    expect(graphConnectivity('a', results)).toBe(0);
   });
 
-  it('counts inbound references correctly', () => {
+  it('only counts references to decisions within the result set', () => {
     const results = [
-      makeResult({ id: 'a', depends_on: [] }),
-      makeResult({ id: 'b', depends_on: ['a'] }),
-      makeResult({ id: 'c', depends_on: ['a', 'b'] }),
+      { id: 'a', depends_on: [] },
+      { id: 'b', depends_on: ['a', 'external-id'] },
     ];
-    const counts = computeInboundCounts(results);
-    expect(counts.get('a')).toBe(2); // b and c reference a
-    expect(counts.get('b')).toBe(1); // c references b
-    expect(counts.get('c')).toBe(0); // nobody references c
+    // 'a' has 1 inbound (from b), 'external-id' is not in set
+    expect(graphConnectivity('a', results)).toBeCloseTo(1.0, 5);
   });
 });
 
@@ -197,25 +162,30 @@ describe('normalizeBm25', () => {
     expect(normalizeBm25([])).toEqual([]);
   });
 
-  it('returns [0.5] for single item', () => {
-    expect(normalizeBm25([3.5])).toEqual([0.5]);
+  it('returns [0.5] for a single score', () => {
+    expect(normalizeBm25([5.0])).toEqual([0.5]);
+  });
+
+  it('normalizes to [0, 1] range via min-max', () => {
+    const result = normalizeBm25([2, 4, 6]);
+    expect(result).toEqual([0, 0.5, 1]);
   });
 
   it('returns all 0.5 when all scores are equal', () => {
-    expect(normalizeBm25([2.0, 2.0, 2.0])).toEqual([0.5, 0.5, 0.5]);
+    const result = normalizeBm25([3, 3, 3]);
+    expect(result).toEqual([0.5, 0.5, 0.5]);
   });
 
-  it('normalizes to [0, 1] range', () => {
-    const result = normalizeBm25([1.0, 3.0, 5.0]);
-    expect(result[0]).toBeCloseTo(0.0, 5);
+  it('handles negative scores', () => {
+    const result = normalizeBm25([-2, 0, 2]);
+    expect(result).toEqual([0, 0.5, 1]);
+  });
+
+  it('preserves order', () => {
+    const result = normalizeBm25([10, 5, 0, 7.5]);
+    expect(result[0]).toBe(1.0); // 10 = max
+    expect(result[2]).toBe(0.0); // 0  = min
     expect(result[1]).toBeCloseTo(0.5, 5);
-    expect(result[2]).toBeCloseTo(1.0, 5);
-  });
-
-  it('handles zero scores', () => {
-    const result = normalizeBm25([0, 0, 4]);
-    expect(result[0]).toBeCloseTo(0.0, 5);
-    expect(result[1]).toBeCloseTo(0.0, 5);
-    expect(result[2]).toBeCloseTo(1.0, 5);
+    expect(result[3]).toBeCloseTo(0.75, 5);
   });
 });

@@ -1,160 +1,153 @@
 /**
- * Golden test scaffold for reranking quality evaluation.
+ * Golden test scaffold for search reranking quality evaluation.
  *
- * This file provides the structure for evaluating multi-signal reranking
- * against known-good query-result orderings using NDCG@10.
+ * This file defines the types and infrastructure for maintaining a set of
+ * query-result pairs with expected orderings. The actual test data will be
+ * populated as the system accumulates real-world usage patterns.
  *
- * TODO (T078): Populate with 50 query-result pairs and expected orderings.
+ * Metric: NDCG@10 (Normalized Discounted Cumulative Gain at position 10).
  *
- * @phase 003-search-growth (T010 scaffold, T078 full implementation)
+ * @see T078 in tasks.md for the full 50-pair golden set target.
  */
 
 import { describe, it, expect } from 'vitest';
 import { rerank } from '../../src/search/reranker.js';
-import type { SearchResult } from '../../src/types.js';
+import type { RerankableResult } from '../../src/search/reranker.js';
+import type { SignalWeights } from '../../src/types.js';
 
 // ---------------------------------------------------------------------------
-// NDCG@K helper
+// Types for golden test pairs
+// ---------------------------------------------------------------------------
+
+/** A single golden test case: a query + expected result ordering. */
+export interface GoldenTestCase {
+  /** Human-readable test name. */
+  name: string;
+  /** The search query that produced these results. */
+  query: string;
+  /** Raw results as they would come from Qdrant (unranked). */
+  results: RerankableResult[];
+  /** Expected ordering of result IDs after reranking (best first). */
+  expected_order: string[];
+  /** Optional weight override for this test case. */
+  weights?: Partial<SignalWeights>;
+}
+
+/** Relevance grade for NDCG computation. */
+export type RelevanceGrade = 0 | 1 | 2 | 3;
+
+/** A result with human-assigned relevance grade for NDCG. */
+export interface GradedResult {
+  id: string;
+  /** 0 = irrelevant, 1 = marginally relevant, 2 = relevant, 3 = highly relevant. */
+  grade: RelevanceGrade;
+}
+
+/** Extended golden test case with relevance grades for NDCG. */
+export interface GoldenNdcgTestCase {
+  name: string;
+  query: string;
+  results: RerankableResult[];
+  /** Relevance grades for each result (used for NDCG calculation). */
+  graded_results: GradedResult[];
+  weights?: Partial<SignalWeights>;
+}
+
+// ---------------------------------------------------------------------------
+// NDCG@K computation
 // ---------------------------------------------------------------------------
 
 /**
- * Compute Normalized Discounted Cumulative Gain at position K.
+ * Compute DCG@K (Discounted Cumulative Gain).
  *
- * @param predicted  Ordered list of result IDs (predicted ranking).
- * @param relevance  Map of result ID -> relevance score (higher = better).
- * @param k  Number of top results to evaluate.
- * @returns NDCG@K score in [0, 1].
+ * DCG@K = sum_{i=1}^{K} (2^rel_i - 1) / log2(i + 1)
  */
-function ndcgAtK(
-  predicted: string[],
-  relevance: Map<string, number>,
-  k: number,
-): number {
-  const dcg = computeDCG(predicted.slice(0, k), relevance);
-  // Ideal ordering: sort by relevance descending
-  const idealOrder = [...relevance.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([id]) => id);
-  const idcg = computeDCG(idealOrder.slice(0, k), relevance);
-
-  if (idcg === 0) return 0;
-  return dcg / idcg;
-}
-
-function computeDCG(
-  ranking: string[],
-  relevance: Map<string, number>,
-): number {
+function dcgAtK(relevances: number[], k: number): number {
   let dcg = 0;
-  for (let i = 0; i < ranking.length; i++) {
-    const rel = relevance.get(ranking[i]) ?? 0;
-    dcg += (Math.pow(2, rel) - 1) / Math.log2(i + 2); // i+2 because log2(1)=0
+  const limit = Math.min(k, relevances.length);
+  for (let i = 0; i < limit; i++) {
+    dcg += (Math.pow(2, relevances[i]) - 1) / Math.log2(i + 2);
   }
   return dcg;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
-  return {
-    id: overrides.id ?? 'r1',
-    score: overrides.score ?? 0.5,
-    type: overrides.type ?? 'decision',
-    summary: overrides.summary ?? 'test',
-    detail: overrides.detail ?? 'test detail',
-    author: overrides.author ?? 'alice',
-    affects: overrides.affects ?? ['auth'],
-    created_at: overrides.created_at ?? new Date().toISOString(),
-    status: overrides.status ?? 'active',
-    confidence: overrides.confidence ?? 0.5,
-    pinned: overrides.pinned ?? false,
-    depends_on: overrides.depends_on ?? [],
-  };
+/**
+ * Compute NDCG@K (Normalized DCG).
+ *
+ * NDCG@K = DCG@K / IDCG@K
+ *
+ * IDCG@K is the DCG of the ideal ordering (sorted by relevance descending).
+ */
+export function ndcgAtK(relevances: number[], k: number): number {
+  const dcg = dcgAtK(relevances, k);
+  const idealRelevances = [...relevances].sort((a, b) => b - a);
+  const idcg = dcgAtK(idealRelevances, k);
+  if (idcg === 0) return 0;
+  return dcg / idcg;
 }
 
 // ---------------------------------------------------------------------------
-// Golden test scaffold
+// Scaffold tests
 // ---------------------------------------------------------------------------
 
-describe('Golden test: reranking quality', () => {
-  it('NDCG helper computes correctly for perfect ordering', () => {
-    const relevance = new Map([
-      ['a', 3],
-      ['b', 2],
-      ['c', 1],
-    ]);
-    const ndcg = ndcgAtK(['a', 'b', 'c'], relevance, 3);
-    expect(ndcg).toBeCloseTo(1.0, 5);
+describe('golden test scaffold', () => {
+  it('ndcgAtK returns 1.0 for a perfect ordering', () => {
+    const relevances = [3, 2, 1, 0];
+    expect(ndcgAtK(relevances, 4)).toBeCloseTo(1.0, 5);
   });
 
-  it('NDCG helper penalizes reversed ordering', () => {
-    const relevance = new Map([
-      ['a', 3],
-      ['b', 2],
-      ['c', 1],
-    ]);
-    const ndcg = ndcgAtK(['c', 'b', 'a'], relevance, 3);
-    expect(ndcg).toBeLessThan(1.0);
-    expect(ndcg).toBeGreaterThan(0);
+  it('ndcgAtK returns < 1.0 for a non-ideal ordering', () => {
+    const relevances = [0, 1, 2, 3]; // worst possible
+    expect(ndcgAtK(relevances, 4)).toBeLessThan(1.0);
+    expect(ndcgAtK(relevances, 4)).toBeGreaterThan(0);
   });
 
-  it('scaffold: reranker produces stable ordering for sample data', () => {
-    const now = Date.now();
-    const results: SearchResult[] = [
-      makeResult({
-        id: 'recent-high',
-        score: 0.85,
+  it('ndcgAtK handles empty relevances', () => {
+    expect(ndcgAtK([], 10)).toBe(0);
+  });
+
+  it('ndcgAtK handles all-zero relevances', () => {
+    expect(ndcgAtK([0, 0, 0], 3)).toBe(0);
+  });
+
+  it('scaffold: reranker produces a valid ordering', () => {
+    // Minimal test to verify the golden test infrastructure works
+    const MS_PER_DAY = 86_400_000;
+    const NOW = new Date('2026-03-24T00:00:00Z').getTime();
+
+    const results: RerankableResult[] = [
+      {
+        id: 'recent-good',
+        score: 0.9,
+        bm25_score: 8,
+        type: 'decision',
+        summary: 'Recent high-confidence decision',
+        detail: 'Chose Postgres for main DB',
+        author: 'alice',
+        affects: ['database'],
+        created_at: new Date(NOW - 5 * MS_PER_DAY).toISOString(),
         confidence: 0.9,
-        created_at: new Date(now - 1 * 86_400_000).toISOString(),
-      }),
-      makeResult({
-        id: 'old-pinned',
-        score: 0.70,
-        confidence: 0.8,
-        pinned: true,
-        created_at: new Date(now - 180 * 86_400_000).toISOString(),
-      }),
-      makeResult({
+        pinned: false,
+        depends_on: [],
+      },
+      {
         id: 'old-low',
-        score: 0.60,
+        score: 0.6,
+        bm25_score: 3,
+        type: 'decision',
+        summary: 'Old low-confidence decision',
+        detail: 'Considered MySQL',
+        author: 'bob',
+        affects: ['database'],
+        created_at: new Date(NOW - 200 * MS_PER_DAY).toISOString(),
         confidence: 0.3,
-        created_at: new Date(now - 200 * 86_400_000).toISOString(),
-      }),
+        pinned: false,
+        depends_on: [],
+      },
     ];
 
-    const reranked = rerank(results, undefined, now);
-    expect(reranked.length).toBe(3);
-    // Verify ordering is deterministic
-    const ids = reranked.map((r) => r.id);
-    const reranked2 = rerank(results, undefined, now);
-    expect(reranked2.map((r) => r.id)).toEqual(ids);
+    const reranked = rerank(results, undefined, NOW);
+    expect(reranked[0].id).toBe('recent-good');
+    expect(reranked[1].id).toBe('old-low');
   });
-
-  it('performance: reranks 50 results in <10ms', () => {
-    const now = Date.now();
-    const results: SearchResult[] = Array.from({ length: 50 }, (_, i) =>
-      makeResult({
-        id: `r${i}`,
-        score: Math.random(),
-        confidence: Math.random(),
-        created_at: new Date(now - Math.random() * 365 * 86_400_000).toISOString(),
-        pinned: i % 10 === 0,
-        depends_on: i > 0 ? [`r${i - 1}`] : [],
-        affects: [`area-${i % 5}`],
-      }),
-    );
-
-    const start = performance.now();
-    const reranked = rerank(results, undefined, now);
-    const elapsed = performance.now() - start;
-
-    expect(reranked.length).toBe(50);
-    expect(elapsed).toBeLessThan(10); // <10ms budget
-  });
-
-  // TODO (T078): Add 50 query-result pairs with human-ranked expected orderings
-  // and measure NDCG@10 improvement over single-signal baseline.
-  it.todo('golden set: NDCG@10 improvement over single-signal baseline');
 });

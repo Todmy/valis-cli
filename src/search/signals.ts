@@ -1,34 +1,37 @@
 /**
- * Individual signal computation functions for multi-signal reranking.
+ * Individual signal computation functions for the multi-signal reranker.
  *
- * All functions are pure (no side effects, no DB calls), return values
- * in the 0-1 range, and are designed for <10ms total on 50 results.
+ * Each function produces a value in [0, 1] suitable for weighted combination.
  *
  * @module search/signals
- * @phase 003-search-growth (T005)
  */
-
-import type { SearchResult } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // 1. Recency Decay
 // ---------------------------------------------------------------------------
 
+const MS_PER_DAY = 86_400_000;
+
 /**
- * Exponential decay based on decision age.
+ * Exponential recency decay.
  *
- * Formula: `Math.pow(0.5, ageDays / halfLifeDays)`
+ * Formula: `score = 0.5 ^ (ageDays / halfLifeDays)`
  *
- * Returns 1.0 for brand-new decisions, 0.5 at the half-life,
- * and asymptotically approaches 0.0 for very old decisions.
+ * | Age (days) | Score (half-life=90) |
+ * |-----------|----------------------|
+ * | 0         | 1.000                |
+ * | 30        | 0.794                |
+ * | 90        | 0.500                |
+ * | 180       | 0.250                |
+ * | 365       | 0.062                |
  *
- * Pinned decisions are exempt from decay — always return 1.0.
+ * Pinned decisions are exempt from decay and always return 1.0.
  *
- * @param createdAt  ISO-8601 timestamp of decision creation.
- * @param halfLifeDays  Number of days until score halves (default 90).
- * @param pinned  Whether the decision is pinned (exempt from decay).
- * @param now  Optional current timestamp for testing (defaults to Date.now()).
- * @returns Signal value in [0, 1].
+ * @param createdAt  ISO-8601 timestamp of the decision.
+ * @param halfLifeDays  Number of days until the score halves (default 90).
+ * @param pinned  If true, bypass decay and return 1.0.
+ * @param now  Current time in ms (injectable for testing).
+ * @returns A value in [0, 1].
  */
 export function recencyDecay(
   createdAt: string,
@@ -37,8 +40,9 @@ export function recencyDecay(
   now: number = Date.now(),
 ): number {
   if (pinned) return 1.0;
+  if (halfLifeDays <= 0) return 1.0;
 
-  const ageDays = (now - new Date(createdAt).getTime()) / 86_400_000;
+  const ageDays = (now - new Date(createdAt).getTime()) / MS_PER_DAY;
   if (ageDays <= 0) return 1.0;
 
   return Math.pow(0.5, ageDays / halfLifeDays);
@@ -49,14 +53,17 @@ export function recencyDecay(
 // ---------------------------------------------------------------------------
 
 /**
- * Importance signal combining confidence and pin boost.
+ * Importance signal combining confidence and pin status.
  *
- * Base confidence defaults to 0.5 when null/undefined.
- * Pinned decisions get a 2x boost, capped at 1.0.
+ * Formula: `score = min(1.0, (confidence ?? 0.5) * (pinned ? 2.0 : 1.0))`
+ *
+ * A pinned decision with confidence 0.8 gets importance 1.0 (clamped).
+ * An unpinned decision with confidence 0.5 gets importance 0.5.
+ * A null-confidence decision defaults to 0.5 baseline.
  *
  * @param confidence  Decision confidence (0-1), nullable.
  * @param pinned  Whether the decision is pinned.
- * @returns Signal value in [0, 1].
+ * @returns A value in [0, 1].
  */
 export function importanceScore(
   confidence: number | null | undefined,
@@ -74,69 +81,48 @@ export function importanceScore(
 /**
  * Graph connectivity signal based on inbound dependency count.
  *
- * Counts how many other results in the set reference `decisionId` in
- * their `depends_on` array. Normalized via log1p to dampen outliers,
- * then min-max normalized within the result set.
+ * For each result, counts how many other results in the set reference it
+ * in their `depends_on` array. Normalized via `log1p(deps) / log1p(maxDeps)`
+ * to compress the range and reduce outlier influence.
  *
- * When the result set has no inbound references at all, returns 0.0
- * for all decisions (no connectivity signal).
+ * When `maxDeps` is 0 (no dependencies in the result set), returns 0 for all.
  *
- * @param decisionId  The ID of the decision to score.
- * @param allResults  The full result set to compute connectivity within.
- * @returns Signal value in [0, 1].
+ * @param decisionId  The decision ID to compute connectivity for.
+ * @param allResults  The full set of results to count inbound references within.
+ * @returns A value in [0, 1].
  */
 export function graphConnectivity(
   decisionId: string,
-  allResults: SearchResult[],
+  allResults: Array<{ id: string; depends_on?: string[] }>,
 ): number {
-  // Compute raw inbound counts for all results
-  const counts = computeInboundCounts(allResults);
-  const raw = counts.get(decisionId) ?? 0;
+  // Count inbound references: how many results depend on this decision
+  let inbound = 0;
+  let maxInbound = 0;
 
-  // Apply log1p dampening
-  const logged = Math.log1p(raw);
-
-  // Find max log1p in set for normalization
-  let maxLogged = 0;
-  for (const count of counts.values()) {
-    const l = Math.log1p(count);
-    if (l > maxLogged) maxLogged = l;
+  // First pass: count inbound for every result to find the max
+  const inboundCounts = new Map<string, number>();
+  for (const r of allResults) {
+    inboundCounts.set(r.id, 0);
   }
 
-  if (maxLogged === 0) return 0.0;
-  return logged / maxLogged;
-}
-
-/**
- * Precompute inbound dependency counts for all results.
- *
- * For each result, count how many other results reference its ID
- * in their `depends_on` array.
- *
- * @returns Map of decisionId -> inbound count
- */
-export function computeInboundCounts(
-  results: SearchResult[],
-): Map<string, number> {
-  const counts = new Map<string, number>();
-
-  // Initialize all IDs to 0
-  for (const r of results) {
-    counts.set(r.id, 0);
-  }
-
-  // Count inbound references
-  const idSet = new Set(results.map((r) => r.id));
-  for (const r of results) {
+  for (const r of allResults) {
     if (!r.depends_on) continue;
     for (const depId of r.depends_on) {
-      if (idSet.has(depId)) {
-        counts.set(depId, (counts.get(depId) ?? 0) + 1);
+      const current = inboundCounts.get(depId);
+      if (current !== undefined) {
+        inboundCounts.set(depId, current + 1);
       }
     }
   }
 
-  return counts;
+  for (const count of inboundCounts.values()) {
+    if (count > maxInbound) maxInbound = count;
+  }
+
+  inbound = inboundCounts.get(decisionId) ?? 0;
+
+  if (maxInbound === 0) return 0;
+  return Math.log1p(inbound) / Math.log1p(maxInbound);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,18 +130,13 @@ export function computeInboundCounts(
 // ---------------------------------------------------------------------------
 
 /**
- * Min-max normalize BM25 scores to [0, 1].
+ * Min-max normalize an array of raw BM25 scores to [0, 1].
  *
- * Raw BM25 scores are unbounded (0.0+). This normalizes them within
- * the result set so the highest score maps to 1.0 and lowest to 0.0.
+ * - If all scores are equal, normalizes every value to 0.5.
+ * - If the array is empty, returns an empty array.
  *
- * Edge cases:
- * - All scores equal: return 0.5 for all.
- * - Empty array: return empty array.
- * - Single item: return 0.5.
- *
- * @param scores  Raw BM25 scores in result order.
- * @returns Normalized scores in [0, 1], same length and order.
+ * @param scores  Raw BM25 scores (unbounded positive values).
+ * @returns Normalized scores in [0, 1], same length and order as input.
  */
 export function normalizeBm25(scores: number[]): number[] {
   if (scores.length === 0) return [];
@@ -169,7 +150,6 @@ export function normalizeBm25(scores: number[]): number[] {
 
   const range = max - min;
   if (range === 0) {
-    // All equal (or single item) — return 0.5
     return scores.map(() => 0.5);
   }
 

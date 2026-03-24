@@ -181,12 +181,18 @@ export async function storeDecision(
   return data as Decision;
 }
 
+/**
+ * T020: Search decisions with optional project_id filter.
+ * When projectId is provided, passes p_project_id to the RPC.
+ * The RPC falls back to org-scoped search if the parameter is null.
+ */
 export async function searchDecisions(
   supabase: SupabaseClient,
   orgId: string,
   query: string,
   type?: string,
   limit = 10,
+  projectId?: string,
 ): Promise<Decision[]> {
   await setOrgContext(supabase, orgId);
   const { data, error } = await supabase
@@ -195,34 +201,48 @@ export async function searchDecisions(
       p_query: query,
       p_type: type || null,
       p_limit: limit,
+      p_project_id: projectId || null,
     });
 
   if (error) throw new Error(`Supabase search failed: ${error.message}`);
   return (data || []) as Decision[];
 }
 
+/**
+ * T020/T027: Dashboard stats with optional project_id scoping.
+ * When projectId is provided, all counts and recent decisions are
+ * filtered to that project only.
+ */
 export async function getDashboardStats(
   supabase: SupabaseClient,
   orgId: string,
+  projectId?: string,
 ): Promise<DashboardStats> {
   await setOrgContext(supabase, orgId);
   const { data, error } = await supabase
-    .rpc('get_dashboard_stats', { p_org_id: orgId });
+    .rpc('get_dashboard_stats', {
+      p_org_id: orgId,
+      p_project_id: projectId || null,
+    });
 
   if (error) throw new Error(`Supabase dashboard failed: ${error.message}`);
 
   const stats = data as Record<string, unknown>;
 
-  // Get recent 5
-  const { data: recent } = await supabase
+  // Get recent 5 — scoped to project when available
+  let recentQuery = supabase
     .from('decisions')
     .select('*')
-    .eq('org_id', orgId)
+    .eq('org_id', orgId);
+  if (projectId) {
+    recentQuery = recentQuery.eq('project_id', projectId);
+  }
+  const { data: recent } = await recentQuery
     .order('created_at', { ascending: false })
     .limit(5);
 
-  // Lifecycle stats: count by status
-  const allDecisions = await getAllDecisions(supabase, orgId);
+  // Lifecycle stats: count by status — scoped to project
+  const allDecisions = await getAllDecisions(supabase, orgId, projectId);
   const byStatus: Record<DecisionStatus, number> = {
     active: 0,
     deprecated: 0,
@@ -301,16 +321,23 @@ export async function batchStore(
   return stored;
 }
 
+/**
+ * T020: Fetch all decisions, optionally scoped to a project.
+ */
 export async function getAllDecisions(
   supabase: SupabaseClient,
   orgId: string,
+  projectId?: string,
 ): Promise<Decision[]> {
   await setOrgContext(supabase, orgId);
-  const { data, error } = await supabase
+  let query = supabase
     .from('decisions')
     .select('*')
-    .eq('org_id', orgId)
-    .order('created_at', { ascending: false });
+    .eq('org_id', orgId);
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+  const { data, error } = await query.order('created_at', { ascending: false });
 
   if (error) throw new Error(`Failed to fetch decisions: ${error.message}`);
   return (data || []) as Decision[];
@@ -321,20 +348,24 @@ export async function getAllDecisions(
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch all proposed decisions for an org, ordered by creation date (newest first).
+ * T020: Fetch all proposed decisions, optionally scoped to a project.
  * Used by the dashboard to display the "Proposed (N)" section.
  */
 export async function getProposedDecisions(
   supabase: SupabaseClient,
   orgId: string,
+  projectId?: string,
 ): Promise<Decision[]> {
   await setOrgContext(supabase, orgId);
-  const { data, error } = await supabase
+  let query = supabase
     .from('decisions')
     .select('*')
     .eq('org_id', orgId)
-    .eq('status', 'proposed')
-    .order('created_at', { ascending: false });
+    .eq('status', 'proposed');
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+  const { data, error } = await query.order('created_at', { ascending: false });
 
   if (error) throw new Error(`Failed to fetch proposed decisions: ${error.message}`);
   return (data || []) as Decision[];
@@ -469,20 +500,23 @@ export async function storeAuditEntry(
 }
 
 /**
- * Find active decisions with overlapping `affects` areas via the
- * `find_contradictions` RPC function.
+ * T020/T026: Find active decisions with overlapping `affects` areas,
+ * optionally scoped to a project.
  *
  * Used by the contradiction detection pipeline (Tier 1 — area overlap).
+ * Cross-project contradictions are not possible by design (T026).
  */
 export async function findContradictionCandidates(
   supabase: SupabaseClient,
   orgId: string,
   affects: string[],
+  projectId?: string,
 ): Promise<Decision[]> {
   const { data, error } = await supabase
     .rpc('find_contradictions', {
       p_org_id: orgId,
       p_affects: affects,
+      p_project_id: projectId || null,
     });
 
   if (error) throw new Error(`Failed to find contradiction candidates: ${error.message}`);
@@ -510,19 +544,143 @@ export async function getAuditTrail(
 }
 
 /**
- * Retrieve all open contradictions for an org.
+ * T020: Retrieve all open contradictions, optionally scoped to a project.
  */
 export async function getOpenContradictions(
   supabase: SupabaseClient,
   orgId: string,
+  projectId?: string,
 ): Promise<Contradiction[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from('contradictions')
     .select('*')
     .eq('org_id', orgId)
-    .eq('status', 'open')
-    .order('detected_at', { ascending: false });
+    .eq('status', 'open');
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+  const { data, error } = await query.order('detected_at', { ascending: false });
 
   if (error) throw new Error(`Failed to get open contradictions: ${error.message}`);
   return (data || []) as Contradiction[];
+}
+
+// ---------------------------------------------------------------------------
+// Project listing (Phase 4 — Multi-Project)
+// ---------------------------------------------------------------------------
+
+/** Minimal project info returned by list_member_projects RPC. */
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  role: string;
+  decision_count: number;
+}
+
+/**
+ * List all projects a member has access to via the `list_member_projects` RPC.
+ *
+ * Falls back to a direct query on `project_members` joined with `projects`
+ * if the RPC is not yet deployed.
+ */
+export async function listMemberProjects(
+  supabase: SupabaseClient,
+  memberId: string,
+): Promise<ProjectInfo[]> {
+  // Try RPC first
+  const { data, error } = await supabase.rpc('list_member_projects', {
+    p_member_id: memberId,
+  });
+
+  if (error) {
+    // Fallback: direct query if RPC doesn't exist yet
+    const { data: fallbackData, error: fallbackError } = await supabase
+      .from('project_members')
+      .select('project_id, role, projects(id, name)')
+      .eq('member_id', memberId);
+
+    if (fallbackError) {
+      throw new Error(`Failed to list member projects: ${fallbackError.message}`);
+    }
+
+    return (fallbackData || []).map((row: Record<string, unknown>) => {
+      const project = row.projects as Record<string, unknown> | null;
+      return {
+        id: (project?.id as string) ?? (row.project_id as string),
+        name: (project?.name as string) ?? 'unknown',
+        role: row.role as string,
+        decision_count: 0,
+      };
+    });
+  }
+
+  return (data || []) as ProjectInfo[];
+}
+
+/** Response from the create-project Edge Function. */
+export interface CreateProjectResponse {
+  project_id: string;
+  project_name: string;
+  invite_code: string;
+  role: string;
+}
+
+/**
+ * Create a new project within an org by calling the create-project Edge Function.
+ */
+export async function createProject(
+  supabaseUrl: string,
+  apiKey: string,
+  orgId: string,
+  projectName: string,
+): Promise<CreateProjectResponse> {
+  const response = await fetch(`${supabaseUrl}/functions/v1/create-project`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ org_id: orgId, project_name: projectName }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'unknown error' }));
+    throw new Error(`Failed to create project: ${(error as Record<string, string>).error || 'unknown error'}`);
+  }
+
+  return response.json() as Promise<CreateProjectResponse>;
+}
+
+/** Response from the join-project Edge Function. */
+export interface JoinProjectResponse {
+  org_id: string;
+  org_name: string;
+  project_id: string;
+  project_name: string;
+  api_key: string;
+  member_api_key?: string;
+  member_id?: string;
+  role: string;
+}
+
+/**
+ * Join an existing project via invite code by calling the join-project Edge Function.
+ */
+export async function joinProject(
+  supabaseUrl: string,
+  inviteCode: string,
+  authorName: string,
+): Promise<JoinProjectResponse> {
+  const response = await fetch(`${supabaseUrl}/functions/v1/join-project`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invite_code: inviteCode, author_name: authorName }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'unknown error' }));
+    throw new Error(`Failed to join project: ${(error as Record<string, string>).error || 'unknown error'}`);
+  }
+
+  return response.json() as Promise<JoinProjectResponse>;
 }

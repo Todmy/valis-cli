@@ -38,6 +38,7 @@ export function buildNewDecisionEvent(
 
 // ---------------------------------------------------------------------------
 // T018: Cross-session push event builders
+// T031: Project context in push events (project_id + project_name)
 // ---------------------------------------------------------------------------
 
 /** Input for buildRemoteDecisionEvent — subset of Decision fields. */
@@ -46,6 +47,10 @@ export interface RemoteDecisionInput {
   type: DecisionType;
   summary: string;
   detail: string;
+  /** T031: project_id from the decision payload. */
+  project_id?: string;
+  /** T031: project_name for display in push notification. */
+  project_name?: string;
 }
 
 /**
@@ -53,18 +58,26 @@ export interface RemoteDecisionInput {
  * (i.e., stored by a different session).
  *
  * Distinguished from local push by `origin: remote` in meta.
+ * T031: Includes project_id and project_name when available.
  */
 export function buildRemoteDecisionEvent(decision: RemoteDecisionInput): ChannelEvent {
+  const projectPrefix = decision.project_name
+    ? `[${decision.project_name}] `
+    : '';
+  const meta: Record<string, string> = {
+    event: 'new_decision',
+    author: decision.author,
+    type: decision.type,
+    origin: 'remote',
+  };
+  if (decision.project_id) meta.project_id = decision.project_id;
+  if (decision.project_name) meta.project_name = decision.project_name;
+
   return {
     source: 'teamind',
     event: 'new_decision',
-    content: decision.summary || decision.detail.substring(0, 100),
-    meta: {
-      event: 'new_decision',
-      author: decision.author,
-      type: decision.type,
-      origin: 'remote',
-    },
+    content: `${projectPrefix}${decision.summary || decision.detail.substring(0, 100)}`,
+    meta,
   };
 }
 
@@ -75,11 +88,15 @@ export interface DeprecationInput {
   detail: string;
   status: DecisionStatus;
   status_reason?: string;
+  /** T031: project_id from the decision payload. */
+  project_id?: string;
 }
 
 /**
  * Build a channel event for a decision that has been deprecated or
  * superseded by another session.
+ *
+ * T031: Includes project_id when available.
  */
 export function buildDeprecationEvent(
   decision: DeprecationInput,
@@ -90,17 +107,20 @@ export function buildDeprecationEvent(
     : '';
   const label = decision.status === 'superseded' ? 'superseded' : 'deprecated';
 
+  const meta: Record<string, string> = {
+    event: 'decision_deprecated',
+    author: changedBy,
+    type: 'info',
+    status: decision.status,
+  };
+  if (decision.project_id) meta.project_id = decision.project_id;
+
   return {
     source: 'teamind',
     event: 'decision_deprecated',
     content:
       `Decision ${label} by ${changedBy}: "${decision.summary || decision.detail.substring(0, 100)}"${reason}`,
-    meta: {
-      event: 'decision_deprecated',
-      author: changedBy,
-      type: 'info',
-      status: decision.status,
-    },
+    meta,
   };
 }
 
@@ -113,13 +133,23 @@ export interface ContradictionInput {
 /**
  * Build a channel event when a contradiction is detected between two
  * decisions.
+ *
+ * T031: Accepts optional project_id for project-scoped contradiction context.
  */
 export function buildContradictionEvent(
   decisionA: ContradictionInput,
   decisionB: ContradictionInput,
   overlapAreas: string[],
+  projectId?: string,
 ): ChannelEvent {
   const areas = overlapAreas.join(', ');
+  const meta: Record<string, string> = {
+    event: 'contradiction_detected',
+    author: decisionA.author,
+    type: 'warning',
+  };
+  if (projectId) meta.project_id = projectId;
+
   return {
     source: 'teamind',
     event: 'contradiction_detected',
@@ -127,11 +157,7 @@ export function buildContradictionEvent(
       `Potential contradiction: "${decisionA.summary}" by ${decisionA.author} ` +
       `conflicts with "${decisionB.summary}" by ${decisionB.author} (area: ${areas}). ` +
       `Both remain active — resolve via deprecation or replacement.`,
-    meta: {
-      event: 'contradiction_detected',
-      author: decisionA.author,
-      type: 'warning',
-    },
+    meta,
   };
 }
 

@@ -1,11 +1,15 @@
 import { loadConfig } from '../../config/store.js';
-import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
+import { resolveConfig } from '../../config/project.js';
+import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
+import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
 import type { SearchResponse, SearchResult, DecisionStatus } from '../../types.js';
 
 interface SearchArgs {
   query: string;
   type?: 'decision' | 'constraint' | 'pattern' | 'lesson';
   limit?: number;
+  /** T021: When true, search across all projects the member has access to. */
+  all_projects?: boolean;
 }
 
 /** Status priority for ranking: lower = higher priority. */

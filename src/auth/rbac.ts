@@ -1,5 +1,5 @@
 /**
- * T005: Role-Based Access Control (RBAC) module.
+ * T005 + T014: Role-Based Access Control (RBAC) module.
  *
  * Pure functions — no side effects, no external imports except types.
  *
@@ -7,9 +7,14 @@
  *   - Any member: store, search, deprecate, promote
  *   - Admin only: rotate keys, revoke members, manage org settings
  *   - Admin OR original author: supersede (via replaces)
+ *
+ * Project-level permission rules (T014 — US2):
+ *   - project_member: store, search, deprecate, promote within project
+ *   - project_admin: above + supersede, manage project members, rotate project invite
+ *   - org admin: implicit access to all projects, all project_admin permissions
  */
 
-import type { MemberRole, AuditAction } from '../types.js';
+import type { MemberRole, AuditAction, ProjectRole } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Actions any authenticated member may perform
@@ -134,6 +139,115 @@ export function canChangeStatus(
     case 'pin':
     case 'unpin':
       return memberRole === 'admin';
+    default:
+      return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Project-level permission checks (T014 — US2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the effective project role from JWT claims.
+ *
+ * Org admins have implicit project_admin access to all projects.
+ * If a project_role is present in the JWT claims, it is used directly.
+ * Otherwise, org admins get project_admin and everyone else gets undefined.
+ */
+export function resolveProjectRole(
+  orgRole: MemberRole,
+  projectRole?: ProjectRole | null,
+): ProjectRole | undefined {
+  // Org admins always have project_admin-equivalent access
+  if (orgRole === 'admin') return 'project_admin';
+  // Explicit project role from JWT
+  if (projectRole) return projectRole;
+  // No project access
+  return undefined;
+}
+
+/**
+ * Check whether a member can access a specific project.
+ *
+ * Access is granted when:
+ *   - The member is in project_members for this project, OR
+ *   - The member is an org admin (implicit access to all projects).
+ *
+ * @param orgRole - The member's org-level role ('admin' | 'member')
+ * @param projectRole - The project-level role from JWT claims (undefined = not a project member)
+ */
+export function canAccessProject(
+  orgRole: MemberRole,
+  projectRole?: ProjectRole | null,
+): boolean {
+  // Org admins have implicit access to all projects
+  if (orgRole === 'admin') return true;
+  // Explicit project membership
+  return projectRole != null;
+}
+
+/**
+ * Check whether a member can manage project members (add/remove).
+ *
+ * Allowed when:
+ *   - The member has project_admin role, OR
+ *   - The member is an org admin.
+ */
+export function canManageProjectMembers(
+  orgRole: MemberRole,
+  projectRole?: ProjectRole | null,
+): boolean {
+  if (orgRole === 'admin') return true;
+  return projectRole === 'project_admin';
+}
+
+/**
+ * Check whether a member can rotate a project's invite code.
+ *
+ * Allowed when:
+ *   - The member has project_admin role, OR
+ *   - The member is an org admin.
+ */
+export function canRotateProjectInvite(
+  orgRole: MemberRole,
+  projectRole?: ProjectRole | null,
+): boolean {
+  if (orgRole === 'admin') return true;
+  return projectRole === 'project_admin';
+}
+
+/**
+ * Check whether a role may perform a given status transition within a project.
+ *
+ * Uses the effective project role rather than the org role:
+ *   - project_member: can deprecate, promote
+ *   - project_admin or org admin: can also supersede
+ *   - pin / unpin: org admin only (org-level privilege)
+ *
+ * @param orgRole - The member's org-level role
+ * @param projectRole - The project-level role from JWT claims
+ * @param transition - The status transition to check
+ */
+export function canChangeStatusInProject(
+  orgRole: MemberRole,
+  projectRole: ProjectRole | undefined | null,
+  transition: string,
+): boolean {
+  const effectiveRole = resolveProjectRole(orgRole, projectRole);
+  if (!effectiveRole) return false; // no project access at all
+
+  switch (transition) {
+    case 'deprecate':
+    case 'promote':
+      return true; // any project member
+    case 'supersede':
+      // project_admin or org admin
+      return orgRole === 'admin' || effectiveRole === 'project_admin';
+    case 'pin':
+    case 'unpin':
+      // Org admin only — pin/unpin is an org-level privilege
+      return orgRole === 'admin';
     default:
       return false;
   }

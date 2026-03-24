@@ -8,6 +8,40 @@ export interface Organization {
   created_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// Project (Phase 4 — Multi-Project Support)
+// ---------------------------------------------------------------------------
+
+export type ProjectRole = 'project_admin' | 'project_member';
+
+export interface Project {
+  id: string;
+  org_id: string;
+  name: string;
+  invite_code: string;
+  created_at: string;
+}
+
+export interface ProjectMember {
+  id: string;
+  project_id: string;
+  member_id: string;
+  role: ProjectRole;
+  joined_at: string;
+}
+
+/** Per-directory project config stored in `.teamind.json`. */
+export interface ProjectConfig {
+  project_id: string;
+  project_name: string;
+}
+
+/** Resolved config combining global TeamindConfig with per-directory ProjectConfig. */
+export interface ResolvedConfig {
+  global: TeamindConfig | null;
+  project: ProjectConfig | null;
+}
+
 export interface Member {
   id: string;
   org_id: string;
@@ -33,7 +67,8 @@ export interface Decision {
   status: DecisionStatus;
   author: string;
   source: DecisionSource;
-  project_id: string | null;
+  /** UUID FK to projects.id. Required after migration 004. */
+  project_id: string;
   session_id: string | null;
   content_hash: string;
   confidence: number | null;
@@ -86,13 +121,19 @@ export type AuditAction =
   | 'decision_unpinned'
   | 'decision_enriched'
   | 'decision_auto_deduped'
-  | 'pattern_synthesized';
+  | 'pattern_synthesized'
+  | 'project_created'
+  | 'project_member_added'
+  | 'project_member_removed'
+  | 'migration_default_project';
 
 export type AuditTargetType = 'decision' | 'member' | 'org';
 
 export interface AuditEntry {
   id: string;
   org_id: string;
+  /** Project UUID. Nullable — org-level actions have no project. */
+  project_id?: string | null;
   member_id: string;
   action: AuditAction;
   target_type: AuditTargetType;
@@ -112,6 +153,8 @@ export type ContradictionStatus = 'open' | 'resolved';
 export interface Contradiction {
   id: string;
   org_id: string;
+  /** Project UUID. Required after migration 004. */
+  project_id: string;
   decision_a_id: string;
   decision_b_id: string;
   overlap_areas: string[];
@@ -221,6 +264,12 @@ export interface ExchangeTokenResponse {
   role: MemberRole;
   author_name: string;
   auth_mode: AuthMode;
+  /** Project UUID when a project-scoped JWT was requested. */
+  project_id?: string;
+  /** Project name when a project-scoped JWT was requested. */
+  project_name?: string;
+  /** Project-level role when a project-scoped JWT was requested. */
+  project_role?: ProjectRole;
 }
 
 export interface TokenCache {
@@ -229,6 +278,10 @@ export interface TokenCache {
   org_id: string;
   role: MemberRole;
   author_name: string;
+  /** Project UUID for project-scoped tokens. Undefined for org-level tokens. */
+  project_id?: string;
+  /** Project-level role for project-scoped tokens. */
+  project_role?: ProjectRole;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +306,10 @@ export interface TeamindConfig {
   member_api_key?: string | null;
   /** Member UUID resolved during JWT auth. Null when using legacy mode. */
   member_id?: string | null;
+  /** Active project UUID from resolved config. Null when no project configured. */
+  project_id?: string | null;
+  /** Active project name from resolved config. Null when no project configured. */
+  project_name?: string | null;
 }
 
 export interface StoreResponse {
@@ -296,6 +353,10 @@ export interface SearchResult {
   bm25_score?: number;
   /** Human-readable status label for non-active decisions (e.g. 'proposed', 'deprecated'). */
   status_label?: string;
+  /** Project name label for cross-project search results (Phase 4 — US3). */
+  project_name?: string;
+  /** Project UUID from Qdrant payload (Phase 4 — US3). */
+  project_id?: string;
 }
 
 // ---------------------------------------------------------------------------

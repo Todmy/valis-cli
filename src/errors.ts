@@ -98,6 +98,61 @@ export const ERRORS = {
     why: 'The synthesis algorithm did not find enough clustered decisions to form a pattern (minimum 3 decisions with shared areas).',
     fix: 'This is informational. Patterns emerge naturally as more decisions are stored with overlapping affects areas.',
   },
+  // Phase 4: Multi-Project Support
+  no_project_configured: {
+    code: 'no_project_configured',
+    what: 'No project configured for this directory',
+    why: 'This command requires a project context but no .teamind.json was found in this directory or any parent.',
+    fix: 'Run `teamind init` in your project directory to create or select a project, or `teamind init --join <invite-code>` to join one.',
+  },
+  project_not_found: {
+    code: 'project_not_found',
+    what: 'Project not found',
+    why: 'The specified project ID or name does not exist in your organization.',
+    fix: 'Run `teamind switch` to see available projects, or `teamind init` to create a new one.',
+  },
+  no_project_access: {
+    code: 'no_project_access',
+    what: 'No access to this project',
+    why: 'You are not a member of the requested project and do not have org admin privileges.',
+    fix: 'Ask a project admin to invite you using the project invite code, or run `teamind init --join <invite-code>`.',
+  },
+  wrong_project: {
+    code: 'wrong_project',
+    what: 'Decision belongs to a different project',
+    why: 'The target decision belongs to a project that does not match your current project context.',
+    fix: 'Switch to the correct project with `teamind switch --project <name>` or `cd` to the directory configured for that project.',
+  },
+  project_name_exists: {
+    code: 'project_name_exists',
+    what: 'Project name already exists',
+    why: 'A project with this name already exists in your organization. Project names must be unique within an org.',
+    fix: 'Choose a different project name.',
+  },
+  project_name_required: {
+    code: 'project_name_required',
+    what: 'Project name is required',
+    why: 'A project name must be provided to create a new project.',
+    fix: 'Provide a project name (1-100 characters).',
+  },
+  project_name_too_long: {
+    code: 'project_name_too_long',
+    what: 'Project name is too long',
+    why: 'Project names must be between 1 and 100 characters.',
+    fix: 'Shorten the project name to 100 characters or fewer.',
+  },
+  already_project_member: {
+    code: 'already_project_member',
+    what: 'Already a member of this project',
+    why: 'You are already a member of the project associated with this invite code.',
+    fix: 'No action needed. Run `teamind status` to see your current project.',
+  },
+  invalid_project_config: {
+    code: 'invalid_project_config',
+    what: 'Invalid project configuration',
+    why: 'The .teamind.json file in this directory is malformed or contains invalid data.',
+    fix: 'Delete the .teamind.json file and run `teamind init` to recreate it, or fix the JSON manually.',
+  },
 } as const satisfies Record<string, TeamindError>;
 
 export function formatError(error: TeamindError): string {

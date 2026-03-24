@@ -1,9 +1,11 @@
 /**
  * T017: Supabase Realtime subscription for cross-session push.
+ * T029: Project-scoped Realtime — filter by project_id instead of org_id.
  *
  * Subscribes to postgres_changes (INSERT + UPDATE) on the `decisions` table
- * filtered by org_id. Parses payloads, deduplicates against local stores,
- * and emits channel events for the local MCP session.
+ * filtered by project_id (or org_id as fallback when no project configured).
+ * Parses payloads, deduplicates against local stores, and emits channel
+ * events for the local MCP session.
  *
  * Key constraint: Supabase Realtime does NOT buffer messages (FR-008).
  * On reconnect a fresh subscribe is issued — no backlog is delivered.
@@ -100,6 +102,7 @@ export function handleInsertEvent(
     type: row.type ?? 'decision',
     summary: row.summary ?? row.detail.substring(0, 100),
     detail: row.detail,
+    project_id: (row.project_id as string) ?? undefined,
   });
 }
 
@@ -155,6 +158,7 @@ export function handleUpdateEvent(
           detail: row.detail,
           status: newStatus,
           status_reason: (row.status_reason as string) ?? undefined,
+          project_id: (row.project_id as string) ?? undefined,
         },
         changedBy,
       );
@@ -165,20 +169,14 @@ export function handleUpdateEvent(
 }
 
 // ---------------------------------------------------------------------------
-// Subscription
+// Internal helper — builds a subscription on a given channel/filter pair
 // ---------------------------------------------------------------------------
 
-/**
- * Subscribe to Supabase Realtime postgres_changes for an org's decisions.
- *
- * Listens for INSERT (new decisions from other sessions) and UPDATE
- * (status changes like deprecation/supersession).
- *
- * Returns a RealtimeSubscription object with status and unsubscribe().
- */
-export function subscribeToOrg(
+function buildSubscription(
   supabase: SupabaseClient,
-  orgId: string,
+  channelName: string,
+  filterColumn: string,
+  filterValue: string,
   options: SubscribeOptions,
 ): RealtimeSubscription {
   const { localAuthor, onEvent, onError, onStatusChange } = options;
@@ -196,14 +194,14 @@ export function subscribeToOrg(
   };
 
   const channel = supabase
-    .channel(`org:${orgId}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
         event: 'INSERT',
         schema: 'public',
         table: 'decisions',
-        filter: `org_id=eq.${orgId}`,
+        filter: `${filterColumn}=eq.${filterValue}`,
       },
       (payload) => {
         try {
@@ -223,7 +221,7 @@ export function subscribeToOrg(
         event: 'UPDATE',
         schema: 'public',
         table: 'decisions',
-        filter: `org_id=eq.${orgId}`,
+        filter: `${filterColumn}=eq.${filterValue}`,
       },
       (payload) => {
         try {
@@ -265,4 +263,71 @@ export function subscribeToOrg(
   };
 
   return subscription;
+}
+
+// ---------------------------------------------------------------------------
+// Subscription
+// ---------------------------------------------------------------------------
+
+/**
+ * T029: Subscribe to Supabase Realtime postgres_changes scoped to a project.
+ *
+ * Uses channel name `project:${projectId}` and filters by
+ * `project_id=eq.${projectId}`.
+ *
+ * Returns a RealtimeSubscription object with status and unsubscribe().
+ */
+export function subscribeToProject(
+  supabase: SupabaseClient,
+  projectId: string,
+  options: SubscribeOptions,
+): RealtimeSubscription {
+  return buildSubscription(
+    supabase,
+    `project:${projectId}`,
+    'project_id',
+    projectId,
+    options,
+  );
+}
+
+/**
+ * Subscribe to Supabase Realtime postgres_changes for an org's decisions.
+ *
+ * Kept for backward compatibility / migration fallback when no project_id
+ * is configured. Prefer subscribeToProject when a project is available.
+ *
+ * Listens for INSERT (new decisions from other sessions) and UPDATE
+ * (status changes like deprecation/supersession).
+ *
+ * Returns a RealtimeSubscription object with status and unsubscribe().
+ */
+export function subscribeToOrg(
+  supabase: SupabaseClient,
+  orgId: string,
+  options: SubscribeOptions,
+): RealtimeSubscription {
+  return buildSubscription(
+    supabase,
+    `org:${orgId}`,
+    'org_id',
+    orgId,
+    options,
+  );
+}
+
+/**
+ * T029: Smart subscribe — uses project-scoped channel when a projectId is
+ * provided, falls back to org-level subscription during migration.
+ */
+export function subscribe(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId: string | undefined,
+  options: SubscribeOptions,
+): RealtimeSubscription {
+  if (projectId) {
+    return subscribeToProject(supabase, projectId, options);
+  }
+  return subscribeToOrg(supabase, orgId, options);
 }

@@ -22,6 +22,7 @@ export async function runSeed(
   author: string,
   supabase: SupabaseClient,
   qdrant: QdrantClient,
+  projectId?: string,
 ): Promise<SeedResult> {
   const result: SeedResult = {
     total: 0,
@@ -57,8 +58,10 @@ export async function runSeed(
     seenHashes.add(hash);
 
     try {
-      const decision = await storeDecision(supabase, orgId, raw, author, 'seed' as DecisionSource);
-      await upsertDecision(qdrant, orgId, decision.id, raw, author).catch(() => {
+      // Inject project_id into each seeded decision when available
+      const rawWithProject = projectId ? { ...raw, project_id: projectId } : raw;
+      const decision = await storeDecision(supabase, orgId, rawWithProject, author, 'seed' as DecisionSource);
+      await upsertDecision(qdrant, orgId, decision.id, rawWithProject, author).catch(() => {
         // Qdrant failure non-critical during seed
       });
       result.stored++;

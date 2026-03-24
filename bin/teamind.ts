@@ -16,6 +16,7 @@ import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
 import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
+import { switchCommand } from '../src/commands/switch.js';
 
 const program = new Command();
 
@@ -39,11 +40,17 @@ program
 
 program
   .command('switch')
-  .description('Switch to a different org (join a team from community setup)')
-  .requiredOption('--join <invite-code>', 'Invite code for the org to join')
+  .description('Switch org (--join) or project (--project) for the current directory')
+  .option('--join <invite-code>', 'Invite code for the org to join')
+  .option('--project <name-or-id>', 'Project name or UUID to switch to')
   .action(async (options) => {
     try {
-      await switchOrgCommand(options);
+      if (options.join) {
+        await switchOrgCommand(options);
+      } else {
+        // --project flag or interactive mode
+        await switchCommand(options);
+      }
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

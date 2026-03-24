@@ -1,4 +1,5 @@
 import { loadConfig } from '../config/store.js';
+import { findProjectConfig } from '../config/project.js';
 import { createMcpServer } from '../mcp/server.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { startWatcher, saveState, initWatcherState } from '../capture/watcher.js';
@@ -6,7 +7,7 @@ import { startHookHandler, stopHookHandler } from '../capture/hook-handler.js';
 import { startupSweep } from '../capture/startup-sweep.js';
 import { buildCaptureReminder } from '../channel/push.js';
 import { getSupabaseClient } from '../cloud/supabase.js';
-import { subscribeToOrg, type RealtimeSubscription } from '../cloud/realtime.js';
+import { subscribe, type RealtimeSubscription } from '../cloud/realtime.js';
 import { setRealtimeStatus, type RealtimeStatus } from './status.js';
 
 export async function serveCommand(): Promise<void> {
@@ -14,6 +15,17 @@ export async function serveCommand(): Promise<void> {
   if (!config) {
     console.error('Error: Teamind not configured. Run `teamind init` first.');
     process.exit(1);
+  }
+
+  // T030: Resolve project config from .teamind.json for project-scoped Realtime
+  const projectConfig = await findProjectConfig(process.cwd());
+  const projectId = projectConfig?.project_id;
+  const projectName = projectConfig?.project_name;
+
+  if (projectName) {
+    console.error(`[project] Active project: ${projectName} (${projectId})`);
+  } else {
+    console.error('[project] No project configured — using org-level subscription');
   }
 
   // 1. Startup sweep (async, non-blocking)
@@ -57,7 +69,7 @@ export async function serveCommand(): Promise<void> {
       config.supabase_service_role_key,
     );
 
-    realtimeSub = subscribeToOrg(supabase, config.org_id, {
+    realtimeSub = subscribe(supabase, config.org_id, projectId, {
       localAuthor: config.author_name,
       onEvent: (event) => {
         // Push to local MCP channel via server logging notification
@@ -83,17 +95,23 @@ export async function serveCommand(): Promise<void> {
       },
       onStatusChange: (status: RealtimeStatus) => {
         setRealtimeStatus(status);
+        const channelLabel = projectId
+          ? `project:${projectName ?? projectId}`
+          : `org:${config.org_id}`;
         if (status === 'degraded') {
           console.error('[realtime] Connection degraded — pull-based tools still work');
         } else if (status === 'disconnected') {
           console.error('[realtime] Disconnected');
         } else if (status === 'connected') {
-          console.error('[realtime] Connected to org channel');
+          console.error(`[realtime] Connected to ${channelLabel} channel`);
         }
       },
     });
 
-    console.error(`[realtime] Subscribing to org:${config.org_id}...`);
+    const subscribeLabel = projectId
+      ? `project:${projectId}`
+      : `org:${config.org_id}`;
+    console.error(`[realtime] Subscribing to ${subscribeLabel}...`);
   } catch (err) {
     console.error(
       `[realtime] Failed to subscribe: ${(err as Error).message}. ` +

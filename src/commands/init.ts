@@ -6,6 +6,7 @@ import { trackFile } from '../config/manifest.js';
 import { detectIDEs } from '../ide/detect.js';
 import { configureClaudeCodeMCP, injectClaudeMdMarkers } from '../ide/claude-code.js';
 import { configureCodexMCP, injectAgentsMdMarkers } from '../ide/codex.js';
+import { configureCursorMCP, injectCursorrules } from '../ide/cursor.js';
 import { runSeed } from '../seed/index.js';
 import { getSupabaseClient } from '../cloud/supabase.js';
 import { getQdrantClient, ensureCollection } from '../cloud/qdrant.js';
@@ -157,6 +158,10 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       await configureCodexMCP();
       await injectAgentsMdMarkers(process.cwd());
       console.log(pc.green('  ✓ Codex: MCP configured, AGENTS.md updated'));
+    } else if (ide.name === 'cursor') {
+      await configureCursorMCP();
+      await injectCursorrules(process.cwd());
+      console.log(pc.green('  ✓ Cursor: MCP configured, .cursorrules updated'));
     }
   }
 

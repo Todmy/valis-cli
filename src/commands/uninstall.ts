@@ -39,7 +39,8 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
         }
 
         case 'claude_md_marker':
-        case 'agents_md_marker': {
+        case 'agents_md_marker':
+        case 'cursorrules_marker': {
           // Remove teamind markers
           try {
             const content = await readFile(entry.path, 'utf-8');

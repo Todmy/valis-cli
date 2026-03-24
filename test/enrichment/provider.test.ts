@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { parseEnrichmentResponse, ENRICHMENT_SYSTEM_PROMPT } from '../../src/enrichment/provider.js';
 import type { EnrichmentProvider, ProviderEnrichmentResult } from '../../src/enrichment/provider.js';
-import { getProvider } from '../../src/enrichment/runner.js';
+import { getProvider, runEnrichment } from '../../src/enrichment/runner.js';
 
 // ---------------------------------------------------------------------------
 // parseEnrichmentResponse
@@ -244,9 +244,6 @@ describe('getProvider', () => {
 // ---------------------------------------------------------------------------
 
 describe('runEnrichment', () => {
-  // We test the no-provider and dry-run paths which don't need real clients
-  const { runEnrichment } = await import('../../src/enrichment/runner.js');
-
   const originalEnv = { ...process.env };
 
   beforeEach(() => {

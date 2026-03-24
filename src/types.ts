@@ -312,6 +312,37 @@ export interface TeamindConfig {
   project_name?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Registration API (Phase 5 — Registration & Public Join)
+// ---------------------------------------------------------------------------
+
+/** Response from the public `/functions/v1/register` endpoint. */
+export interface RegistrationResponse {
+  member_api_key: string;
+  supabase_url: string;
+  qdrant_url: string;
+  org_id: string;
+  org_name: string;
+  project_id: string;
+  project_name: string;
+  invite_code: string;
+}
+
+/** Response from the public `/functions/v1/join-project` endpoint. */
+export interface JoinPublicResponse {
+  org_id: string;
+  org_name: string;
+  project_id: string;
+  project_name: string;
+  member_api_key: string;
+  member_id: string;
+  supabase_url: string;
+  qdrant_url: string;
+  member_count: number;
+  decision_count: number;
+  role: MemberRole;
+}
+
 export interface StoreResponse {
   id: string;
   status: 'stored' | 'duplicate';
@@ -587,4 +618,42 @@ export interface PatternCandidate {
   cohesion: number;
   /** Whether a matching pattern already exists (idempotency check). */
   already_exists: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Registration API (Phase 5 — 005-registration-api)
+// ---------------------------------------------------------------------------
+
+/** Public Supabase URL for hosted mode (not a secret). */
+export const HOSTED_SUPABASE_URL = 'https://your-project.supabase.co';
+
+/** Public Qdrant URL for hosted mode (not a secret). */
+export const HOSTED_QDRANT_URL = 'https://your-cluster.qdrant.io';
+
+/** Response from the public `/functions/v1/register` endpoint. */
+export interface RegistrationResponse {
+  member_api_key: string;
+  supabase_url: string;
+  qdrant_url: string;
+  org_id: string;
+  org_name: string;
+  project_id: string;
+  project_name: string;
+  invite_code: string;
+  member_id: string;
+}
+
+/** Response from the public `/functions/v1/join-project` endpoint (hosted mode). */
+export interface JoinPublicResponse {
+  org_id: string;
+  org_name: string;
+  project_id: string;
+  project_name: string;
+  member_api_key: string;
+  member_id: string;
+  supabase_url: string;
+  qdrant_url: string;
+  member_count: number;
+  decision_count: number;
+  role: ProjectRole;
 }

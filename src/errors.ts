@@ -153,6 +153,44 @@ export const ERRORS = {
     why: 'The .teamind.json file in this directory is malformed or contains invalid data.',
     fix: 'Delete the .teamind.json file and run `teamind init` to recreate it, or fix the JSON manually.',
   },
+
+  // Phase 5: Registration API
+  registration_service_unavailable: {
+    code: 'registration_service_unavailable',
+    what: 'Registration service is unavailable',
+    why: 'The hosted registration endpoint is unreachable. This may be a network issue or service outage.',
+    fix: 'Check your internet connection and try again. If the problem persists, visit the Teamind status page.',
+  },
+  rate_limit_exceeded: {
+    code: 'rate_limit_exceeded',
+    what: 'Registration rate limit exceeded',
+    why: 'Too many registration attempts from your IP address. The limit is 10 registrations per hour.',
+    fix: 'Wait an hour before trying again, or contact support if you need more registrations.',
+  },
+  org_name_taken: {
+    code: 'org_name_taken',
+    what: 'Organization name is already taken',
+    why: 'Another organization is already using this name. Organization names must be globally unique.',
+    fix: 'Choose a different organization name and try again.',
+  },
+  invalid_org_name: {
+    code: 'invalid_org_name',
+    what: 'Invalid organization name',
+    why: 'Organization names must be 1-100 characters and may contain letters, numbers, spaces, and hyphens.',
+    fix: 'Choose a name using only letters, numbers, spaces, and hyphens (1-100 characters).',
+  },
+  invalid_project_name: {
+    code: 'invalid_project_name',
+    what: 'Invalid project name',
+    why: 'Project names must be 1-100 characters and may contain letters, numbers, spaces, and hyphens.',
+    fix: 'Choose a name using only letters, numbers, spaces, and hyphens (1-100 characters).',
+  },
+  invalid_invite_code_join: {
+    code: 'invalid_invite_code_join',
+    what: 'Invalid invite code',
+    why: 'The invite code does not match any active project. It may have expired or been entered incorrectly.',
+    fix: 'Ask your team lead for the correct invite code. It should be in the format XXXX-XXXX.',
+  },
 } as const satisfies Record<string, TeamindError>;
 
 export function formatError(error: TeamindError): string {

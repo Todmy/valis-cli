@@ -22,35 +22,43 @@ import type { TeamindConfig } from '../types.js';
 // These point to the shared Teamind cloud infrastructure.
 // Community mode users provide their own.
 // ---------------------------------------------------------------------------
+// Hosted credentials resolved from environment variables at runtime.
+// For production: these will come from a registration API (api.teamind.dev).
+// For dog fooding: set TEAMIND_HOSTED_* env vars or use ~/.teamind/.hosted-env
 const HOSTED_CREDENTIALS = {
-  supabaseUrl: 'https://rmawxpdaudinbansjfpd.supabase.co',
-  supabaseServiceRoleKey: 'sb_secret_REDACTED_ROTATED',
-  qdrantUrl: 'https://c424cb8c-c7b6-4afc-963a-dfb86f82dd2c.eu-central-1-0.aws.cloud.qdrant.io',
-  qdrantApiKey: 'QDRANT_API_KEY_REDACTED_ROTATED',
+  supabaseUrl: process.env.TEAMIND_HOSTED_SUPABASE_URL || '',
+  supabaseServiceRoleKey: process.env.TEAMIND_HOSTED_SUPABASE_KEY || '',
+  qdrantUrl: process.env.TEAMIND_HOSTED_QDRANT_URL || '',
+  qdrantApiKey: process.env.TEAMIND_HOSTED_QDRANT_KEY || '',
 };
 
-function loadEnvFile(): Record<string, string> {
+function parseEnvContent(content: string): Record<string, string> {
   const env: Record<string, string> = {};
-  // Try .env in cwd, then in the package directory
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx > 0) {
+      env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
+    }
+  }
+  return env;
+}
+
+function loadHostedEnv(): Record<string, string> {
+  // Priority: ~/.teamind/.hosted-env → cwd/.env → package/.env
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
   const candidates = [
+    resolve(homeDir, '.teamind', '.hosted-env'),
     resolve(process.cwd(), '.env'),
     resolve(dirname(fileURLToPath(import.meta.url)), '../../.env'),
   ];
   for (const path of candidates) {
     if (existsSync(path)) {
-      const content = readFileSync(path, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx > 0) {
-          env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
-        }
-      }
-      break;
+      return parseEnvContent(readFileSync(path, 'utf-8'));
     }
   }
-  return env;
+  return {};
 }
 
 type SetupMode = 'hosted' | 'community';
@@ -144,16 +152,21 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   }
 
   if (setupMode === 'hosted') {
-    // Load from .env file (hosted credentials baked in or provided via .env)
-    const envFile = loadEnvFile();
-    supabaseUrl = process.env.SUPABASE_URL || envFile.SUPABASE_URL || HOSTED_CREDENTIALS.supabaseUrl;
-    serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || envFile.SUPABASE_SERVICE_ROLE_KEY || HOSTED_CREDENTIALS.supabaseServiceRoleKey;
-    qdrantUrl = process.env.QDRANT_URL || envFile.QDRANT_URL || HOSTED_CREDENTIALS.qdrantUrl;
-    qdrantApiKey = process.env.QDRANT_API_KEY || envFile.QDRANT_API_KEY || HOSTED_CREDENTIALS.qdrantApiKey;
+    // Resolve hosted credentials: TEAMIND_HOSTED_* env vars → ~/.teamind/.hosted-env → .env
+    const envFile = loadHostedEnv();
+    supabaseUrl = HOSTED_CREDENTIALS.supabaseUrl || envFile.TEAMIND_HOSTED_SUPABASE_URL || envFile.SUPABASE_URL || '';
+    serviceRoleKey = HOSTED_CREDENTIALS.supabaseServiceRoleKey || envFile.TEAMIND_HOSTED_SUPABASE_KEY || envFile.SUPABASE_SERVICE_ROLE_KEY || '';
+    qdrantUrl = HOSTED_CREDENTIALS.qdrantUrl || envFile.TEAMIND_HOSTED_QDRANT_URL || envFile.QDRANT_URL || '';
+    qdrantApiKey = HOSTED_CREDENTIALS.qdrantApiKey || envFile.TEAMIND_HOSTED_QDRANT_KEY || envFile.QDRANT_API_KEY || '';
 
     if (!serviceRoleKey) {
       console.log(pc.red('\n✗ Hosted credentials not configured yet.'));
-      console.log(pc.dim('  Set SUPABASE_SERVICE_ROLE_KEY in .env or switch to Community mode.\n'));
+      console.log(pc.dim('  Create ~/.teamind/.hosted-env with:'));
+      console.log(pc.dim('    TEAMIND_HOSTED_SUPABASE_URL=https://...'));
+      console.log(pc.dim('    TEAMIND_HOSTED_SUPABASE_KEY=sb_secret_...'));
+      console.log(pc.dim('    TEAMIND_HOSTED_QDRANT_URL=https://...'));
+      console.log(pc.dim('    TEAMIND_HOSTED_QDRANT_KEY=...'));
+      console.log(pc.dim('  Or set TEAMIND_HOSTED_* environment variables.\n'));
       return;
     }
 

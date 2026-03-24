@@ -6,7 +6,6 @@ import { serveCommand } from '../src/commands/serve.js';
 import { statusCommand } from '../src/commands/status.js';
 import { dashboardCommand } from '../src/commands/dashboard.js';
 import { searchCommand } from '../src/commands/search-cmd.js';
-import { exportCommand } from '../src/commands/export-cmd.js';
 import { configGetCommand, configSetCommand } from '../src/commands/config-cmd.js';
 import { uninstallCommand } from '../src/commands/uninstall.js';
 import { adminMetricsCommand } from '../src/commands/admin-metrics.js';
@@ -96,21 +95,6 @@ program
   .action(async (query, options) => {
     try {
       await searchCommand(query, options);
-    } catch (err) {
-      console.error(`Error: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('export')
-  .description('Export all org decisions')
-  .option('--json', 'Export as JSON (default)')
-  .option('--markdown', 'Export as Markdown')
-  .option('--output <file>', 'Write to file instead of stdout')
-  .action(async (options) => {
-    try {
-      await exportCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

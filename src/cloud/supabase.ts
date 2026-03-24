@@ -566,6 +566,29 @@ export async function getOpenContradictions(
 }
 
 // ---------------------------------------------------------------------------
+// Project-scoped decision count (Phase 4 — Multi-Project)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the count of decisions in a specific project.
+ * Used by status command for project-scoped brain count.
+ */
+export async function getProjectDecisionCount(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId: string,
+): Promise<number> {
+  const { count, error } = await supabase
+    .from('decisions')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', orgId)
+    .eq('project_id', projectId);
+
+  if (error) throw new Error(`Failed to count project decisions: ${error.message}`);
+  return count ?? 0;
+}
+
+// ---------------------------------------------------------------------------
 // Project listing (Phase 4 — Multi-Project)
 // ---------------------------------------------------------------------------
 

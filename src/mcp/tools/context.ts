@@ -1,5 +1,7 @@
 import { loadConfig } from '../../config/store.js';
-import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
+import { resolveConfig } from '../../config/project.js';
+import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
+import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import type { ContextResponse, RerankedResult, DecisionStatus } from '../../types.js';
@@ -7,6 +9,8 @@ import type { ContextResponse, RerankedResult, DecisionStatus } from '../../type
 interface ContextArgs {
   task_description: string;
   files?: string[];
+  /** T022: When true, load context from all accessible projects. */
+  all_projects?: boolean;
 }
 
 /** Statuses considered non-active (historical). */
@@ -38,9 +42,36 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
     query = `${query} ${fileTerms}`;
   }
 
+  // T022: Resolve project from per-directory config
+  const resolved = await resolveConfig();
+  const projectId = resolved.project?.project_id;
+
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-    const results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
+    let results;
+
+    if (args.all_projects) {
+      // T022: Cross-project context — load from all accessible projects
+      let projectIds: string[] = [];
+      try {
+        if (config.member_id) {
+          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const projects = await listMemberProjects(supabase, config.member_id);
+          projectIds = projects.map((p) => p.id);
+        }
+      } catch {
+        // Fall back to org-wide
+      }
+
+      if (projectIds.length > 0) {
+        results = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, { limit: 50 });
+      } else {
+        results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
+      }
+    } else {
+      // T022: Default — context scoped to active project
+      results = await hybridSearch(qdrant, config.org_id, query, { limit: 50, projectId });
+    }
 
     // T047: Apply multi-signal reranking for consistent ordering with search
     const reranked: RerankedResult[] = rerank(results);

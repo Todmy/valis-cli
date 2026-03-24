@@ -43,6 +43,8 @@ export interface CleanupOptions {
   nearThreshold?: number;
   /** Orphan staleness in days (default 30). */
   staleDays?: number;
+  /** T027: Optional project_id to scope cleanup to a single project. */
+  projectId?: string;
 }
 
 // -------------------------------------------------------------------------
@@ -67,17 +69,22 @@ export async function runCleanup(
     memberId,
     nearThreshold = 0.9,
     staleDays = 30,
+    projectId,
   } = options;
 
-  // 1. Exact-duplicate detection
-  const exactCandidates = await findExactDuplicates(supabase, orgId);
+  // 1. Exact-duplicate detection — T027: scoped to project when available
+  const exactCandidates = await findExactDuplicates(supabase, orgId, projectId);
 
-  // 2. Fetch all active decisions for near-duplicate scan
-  const { data: activeDecisions } = await supabase
+  // 2. Fetch all active decisions for near-duplicate scan — T027: scoped to project
+  let activeQuery = supabase
     .from('decisions')
     .select('*')
     .eq('org_id', orgId)
-    .eq('status', 'active')
+    .eq('status', 'active');
+  if (projectId) {
+    activeQuery = activeQuery.eq('project_id', projectId);
+  }
+  const { data: activeDecisions } = await activeQuery
     .order('created_at', { ascending: false });
 
   const decisions = (activeDecisions ?? []) as Decision[];
@@ -90,8 +97,8 @@ export async function runCleanup(
     nearThreshold,
   );
 
-  // 4. Stale orphan detection
-  const orphans = await findStaleOrphans(supabase, orgId, staleDays);
+  // 4. Stale orphan detection — T027: scoped to project when available
+  const orphans = await findStaleOrphans(supabase, orgId, staleDays, projectId);
 
   // 5. If --apply, auto-deprecate exact duplicates and create audit entries
   let auditEntriesCreated = 0;

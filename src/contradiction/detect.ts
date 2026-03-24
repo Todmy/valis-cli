@@ -52,30 +52,44 @@ export async function detectContradictions(
     return warnings;
   }
 
+  // T026: Resolve project_id from the decision — contradictions are scoped within
+  // a single project. Cross-project contradictions are not possible by design.
+  const projectId = newDecision.project_id || undefined;
+
   // ------------------------------------------------------------------
   // Tier 1: Find candidates with overlapping affects via SQL &&
   // ------------------------------------------------------------------
 
   let candidates: Decision[];
   try {
-    const { data, error } = await supabase.rpc('find_contradiction_candidates', {
+    const rpcParams: Record<string, unknown> = {
       p_org_id: orgId,
       p_affects: newDecision.affects,
       p_exclude_id: newDecision.id,
-    });
+      p_project_id: projectId || null,
+    };
+
+    const { data, error } = await supabase.rpc('find_contradiction_candidates', rpcParams);
 
     if (error) throw error;
     candidates = (data || []) as Decision[];
   } catch {
     // RPC may not exist yet — fall back to client-side filtering
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('decisions')
         .select('*')
         .eq('org_id', orgId)
         .eq('status', 'active')
         .neq('id', newDecision.id)
         .overlaps('affects', newDecision.affects);
+
+      // T026: Scope fallback query to project
+      if (projectId) {
+        query = query.eq('project_id', projectId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       candidates = (data || []) as Decision[];
@@ -153,16 +167,20 @@ export async function detectContradictions(
       // If check fails, attempt insert anyway (unique constraint will catch dupes)
     }
 
-    // INSERT into contradictions table
+    // INSERT into contradictions table — T026: include project_id
     try {
-      await supabase.from('contradictions').insert({
+      const contradictionRecord: Record<string, unknown> = {
         org_id: orgId,
         decision_a_id: decisionAId,
         decision_b_id: decisionBId,
         overlap_areas: overlapAreas,
         similarity_score: qdrantAvailable ? similarity : null,
         status: 'open',
-      });
+      };
+      if (projectId) {
+        contradictionRecord.project_id = projectId;
+      }
+      await supabase.from('contradictions').insert(contradictionRecord);
     } catch {
       // Unique constraint violation or other failure — non-fatal
     }

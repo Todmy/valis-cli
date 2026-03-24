@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
-import { findProjectConfig } from '../config/project.js';
-import { getSupabaseClient, healthCheck as supabaseHealth, getOrgInfo } from '../cloud/supabase.js';
+import { resolveConfig } from '../config/project.js';
+import { getSupabaseClient, healthCheck as supabaseHealth, getOrgInfo, getProjectDecisionCount } from '../cloud/supabase.js';
 import { getQdrantClient, healthCheck as qdrantHealth } from '../cloud/qdrant.js';
 import { getCount as getQueueCount } from '../offline/queue.js';
 import type { AuthMode } from '../types.js';
@@ -15,6 +15,9 @@ export type RealtimeStatus = 'connected' | 'disconnected' | 'degraded';
 /** Module-level realtime status — set by the serve command's subscription. */
 let currentRealtimeStatus: RealtimeStatus = 'disconnected';
 
+/** Module-level realtime project name — set by serve command. */
+let currentRealtimeProject: string | null = null;
+
 /** Update the realtime status (called from serve.ts on status changes). */
 export function setRealtimeStatus(status: RealtimeStatus): void {
   currentRealtimeStatus = status;
@@ -25,14 +28,20 @@ export function getRealtimeStatus(): RealtimeStatus {
   return currentRealtimeStatus;
 }
 
+/** Update the realtime project name (called from serve.ts). */
+export function setRealtimeProject(projectName: string | null): void {
+  currentRealtimeProject = projectName;
+}
+
 // ---------------------------------------------------------------------------
 // Status command
 // ---------------------------------------------------------------------------
 
 export async function statusCommand(): Promise<void> {
   // T034: Resolve both global and project config
-  const config = await loadConfig();
-  const projectConfig = await findProjectConfig(process.cwd());
+  const resolved = await resolveConfig();
+  const config = resolved.global;
+  const projectConfig = resolved.project;
 
   // T036: Handle all four resolution states from contracts/config.md
   if (!config && !projectConfig) {
@@ -104,9 +113,11 @@ export async function statusCommand(): Promise<void> {
   const rtStatus = getRealtimeStatus();
   switch (rtStatus) {
     case 'connected': {
-      const projectLabel = projectConfig
-        ? ` (project: ${projectConfig.project_name})`
-        : '';
+      const projectLabel = currentRealtimeProject
+        ? ` (project: ${currentRealtimeProject})`
+        : projectConfig
+          ? ` (project: ${projectConfig.project_name})`
+          : '';
       console.log(`  Realtime: ${pc.green('connected')}${projectLabel}`);
       break;
     }
@@ -118,16 +129,22 @@ export async function statusCommand(): Promise<void> {
       break;
   }
 
-  // Decision count — T035: show project-scoped count when possible
-  if (pgOk) {
+  // Brain: project-scoped decision count (T034)
+  if (pgOk && projectConfig) {
+    try {
+      const count = await getProjectDecisionCount(supabase, config.org_id, projectConfig.project_id);
+      console.log(`  Brain:    ${count} decisions in this project`);
+    } catch {
+      // Fall back to org-level count
+      const info = await getOrgInfo(supabase, config.org_id);
+      if (info) {
+        console.log(`  Brain:    ${info.decision_count} decisions (org-wide)`);
+      }
+    }
+  } else if (pgOk) {
     const info = await getOrgInfo(supabase, config.org_id);
     if (info) {
-      if (projectConfig) {
-        // Show project-scoped brain count
-        console.log(`  Brain:    ${info.decision_count} decisions in this project`);
-      } else {
-        console.log(`  Brain:    ${info.decision_count} decisions`);
-      }
+      console.log(`  Brain:    ${info.decision_count} decisions`);
     }
   }
 

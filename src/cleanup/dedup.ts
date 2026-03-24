@@ -77,13 +77,18 @@ export function deduplicateCandidates(
 export async function findExactDuplicates(
   supabase: SupabaseClient,
   orgId: string,
+  projectId?: string,
 ): Promise<DedupCandidate[]> {
-  // Fetch all active decisions for this org
-  const { data, error } = await supabase
+  // Fetch all active decisions for this org, optionally scoped to project
+  let query = supabase
     .from('decisions')
     .select('id, content_hash, created_at, pinned, depends_on')
     .eq('org_id', orgId)
-    .eq('status', 'active')
+    .eq('status', 'active');
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+  const { data, error } = await query
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(`Failed to fetch decisions for dedup: ${error.message}`);

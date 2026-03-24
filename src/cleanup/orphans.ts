@@ -36,15 +36,20 @@ export async function findStaleOrphans(
   supabase: SupabaseClient,
   orgId: string,
   staleDays = 30,
+  projectId?: string,
 ): Promise<OrphanCandidate[]> {
   const cutoff = new Date(Date.now() - staleDays * 86_400_000).toISOString();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('decisions')
     .select('id, summary, detail, created_at')
     .eq('org_id', orgId)
     .eq('type', 'pending')
-    .lt('created_at', cutoff)
+    .lt('created_at', cutoff);
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+  const { data, error } = await query
     .order('created_at', { ascending: true });
 
   if (error) throw new Error(`Failed to fetch stale orphans: ${error.message}`);

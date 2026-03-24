@@ -16,6 +16,27 @@ vi.mock('../../../src/config/store.js', () => ({
   }),
 }));
 
+vi.mock('../../../src/config/project.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({
+    global: {
+      org_id: 'test-org-id',
+      org_name: 'Test Org',
+      api_key: 'tm_test123',
+      author_name: 'tester',
+      supabase_url: 'https://test.supabase.co',
+      supabase_service_role_key: 'test-key',
+      qdrant_url: 'https://test.qdrant.io',
+      qdrant_api_key: 'test-qdrant-key',
+      configured_ides: [],
+      created_at: new Date().toISOString(),
+    },
+    project: {
+      project_id: 'test-project-id',
+      project_name: 'Test Project',
+    },
+  }),
+}));
+
 vi.mock('../../../src/cloud/supabase.js', () => ({
   getSupabaseClient: vi.fn().mockReturnValue({}),
   storeDecision: vi.fn().mockResolvedValue({

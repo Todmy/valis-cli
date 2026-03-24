@@ -20,7 +20,7 @@ import {
   joinProject,
 } from '../cloud/supabase.js';
 import type { ProjectInfo } from '../cloud/supabase.js';
-import { getQdrantClient, ensureCollection } from '../cloud/qdrant.js';
+import { getQdrantClient, ensureCollection, countLegacyPoints } from '../cloud/qdrant.js';
 import { upsertDecision, hybridSearch } from '../cloud/qdrant.js';
 import type { TeamindConfig, ProjectConfig } from '../types.js';
 
@@ -577,6 +577,19 @@ export async function initCommand(options: { join?: string }): Promise<void> {
 
     const configPath = await writeProjectConfig(process.cwd(), projectConfig);
     console.log(pc.green(`✓ Project config saved to ${configPath}`));
+
+    // T038: Check for legacy Qdrant points missing project_id
+    try {
+      const qdrant = getQdrantClient(existing.qdrant_url, existing.qdrant_api_key);
+      const legacyCount = await countLegacyPoints(qdrant, existing.org_id);
+      if (legacyCount > 0) {
+        console.log(pc.yellow(`\n  ${legacyCount} search index entries need project_id backfill.`));
+        console.log(pc.dim('  Run `teamind admin migrate-qdrant` to update the search index.'));
+        console.log(pc.dim('  Search still works during migration (legacy points included in results).'));
+      }
+    } catch {
+      // Qdrant may not be reachable — not fatal for config migration
+    }
 
     // Print summary
     console.log(pc.bold('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));

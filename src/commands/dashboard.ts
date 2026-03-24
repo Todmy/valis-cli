@@ -1,5 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
+import { resolveConfig } from '../config/project.js';
 import { getSupabaseClient, getDashboardStats, getProposedDecisions } from '../cloud/supabase.js';
 
 export async function dashboardCommand(): Promise<void> {
@@ -9,12 +10,20 @@ export async function dashboardCommand(): Promise<void> {
     process.exit(1);
   }
 
+  // T027: Resolve project from per-directory config — scope all stats to active project
+  const resolved = await resolveConfig();
+  const projectId = resolved.project?.project_id;
+  const projectName = resolved.project?.project_name;
+
   const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
   try {
-    const stats = await getDashboardStats(supabase, config.org_id);
+    // T027: Pass projectId to scope dashboard stats
+    const stats = await getDashboardStats(supabase, config.org_id, projectId);
 
-    console.log(pc.bold(`\nTeamind Dashboard — ${config.org_name}\n`));
+    // T027: Show project name in dashboard header when scoped
+    const headerSuffix = projectName ? ` / ${projectName}` : '';
+    console.log(pc.bold(`\nTeamind Dashboard — ${config.org_name}${headerSuffix}\n`));
     console.log(`  Total decisions: ${pc.bold(String(stats.total_decisions))}`);
 
     // Lifecycle stats
@@ -27,8 +36,8 @@ export async function dashboardCommand(): Promise<void> {
       console.log(`    Superseded: ${pc.dim(String(stats.by_status.superseded || 0))}`);
     }
 
-    // T014: Proposed decisions section — list decisions awaiting review
-    const proposedDecisions = await getProposedDecisions(supabase, config.org_id);
+    // T014: Proposed decisions section — T027: scoped to project
+    const proposedDecisions = await getProposedDecisions(supabase, config.org_id, projectId);
     if (proposedDecisions.length > 0) {
       console.log(pc.magenta(`\n  Proposed (${proposedDecisions.length}):`));
       for (const d of proposedDecisions) {

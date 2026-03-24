@@ -69,17 +69,69 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
     return { results: [], note: 'Not configured. Run `teamind init` first.' };
   }
 
+  // T021: Resolve project from per-directory config
+  const resolved = await resolveConfig();
+  const projectId = resolved.project?.project_id;
+
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-    const rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
-      type: args.type,
-      limit: args.limit || 10,
-    });
+    let rawResults: SearchResult[];
+
+    if (args.all_projects) {
+      // T021: Cross-project search — get member's project list, search all accessible
+      let projectIds: string[] = [];
+      try {
+        if (config.member_id) {
+          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const projects = await listMemberProjects(supabase, config.member_id);
+          projectIds = projects.map((p) => p.id);
+        }
+      } catch {
+        // If listing projects fails, fall back to org-wide search
+      }
+
+      if (projectIds.length > 0) {
+        rawResults = await hybridSearchAllProjects(qdrant, config.org_id, args.query, projectIds, {
+          type: args.type,
+          limit: args.limit || 10,
+        });
+      } else {
+        // Fallback: search org-wide (no project filter)
+        rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
+          type: args.type,
+          limit: args.limit || 10,
+        });
+      }
+    } else {
+      // T021: Default — search scoped to active project
+      rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
+        type: args.type,
+        limit: args.limit || 10,
+        projectId,
+      });
+    }
 
     // Build replaced_by reverse lookup from the `replaces` field in raw results
     const replacedByMap = buildReplacedByMap(
       rawResults as Array<SearchResult & { replaces?: string | null }>,
     );
+
+    // T021: Build project_id -> project_name lookup for cross-project labeling
+    let projectNameMap: Map<string, string> | undefined;
+    if (args.all_projects) {
+      projectNameMap = new Map<string, string>();
+      try {
+        if (config.member_id) {
+          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const projects = await listMemberProjects(supabase, config.member_id);
+          for (const p of projects) {
+            projectNameMap.set(p.id, p.name);
+          }
+        }
+      } catch {
+        // Best-effort project name resolution
+      }
+    }
 
     // T013: Enrich each result with status and status_label.
     // Proposed decisions are included in default search results — not filtered
@@ -98,6 +150,9 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
         status,
         status_label: STATUS_LABELS[status] || status,
         replaced_by: replacedByMap.get(r.id) ?? null,
+        // T021: Include project info for cross-project results
+        project_id: r.project_id,
+        project_name: r.project_name || (r.project_id && projectNameMap ? projectNameMap.get(r.project_id) : undefined),
       };
     });
 

@@ -1,6 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { randomUUID } from 'node:crypto';
-import type { RawDecision, SearchResult, DecisionType, Decision } from '../types.js';
+import type { RawDecision, SearchResult, DecisionType } from '../types.js';
 
 export const COLLECTION_NAME = 'decisions';
 const VECTOR_SIZE = 384;

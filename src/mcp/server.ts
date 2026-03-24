@@ -40,14 +40,15 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_search
+  // teamind_search — T024: add all_projects parameter for cross-project search
   server.tool(
     'teamind_search',
-    "Search the team's shared decision history. Use before making architectural decisions to check what the team already decided.",
+    "Search the team's shared decision history. Use before making architectural decisions to check what the team already decided. Results are scoped to the active project by default. Set all_projects to search across all accessible projects.",
     {
       query: z.string().min(1).describe('Search query text'),
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Filter by type'),
       limit: z.number().int().min(1).max(50).default(10).optional().describe('Max results'),
+      all_projects: z.boolean().optional().describe('Search across all accessible projects instead of just the active one'),
     },
     async (args) => {
       const result = await handleSearch(args);
@@ -55,13 +56,14 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_context
+  // teamind_context — T024: add all_projects parameter for cross-project context
   server.tool(
     'teamind_context',
-    'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases.',
+    'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases. Results are scoped to the active project by default.',
     {
       task_description: z.string().min(1).describe('What you are working on'),
       files: z.array(z.string()).optional().describe('File paths being worked on'),
+      all_projects: z.boolean().optional().describe('Load context from all accessible projects'),
     },
     async (args) => {
       const result = await handleContext(args);

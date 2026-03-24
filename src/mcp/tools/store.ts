@@ -1,4 +1,5 @@
 import { loadConfig } from '../../config/store.js';
+import { resolveConfig } from '../../config/project.js';
 import { detectSecrets } from '../../security/secrets.js';
 import { isDuplicate, markAsSeen } from '../../capture/dedup.js';
 import {
@@ -92,6 +93,18 @@ export async function handleStore(
     return { error: 'not_configured', action: 'blocked' as const };
   }
 
+  // T023: Resolve project from per-directory config
+  const resolved = await resolveConfig();
+  const projectId = args.project_id || resolved.project?.project_id;
+
+  // T023: Reject store if no project configured
+  if (!projectId) {
+    return {
+      error: 'no_project_configured',
+      action: 'blocked' as const,
+    };
+  }
+
   // 1. Secret detection
   const secret = detectSecrets(args.text);
   if (secret) {
@@ -110,13 +123,14 @@ export async function handleStore(
     };
   }
 
+  // T023: Include resolved project_id in raw decision for both Supabase and Qdrant
   const raw: RawDecision = {
     text: args.text,
     type: args.type,
     summary: args.summary,
     affects: args.affects,
     confidence: args.confidence,
-    project_id: args.project_id,
+    project_id: projectId,
     session_id: args.session_id,
   };
 
@@ -195,10 +209,12 @@ export async function handleStore(
       Object.keys(extras).length > 0 ? extras : undefined,
     );
 
-    // Qdrant write (best-effort)
+    // Qdrant write (best-effort) — T023: include project_id in Qdrant payload
     try {
       const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-      await upsertDecision(qdrant, config.org_id, decision.id, raw, config.author_name);
+      await upsertDecision(qdrant, config.org_id, decision.id, raw, config.author_name, {
+        project_id: projectId,
+      });
     } catch {
       // Qdrant failure — Postgres is source of truth
       console.error('Warning: Qdrant write failed, Postgres succeeded');

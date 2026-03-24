@@ -70,7 +70,17 @@ export async function findProjectConfig(startDir: string): Promise<ProjectConfig
  */
 export async function loadProjectConfig(configPath: string): Promise<ProjectConfig> {
   const data = await readFile(configPath, 'utf-8');
-  const parsed = JSON.parse(data);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    throw new Error(
+      `Invalid .teamind.json — file is not valid JSON.\n` +
+        `  Fix the file at ${configPath} or run \`teamind init\` to reconfigure.`,
+    );
+  }
+
   const result = projectConfigSchema.safeParse(parsed);
   if (!result.success) {
     const firstIssue = result.error.issues[0];
@@ -102,4 +112,44 @@ export async function resolveConfig(startDir?: string): Promise<ResolvedConfig> 
   const global = await loadConfig();
   const project = await findProjectConfig(startDir ?? process.cwd());
   return { global, project };
+}
+
+// ---------------------------------------------------------------------------
+// T038 (US6): Legacy config detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Config state from the perspective of multi-project support.
+ *
+ * - `ready`:       Both global config and .teamind.json exist — fully configured.
+ * - `no-project`:  Global config exists but no .teamind.json — legacy installation.
+ *                  The user should run `teamind init` to pick/create a project.
+ * - `no-org`:      .teamind.json exists but no global config — unusual state.
+ * - `unconfigured`: Neither exists — brand new installation.
+ */
+export type ConfigState = 'ready' | 'no-project' | 'no-org' | 'unconfigured';
+
+/**
+ * Detect the current config state for multi-project support.
+ *
+ * Commands that require a project should call this and, when the result is
+ * `no-project`, print: "No project configured. Run `teamind init`."
+ *
+ * This is the primary entry point for T038 legacy config detection.
+ */
+export async function detectConfigState(startDir?: string): Promise<ConfigState> {
+  const resolved = await resolveConfig(startDir);
+
+  if (resolved.global && resolved.project) return 'ready';
+  if (resolved.global && !resolved.project) return 'no-project';
+  if (!resolved.global && resolved.project) return 'no-org';
+  return 'unconfigured';
+}
+
+/**
+ * Returns true when the installation looks like a pre-multi-project
+ * (legacy) config: global config exists but no .teamind.json.
+ */
+export async function isLegacyConfig(startDir?: string): Promise<boolean> {
+  return (await detectConfigState(startDir)) === 'no-project';
 }

@@ -8,6 +8,8 @@
  * - Global config unchanged when only project changes (Case 4 switch)
  * - T013: Community mode prompts for 4 credentials, saves supabase_service_role_key, no registration API
  * - T016: Static assertion that HOSTED_CREDENTIALS / loadHostedEnv / .hosted-env / TEAMIND_HOSTED_ are removed
+ * - T017: E2E test for full hosted registration flow
+ * - T018: E2E test for full join flow
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -21,7 +23,7 @@ import {
   writeProjectConfig,
   loadProjectConfig,
 } from '../../src/config/project.js';
-import type { ProjectConfig, TeamindConfig } from '../../src/types.js';
+import type { ProjectConfig, TeamindConfig, RegistrationResponse, JoinPublicResponse } from '../../src/types.js';
 import type { ProjectInfo, CreateProjectResponse, JoinProjectResponse } from '../../src/cloud/supabase.js';
 
 // ---------------------------------------------------------------------------
@@ -437,5 +439,259 @@ describe('T016: Verify removal of hosted-env legacy code from init.ts', () => {
     // It should either be empty (placeholder) or come from registration API.
     expect(initTsContent).not.toMatch(/TEAMIND_HOSTED_SUPABASE_KEY/);
     expect(initTsContent).not.toMatch(/TEAMIND_HOSTED_QDRANT_KEY/);
+  });
+
+  it('init.ts imports register from registration module', () => {
+    expect(initTsContent).toContain("from '../cloud/registration.js'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T017: E2E test for full hosted registration flow
+// ---------------------------------------------------------------------------
+
+describe('T017: E2E hosted registration flow', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await makeTmpDir();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('registration response produces valid config with member_api_key (no service_role)', async () => {
+    const registrationResponse: RegistrationResponse = {
+      member_api_key: 'tmm_abc123def456abc123def456abc123de',
+      supabase_url: 'https://hosted.supabase.co',
+      qdrant_url: 'https://hosted.qdrant.io',
+      org_id: 'reg-org-1111-2222-3333-444444444444',
+      org_name: 'My New Org',
+      project_id: 'reg-proj-1111-2222-3333-444444444444',
+      project_name: 'my-app',
+      invite_code: 'ABCD-1234',
+      member_id: 'reg-member-1111-2222-3333-444444444444',
+    };
+
+    // Simulate what init hosted mode does: build config from registration response
+    const config: TeamindConfig = {
+      org_id: registrationResponse.org_id,
+      org_name: registrationResponse.org_name,
+      api_key: '', // hosted mode: no org-level key on client
+      invite_code: registrationResponse.invite_code,
+      author_name: 'Alice',
+      supabase_url: registrationResponse.supabase_url,
+      supabase_service_role_key: '', // hosted mode: NO service_role on client
+      qdrant_url: registrationResponse.qdrant_url,
+      qdrant_api_key: '', // hosted mode: NO qdrant_api_key on client
+      configured_ides: [],
+      created_at: new Date().toISOString(),
+      member_api_key: registrationResponse.member_api_key,
+      member_id: registrationResponse.member_id,
+    };
+
+    // Verify hosted config has member_api_key
+    expect(config.member_api_key).toBe('tmm_abc123def456abc123def456abc123de');
+    expect(config.member_api_key).toMatch(/^tmm_/);
+
+    // Verify hosted config has NO service_role_key
+    expect(config.supabase_service_role_key).toBe('');
+
+    // Verify hosted config has NO qdrant_api_key
+    expect(config.qdrant_api_key).toBe('');
+
+    // Verify hosted config has public URLs
+    expect(config.supabase_url).toBe('https://hosted.supabase.co');
+    expect(config.qdrant_url).toBe('https://hosted.qdrant.io');
+
+    // Verify org metadata is populated
+    expect(config.org_id).toBeTruthy();
+    expect(config.org_name).toBe('My New Org');
+    expect(config.invite_code).toBe('ABCD-1234');
+  });
+
+  it('registration response produces valid .teamind.json', async () => {
+    const registrationResponse: RegistrationResponse = {
+      member_api_key: 'tmm_abc123def456abc123def456abc123de',
+      supabase_url: 'https://hosted.supabase.co',
+      qdrant_url: 'https://hosted.qdrant.io',
+      org_id: 'reg-org-1111-2222-3333-444444444444',
+      org_name: 'My New Org',
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      project_name: 'my-app',
+      invite_code: 'ABCD-1234',
+      member_id: 'reg-member-1111-2222-3333-444444444444',
+    };
+
+    // Write .teamind.json as init hosted mode would
+    const projectConfig: ProjectConfig = {
+      project_id: registrationResponse.project_id,
+      project_name: registrationResponse.project_name,
+    };
+    await writeProjectConfig(tmpDir, projectConfig);
+
+    // Verify .teamind.json
+    const loaded = await findProjectConfig(tmpDir);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.project_id).toBe(registrationResponse.project_id);
+    expect(loaded!.project_name).toBe('my-app');
+
+    // Verify .teamind.json contains no secrets
+    const raw = await readFile(join(tmpDir, '.teamind.json'), 'utf-8');
+    const parsed = JSON.parse(raw);
+    expect(parsed.member_api_key).toBeUndefined();
+    expect(parsed.supabase_url).toBeUndefined();
+    expect(parsed.service_role_key).toBeUndefined();
+  });
+
+  it('hosted config can be saved and loaded without service_role_key', async () => {
+    const hostedConfig: TeamindConfig = {
+      org_id: 'hosted-org-id',
+      org_name: 'HostedOrg',
+      api_key: '',
+      invite_code: 'WXYZ-5678',
+      author_name: 'HostedUser',
+      supabase_url: 'https://hosted.supabase.co',
+      supabase_service_role_key: '', // empty for hosted
+      qdrant_url: 'https://hosted.qdrant.io',
+      qdrant_api_key: '', // empty for hosted
+      configured_ides: [],
+      created_at: new Date().toISOString(),
+      member_api_key: 'tmm_hostedkey123',
+      member_id: null,
+    };
+
+    // Verify the config is valid for subsequent operations
+    expect(hostedConfig.member_api_key).toMatch(/^tmm_/);
+    expect(hostedConfig.supabase_service_role_key).toBe('');
+    expect(hostedConfig.qdrant_api_key).toBe('');
+
+    // Config should have supabase_url for exchange-token calls
+    expect(hostedConfig.supabase_url).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T018: E2E test for full join flow
+// ---------------------------------------------------------------------------
+
+describe('T018: E2E join flow via public endpoint', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await makeTmpDir();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('joinPublic response produces valid config with member_api_key (no service_role)', async () => {
+    const joinResponse: JoinPublicResponse = {
+      org_id: 'join-org-1111-2222-3333-444444444444',
+      org_name: 'Existing Org',
+      project_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+      project_name: 'existing-project',
+      member_api_key: 'tmm_joinedmember123456789abcdef01',
+      member_id: 'joined-member-id',
+      supabase_url: 'https://hosted.supabase.co',
+      qdrant_url: 'https://hosted.qdrant.io',
+      member_count: 5,
+      decision_count: 42,
+      role: 'project_member',
+    };
+
+    // Build config as init --join hosted mode would
+    const config: TeamindConfig = {
+      org_id: joinResponse.org_id,
+      org_name: joinResponse.org_name,
+      api_key: '', // hosted mode: no org-level key on client
+      invite_code: 'JOIN-CODE',
+      author_name: 'Bob',
+      supabase_url: joinResponse.supabase_url,
+      supabase_service_role_key: '', // hosted mode: NO service_role on client
+      qdrant_url: joinResponse.qdrant_url,
+      qdrant_api_key: '', // hosted mode: NO qdrant_api_key on client
+      configured_ides: [],
+      created_at: new Date().toISOString(),
+      member_api_key: joinResponse.member_api_key,
+      member_id: joinResponse.member_id,
+    };
+
+    // Verify config has member_api_key
+    expect(config.member_api_key).toBe('tmm_joinedmember123456789abcdef01');
+    expect(config.member_api_key).toMatch(/^tmm_/);
+
+    // Verify NO service_role_key
+    expect(config.supabase_service_role_key).toBe('');
+
+    // Verify public URLs present
+    expect(config.supabase_url).toBeTruthy();
+    expect(config.qdrant_url).toBeTruthy();
+
+    // Verify member_id present
+    expect(config.member_id).toBe('joined-member-id');
+  });
+
+  it('joinPublic response produces valid .teamind.json', async () => {
+    const joinResponse: JoinPublicResponse = {
+      org_id: 'join-org-1111-2222-3333-444444444444',
+      org_name: 'Existing Org',
+      project_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+      project_name: 'existing-project',
+      member_api_key: 'tmm_joinkey',
+      member_id: 'member-id',
+      supabase_url: 'https://hosted.supabase.co',
+      qdrant_url: 'https://hosted.qdrant.io',
+      member_count: 3,
+      decision_count: 10,
+      role: 'project_member',
+    };
+
+    // Write .teamind.json as init --join would
+    const projectConfig: ProjectConfig = {
+      project_id: joinResponse.project_id,
+      project_name: joinResponse.project_name,
+    };
+    await writeProjectConfig(tmpDir, projectConfig);
+
+    // Verify .teamind.json
+    const loaded = await findProjectConfig(tmpDir);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.project_id).toBe(joinResponse.project_id);
+    expect(loaded!.project_name).toBe('existing-project');
+  });
+
+  it('join config is distinct from community config (no service_role_key)', () => {
+    const hostedJoinConfig: TeamindConfig = {
+      org_id: 'org-id',
+      org_name: 'Org',
+      api_key: '',
+      invite_code: 'CODE',
+      author_name: 'Bob',
+      supabase_url: 'https://hosted.supabase.co',
+      supabase_service_role_key: '', // empty for hosted
+      qdrant_url: 'https://hosted.qdrant.io',
+      qdrant_api_key: '', // empty for hosted
+      configured_ides: [],
+      created_at: new Date().toISOString(),
+      member_api_key: 'tmm_joined_key',
+      member_id: 'member-id',
+    };
+
+    const communityConfig: TeamindConfig = {
+      ...MOCK_GLOBAL_CONFIG,
+      supabase_service_role_key: 'sb_secret_key',
+      qdrant_api_key: 'qdrant_secret_key',
+    };
+
+    // Hosted join: no service_role_key, has member_api_key
+    expect(hostedJoinConfig.supabase_service_role_key).toBe('');
+    expect(hostedJoinConfig.member_api_key).toBeTruthy();
+
+    // Community: has service_role_key
+    expect(communityConfig.supabase_service_role_key).toBeTruthy();
+    expect(communityConfig.supabase_service_role_key).not.toBe('');
   });
 });

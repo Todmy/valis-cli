@@ -16,6 +16,7 @@ import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
 import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
 import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
+import { switchOrgCommand } from '../src/commands/switch-org.js';
 
 const program = new Command();
 
@@ -31,6 +32,19 @@ program
   .action(async (options) => {
     try {
       await initCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('switch')
+  .description('Switch to a different org (join a team from community setup)')
+  .requiredOption('--join <invite-code>', 'Invite code for the org to join')
+  .action(async (options) => {
+    try {
+      await switchOrgCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

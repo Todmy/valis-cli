@@ -123,18 +123,25 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     }
   }
 
-  // Choose setup mode
-  console.log(pc.bold('Choose your setup:\n'));
-  console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
-  console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
-
-  const modeAnswer = await prompt('Your choice (1/2): ');
-  const setupMode: SetupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
-
+  // Resolve credentials based on mode
   let supabaseUrl: string;
   let serviceRoleKey: string;
   let qdrantUrl: string;
   let qdrantApiKey: string;
+  let setupMode: SetupMode;
+
+  if (options.join) {
+    // --join always uses hosted credentials (user is joining someone else's org)
+    setupMode = 'hosted';
+  } else {
+    // Choose setup mode
+    console.log(pc.bold('Choose your setup:\n'));
+    console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
+    console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
+
+    const modeAnswer = await prompt('Your choice (1/2): ');
+    setupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
+  }
 
   if (setupMode === 'hosted') {
     // Load from .env file (hosted credentials baked in or provided via .env)
@@ -150,7 +157,9 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       return;
     }
 
-    console.log(pc.green('\n✓ Using hosted Teamind infrastructure'));
+    if (!options.join) {
+      console.log(pc.green('\n✓ Using hosted Teamind infrastructure'));
+    }
   } else {
     // Community: user provides their own
     console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));

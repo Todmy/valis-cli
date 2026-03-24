@@ -48,6 +48,56 @@ export const ERRORS = {
     why: 'The decision was written to one backend but failed on the other. Data will be eventually consistent.',
     fix: 'The system will automatically retry the failed write. Run `teamind status` to check sync status.',
   },
+
+  // Phase 3: Search Intelligence, Data Quality & Growth
+  plan_limit_reached: {
+    code: 'plan_limit_reached',
+    what: 'Plan limit reached',
+    why: 'Your organization has exceeded the allowed usage for your current plan.',
+    fix: 'Run `teamind upgrade` to upgrade your plan, or wait for the next billing period.',
+  },
+  enrichment_disabled: {
+    code: 'enrichment_disabled',
+    what: 'LLM enrichment is not available',
+    why: 'No LLM provider API key is configured. Enrichment requires an Anthropic or OpenAI API key.',
+    fix: 'Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment, then run `teamind enrich` again.',
+  },
+  enrichment_ceiling_reached: {
+    code: 'enrichment_ceiling_reached',
+    what: 'Daily enrichment cost ceiling reached',
+    why: 'The configured daily cost ceiling for LLM enrichment has been reached. No further enrichments will run today.',
+    fix: 'Wait until tomorrow for the ceiling to reset, or increase the ceiling with `teamind enrich --ceiling <dollars>`.',
+  },
+  enrichment_provider_error: {
+    code: 'enrichment_provider_error',
+    what: 'LLM provider returned an error',
+    why: 'The LLM provider (Anthropic or OpenAI) returned an error during enrichment. The decision was not enriched.',
+    fix: 'Check your API key validity and provider status. Run `teamind enrich` again to retry failed decisions.',
+  },
+  subscription_past_due: {
+    code: 'subscription_past_due',
+    what: 'Subscription payment past due',
+    why: 'Your subscription payment has failed. You have a 7-day grace period before downgrade to free tier limits.',
+    fix: 'Update your payment method at your Stripe billing portal, or run `teamind upgrade` to re-enter billing.',
+  },
+  search_rerank_failed: {
+    code: 'search_rerank_failed',
+    what: 'Search reranking failed',
+    why: 'The multi-signal reranker encountered an error. Falling back to raw semantic similarity scores.',
+    fix: 'This is a transient error. Search results may be less accurate. Retry your search.',
+  },
+  cleanup_protected_decision: {
+    code: 'cleanup_protected_decision',
+    what: 'Decision is protected from cleanup',
+    why: 'The decision is pinned or has inbound dependencies. It cannot be auto-deprecated by cleanup.',
+    fix: 'Unpin the decision or remove its dependents first, then re-run cleanup.',
+  },
+  synthesis_no_patterns: {
+    code: 'synthesis_no_patterns',
+    what: 'No patterns detected',
+    why: 'The synthesis algorithm did not find enough clustered decisions to form a pattern (minimum 3 decisions with shared areas).',
+    fix: 'This is informational. Patterns emerge naturally as more decisions are stored with overlapping affects areas.',
+  },
 } as const satisfies Record<string, TeamindError>;
 
 export function formatError(error: TeamindError): string {

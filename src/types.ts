@@ -3,7 +3,7 @@ export interface Organization {
   name: string;
   api_key: string;
   invite_code: string;
-  plan: 'free' | 'pro' | 'enterprise';
+  plan: 'free' | 'team' | 'business' | 'enterprise';
   decision_count: number;
   created_at: string;
 }
@@ -22,7 +22,7 @@ export interface Member {
 
 export type DecisionType = 'decision' | 'constraint' | 'pattern' | 'lesson' | 'pending';
 export type DecisionStatus = 'active' | 'deprecated' | 'superseded' | 'proposed';
-export type DecisionSource = 'mcp_store' | 'file_watcher' | 'stop_hook' | 'seed';
+export type DecisionSource = 'mcp_store' | 'file_watcher' | 'stop_hook' | 'seed' | 'synthesis';
 
 export interface Decision {
   id: string;
@@ -50,6 +50,10 @@ export interface Decision {
   status_changed_at?: string | null;
   /** Reason for the last status change. */
   status_reason?: string | null;
+  /** Whether this decision is pinned (exempt from confidence decay). */
+  pinned?: boolean;
+  /** How this decision was enriched: 'llm', 'manual', or null if not enriched. */
+  enriched_by?: 'llm' | 'manual' | null;
 }
 
 export interface RawDecision {
@@ -77,7 +81,12 @@ export type AuditAction =
   | 'key_rotated'
   | 'org_key_rotated'
   | 'contradiction_detected'
-  | 'contradiction_resolved';
+  | 'contradiction_resolved'
+  | 'decision_pinned'
+  | 'decision_unpinned'
+  | 'decision_enriched'
+  | 'decision_auto_deduped'
+  | 'pattern_synthesized';
 
 export type AuditTargetType = 'decision' | 'member' | 'org';
 
@@ -146,7 +155,7 @@ export interface StoreSupersededDetail {
 // Lifecycle (MCP tool)
 // ---------------------------------------------------------------------------
 
-export type LifecycleAction = 'deprecate' | 'promote' | 'history';
+export type LifecycleAction = 'deprecate' | 'promote' | 'history' | 'pin' | 'unpin';
 
 export interface LifecycleArgs {
   action: LifecycleAction;
@@ -265,6 +274,53 @@ export interface SearchResult {
   status?: DecisionStatus;
   /** UUID of the decision this one was replaced by, if superseded (Phase 2). */
   replaced_by?: string | null;
+  /** Confidence score from payload (Phase 3 — reranker input). */
+  confidence?: number | null;
+  /** Whether this decision is pinned (Phase 3 — reranker input). */
+  pinned?: boolean;
+  /** UUIDs of decisions this one depends on (Phase 3 — graph signal input). */
+  depends_on?: string[];
+  /** BM25 sparse vector score when available (Phase 3 — reranker input). */
+  bm25_score?: number;
+  /** Human-readable status label for non-active decisions (e.g. 'proposed', 'deprecated'). */
+  status_label?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Signal Weights & Reranked Results (Phase 3 — Search Intelligence)
+// ---------------------------------------------------------------------------
+
+export interface SignalWeights {
+  semantic: number;
+  bm25: number;
+  recency: number;
+  importance: number;
+  graph: number;
+}
+
+export interface SignalValues {
+  semantic_score: number;
+  bm25_score: number;
+  recency_decay: number;
+  importance: number;
+  graph_connectivity: number;
+}
+
+export interface RerankedResult extends SearchResult {
+  /** Composite score from multi-signal reranking. */
+  composite_score: number;
+  /** Individual signal values for debugging/transparency. */
+  signals: SignalValues;
+  /** Whether this result was suppressed (only present with --all). */
+  suppressed?: boolean;
+}
+
+export interface RerankedSearchResponse {
+  results: RerankedResult[];
+  /** Number of results suppressed from default view. */
+  suppressed_count: number;
+  offline?: boolean;
+  note?: string;
 }
 
 export interface SearchResponse {
@@ -325,4 +381,125 @@ export interface QueueEntry {
   author: string;
   source: DecisionSource;
   queued_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan & Billing (Phase 3)
+// ---------------------------------------------------------------------------
+
+/** Valid plan tiers. */
+export type PlanTier = 'free' | 'team' | 'business' | 'enterprise';
+
+/** Subscription status mirroring Stripe states. */
+export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
+
+/** Billing cycle for a subscription. */
+export type BillingCycle = 'monthly' | 'annual';
+
+/** Subscription record linking an organization to a billing plan. */
+export interface Subscription {
+  id: string;
+  org_id: string;
+  plan: PlanTier;
+  billing_cycle: BillingCycle;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  status: SubscriptionStatus;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Usage overage record for a single billing period. */
+export interface UsageOverage {
+  id: string;
+  org_id: string;
+  period_start: string;
+  period_end: string;
+  extra_decisions: number;
+  extra_searches: number;
+  amount_cents: number;
+  billed_at: string | null;
+}
+
+/** Daily enrichment usage per provider for cost ceiling enforcement. */
+export interface EnrichmentUsage {
+  id: string;
+  org_id: string;
+  date: string;
+  provider: string;
+  decisions_enriched: number;
+  tokens_used: number;
+  cost_cents: number;
+}
+
+// ---------------------------------------------------------------------------
+// Plan Limits (Phase 3)
+// ---------------------------------------------------------------------------
+
+/** Limits for a specific plan tier. */
+export interface PlanLimits {
+  /** Maximum number of decisions. Infinity for enterprise. */
+  decisions: number;
+  /** Maximum number of members. Infinity for enterprise. */
+  members: number;
+  /** Maximum number of searches per day. Infinity for enterprise. */
+  searches: number;
+  /** Whether overages are allowed (paid plans only). */
+  overage: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup & Enrichment (Phase 3)
+// ---------------------------------------------------------------------------
+
+/** Report from a cleanup run (dedup + orphan detection). */
+export interface CleanupReport {
+  /** Exact duplicate decisions auto-deprecated. */
+  exact_dupes_deprecated: number;
+  /** Near-duplicate pairs flagged for manual review. */
+  near_dupes_flagged: number;
+  /** Stale orphan (pending) decisions flagged for review. */
+  orphans_flagged: number;
+  /** Whether this was a dry-run (no mutations applied). */
+  dry_run: boolean;
+  /** Details of exact duplicates found. */
+  exact_dupes: Array<{ kept_id: string; deprecated_ids: string[] }>;
+  /** Details of near-duplicate pairs found. */
+  near_dupes: Array<{ decision_a_id: string; decision_b_id: string; similarity: number }>;
+  /** Details of stale orphan candidates. */
+  orphans: Array<{ decision_id: string; age_days: number }>;
+}
+
+/** Result from LLM enrichment of a single decision. */
+export interface EnrichmentResult {
+  /** Decision ID that was enriched. */
+  decision_id: string;
+  /** Assigned decision type. */
+  type: DecisionType;
+  /** Generated summary. */
+  summary: string;
+  /** Inferred affected areas. */
+  affects: string[];
+  /** Confidence score from the LLM. */
+  confidence: number;
+  /** Provider used for enrichment. */
+  provider: string;
+  /** Estimated cost in cents. */
+  cost_cents: number;
+  /** Tokens consumed. */
+  tokens_used: number;
+}
+
+/** Candidate pattern identified by the synthesis algorithm. */
+export interface PatternCandidate {
+  /** Shared affected areas that define this pattern cluster. */
+  affects: string[];
+  /** Decision IDs in this cluster. */
+  decision_ids: string[];
+  /** Jaccard cohesion score of the cluster. */
+  cohesion: number;
+  /** Whether a matching pattern already exists (idempotency check). */
+  already_exists: boolean;
 }

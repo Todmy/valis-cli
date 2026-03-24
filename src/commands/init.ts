@@ -23,10 +23,10 @@ import type { TeamindConfig } from '../types.js';
 // Community mode users provide their own.
 // ---------------------------------------------------------------------------
 const HOSTED_CREDENTIALS = {
-  supabaseUrl: 'https://teamind.supabase.co',
-  supabaseServiceRoleKey: '',
-  qdrantUrl: 'https://teamind.qdrant.io',
-  qdrantApiKey: '',
+  supabaseUrl: 'https://rmawxpdaudinbansjfpd.supabase.co',
+  supabaseServiceRoleKey: 'sb_secret_REDACTED_ROTATED',
+  qdrantUrl: 'https://c424cb8c-c7b6-4afc-963a-dfb86f82dd2c.eu-central-1-0.aws.cloud.qdrant.io',
+  qdrantApiKey: 'QDRANT_API_KEY_REDACTED_ROTATED',
 };
 
 function loadEnvFile(): Record<string, string> {

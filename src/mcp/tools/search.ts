@@ -2,7 +2,7 @@ import { loadConfig } from '../../config/store.js';
 import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
-import { checkUsageOrProceed } from '../../billing/usage.js';
+import { checkUsageBeforeSearch } from '../../billing/usage.js';
 import type { RerankedSearchResponse, SearchResult, DecisionStatus } from '../../types.js';
 
 interface SearchArgs {
@@ -38,13 +38,16 @@ export async function handleSearch(args: SearchArgs): Promise<RerankedSearchResp
     return { results: [], suppressed_count: 0, note: 'Not configured. Run `teamind init` first.' };
   }
 
-  // Usage check (non-blocking — fail-open on any error)
-  const usage = await checkUsageOrProceed(config.org_id, 'search');
+  // Usage check (non-blocking — fail-open on any error per FR-018)
+  const usage = await checkUsageBeforeSearch(config.org_id);
   if (!usage.allowed) {
+    const upgradeMsg = usage.upgrade?.message
+      ? ` ${usage.upgrade.message}`
+      : ' Run `teamind upgrade` to increase your limits.';
     return {
       results: [],
       suppressed_count: 0,
-      note: usage.message || 'Search limit reached. Upgrade your plan.',
+      note: (usage.message || 'Search limit reached.') + upgradeMsg,
     };
   }
 

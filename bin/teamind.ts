@@ -235,4 +235,18 @@ adminCmd
     }
   });
 
+program
+  .command('upgrade')
+  .description('Upgrade your organization plan via Stripe Checkout')
+  .option('--plan <plan>', 'Target plan: team or business (default: team)')
+  .option('--annual', 'Use annual billing (default: monthly)')
+  .action(async (options) => {
+    try {
+      await upgradeCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
 program.parse();

@@ -20,8 +20,15 @@ vi.mock('../../../src/cloud/qdrant.js', () => ({
       author: 'olena',
       affects: ['database'],
       created_at: '2026-03-20T14:30:00Z',
+      confidence: 0.8,
+      pinned: false,
+      depends_on: [],
     },
   ]),
+}));
+
+vi.mock('../../../src/billing/usage.js', () => ({
+  checkUsageBeforeSearch: vi.fn().mockResolvedValue({ allowed: true }),
 }));
 
 import { handleSearch } from '../../../src/mcp/tools/search.js';

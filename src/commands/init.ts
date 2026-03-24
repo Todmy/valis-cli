@@ -1,8 +1,6 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename } from 'node:path';
 import pc from 'picocolors';
 import { loadConfig, saveConfig, getConfigDir } from '../config/store.js';
 import { findProjectConfig, writeProjectConfig } from '../config/project.js';

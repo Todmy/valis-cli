@@ -683,6 +683,10 @@ export interface JoinProjectResponse {
   api_key: string;
   member_api_key?: string;
   member_id?: string;
+  supabase_url?: string;
+  qdrant_url?: string;
+  member_count?: number;
+  decision_count?: number;
   role: string;
 }
 

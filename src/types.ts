@@ -312,37 +312,6 @@ export interface TeamindConfig {
   project_name?: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Registration API (Phase 5 — Registration & Public Join)
-// ---------------------------------------------------------------------------
-
-/** Response from the public `/functions/v1/register` endpoint. */
-export interface RegistrationResponse {
-  member_api_key: string;
-  supabase_url: string;
-  qdrant_url: string;
-  org_id: string;
-  org_name: string;
-  project_id: string;
-  project_name: string;
-  invite_code: string;
-}
-
-/** Response from the public `/functions/v1/join-project` endpoint. */
-export interface JoinPublicResponse {
-  org_id: string;
-  org_name: string;
-  project_id: string;
-  project_name: string;
-  member_api_key: string;
-  member_id: string;
-  supabase_url: string;
-  qdrant_url: string;
-  member_count: number;
-  decision_count: number;
-  role: MemberRole;
-}
-
 export interface StoreResponse {
   id: string;
   status: 'stored' | 'duplicate';

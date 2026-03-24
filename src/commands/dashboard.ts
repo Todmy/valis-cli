@@ -14,8 +14,19 @@ export async function dashboardCommand(): Promise<void> {
   try {
     const stats = await getDashboardStats(supabase, config.org_id);
 
+    // T045: Pinned count from dashboard stats
+    const pinnedCount = stats.pinned_count ?? 0;
+
     console.log(pc.bold(`\nTeamind Dashboard — ${config.org_name}\n`));
     console.log(`  Total decisions: ${pc.bold(String(stats.total_decisions))}`);
+    // T045: Show pinned count in summary
+    if (pinnedCount > 0) {
+      console.log(`  Pinned:          ${pc.magenta(pc.bold(String(pinnedCount)))} immune to decay`);
+    }
+    // T014: Show proposed count in summary if any exist
+    if (stats.by_status?.proposed) {
+      console.log(`  Proposed:        ${pc.blue(pc.bold(String(stats.by_status.proposed)))} awaiting review`);
+    }
 
     // Lifecycle stats
     if (stats.by_status) {
@@ -24,6 +35,7 @@ export async function dashboardCommand(): Promise<void> {
       console.log(`    Proposed:   ${pc.blue(String(stats.by_status.proposed || 0))}`);
       console.log(`    Deprecated: ${pc.yellow(String(stats.by_status.deprecated || 0))}`);
       console.log(`    Superseded: ${pc.dim(String(stats.by_status.superseded || 0))}`);
+      console.log(`    Pinned:     ${pc.magenta(String(pinnedCount))}`);
     }
 
     // By type
@@ -38,12 +50,28 @@ export async function dashboardCommand(): Promise<void> {
       console.log(`    ${author}: ${count}`);
     }
 
-    // Recent 5
+    // Recent 5 — T045: mark pinned decisions visually
     if (stats.recent.length > 0) {
       console.log(pc.cyan('\n  Recent:'));
       for (const d of stats.recent) {
         const summary = d.summary || d.detail.substring(0, 60);
-        console.log(`    ${summary} — ${pc.dim(d.author)} — ${pc.dim(d.created_at)}`);
+        const pinLabel = d.pinned ? pc.magenta(' [pinned]') : '';
+        console.log(`    ${summary}${pinLabel} — ${pc.dim(d.author)} — ${pc.dim(d.created_at)}`);
+      }
+    }
+
+    // T014: Proposed decisions awaiting review
+    const proposedCount = stats.by_status?.proposed || 0;
+    if (proposedCount > 0) {
+      console.log(pc.blue(`\n  Proposed (${proposedCount}):`));
+      const proposedDecisions = stats.recent.filter((d) => d.status === 'proposed');
+      if (proposedDecisions.length > 0) {
+        for (const d of proposedDecisions) {
+          const summary = d.summary || d.detail.substring(0, 60);
+          console.log(`    ${pc.blue('●')} ${summary} — ${pc.dim(d.author)} — ${pc.dim(d.created_at)}`);
+        }
+      } else {
+        console.log(`    ${proposedCount} decision(s) awaiting review`);
       }
     }
 

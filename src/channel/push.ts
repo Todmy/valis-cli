@@ -37,6 +37,32 @@ export function buildNewDecisionEvent(
 }
 
 // ---------------------------------------------------------------------------
+// T015: Proposed decision push event
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a channel event when a new proposed decision is stored.
+ * Distinguished from regular new_decision by `status: proposed` in meta.
+ */
+export function buildProposedDecisionEvent(
+  author: string,
+  type: DecisionType,
+  summary: string,
+): ChannelEvent {
+  return {
+    source: 'teamind',
+    event: 'new_decision',
+    content: `[Proposed] ${summary}`,
+    meta: {
+      event: 'new_decision',
+      author,
+      type,
+      status: 'proposed',
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // T018: Cross-session push event builders
 // ---------------------------------------------------------------------------
 

@@ -34,6 +34,8 @@ const ADMIN_ONLY_ACTIONS: ReadonlySet<string> = new Set<string>([
   'key_rotated',
   'org_key_rotated',
   'member_revoked',
+  'decision_pinned',
+  'decision_unpinned',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -106,11 +108,19 @@ export function canRevokeMember(memberRole: string): boolean {
 }
 
 /**
+ * Only admins may pin or unpin decisions (exempt from confidence decay).
+ */
+export function canPin(memberRole: string): boolean {
+  return memberRole === 'admin';
+}
+
+/**
  * Check whether a role may perform a given status transition.
  *
  * - deprecate / promote: any member
  * - supersede: admin + original author (caller must additionally verify
  *   authorship via {@link canSupersede})
+ * - pin / unpin: admin only
  */
 export function canChangeStatus(
   memberRole: string,
@@ -121,6 +131,8 @@ export function canChangeStatus(
     case 'promote':
       return true; // any authenticated member
     case 'supersede':
+    case 'pin':
+    case 'unpin':
       return memberRole === 'admin';
     default:
       return false;

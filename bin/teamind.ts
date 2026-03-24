@@ -12,6 +12,7 @@ import { uninstallCommand } from '../src/commands/uninstall.js';
 import { adminMetricsCommand } from '../src/commands/admin-metrics.js';
 import { migrateAuthCommand } from '../src/commands/migrate-auth.js';
 import { adminAuditCommand } from '../src/commands/admin-audit.js';
+import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
 
 const program = new Command();
 
@@ -74,6 +75,7 @@ program
   .description('Search decisions from the terminal')
   .option('--type <type>', 'Filter by type (decision/constraint/pattern/lesson)')
   .option('--limit <n>', 'Max results (default 10)')
+  .option('--all', 'Include suppressed results')
   .action(async (query, options) => {
     try {
       await searchCommand(query, options);
@@ -178,6 +180,21 @@ adminCmd
   .action(async (options) => {
     try {
       await adminAuditCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('cleanup')
+  .description('Detect and clean up duplicate and orphaned decisions')
+  .option('--dry-run', 'Report findings without making changes (default)')
+  .option('--apply', 'Execute cleanup actions (deprecate exact dupes, create audit entries)')
+  .option('--org <org-id>', 'Target org ID (defaults to local config)')
+  .action(async (options) => {
+    try {
+      await adminCleanupCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

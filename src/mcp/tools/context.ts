@@ -1,6 +1,8 @@
 import { loadConfig } from '../../config/store.js';
 import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
-import type { ContextResponse, SearchResult, DecisionStatus } from '../../types.js';
+import { rerank } from '../../search/reranker.js';
+import { suppressResults } from '../../search/suppression.js';
+import type { ContextResponse, SearchResult, RerankedResult, DecisionStatus } from '../../types.js';
 
 interface ContextArgs {
   task_description: string;
@@ -38,13 +40,19 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-    const results = await hybridSearch(qdrant, config.org_id, query, { limit: 20 });
+    const results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
+
+    // T047: Apply multi-signal reranking for consistent ordering with search
+    const reranked: RerankedResult[] = rerank(results);
+
+    // T050: Apply within-area suppression after reranking
+    const { visible, suppressed_count } = suppressResults(reranked, 1.5, false);
 
     // Separate active/proposed from deprecated/superseded
-    const active: SearchResult[] = [];
-    const historical: SearchResult[] = [];
+    const active: RerankedResult[] = [];
+    const historical: RerankedResult[] = [];
 
-    for (const r of results) {
+    for (const r of visible) {
       const status: DecisionStatus = r.status || 'active';
       if (HISTORICAL_STATUSES.has(status)) {
         historical.push(r);
@@ -54,7 +62,7 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
     }
 
     // Group active results by type
-    const grouped: Record<string, SearchResult[]> = {
+    const grouped: Record<string, RerankedResult[]> = {
       decision: [],
       constraint: [],
       pattern: [],
@@ -68,7 +76,13 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
       }
     }
 
-    const totalInBrain = results.length;
+    // Limit each group to top results (already sorted by composite_score)
+    const decisions = grouped.decision.slice(0, 20);
+    const constraints = grouped.constraint.slice(0, 20);
+    const patterns = grouped.pattern.slice(0, 20);
+    const lessons = grouped.lesson.slice(0, 20);
+
+    const totalInBrain = reranked.length;
     let note: string | undefined;
 
     if (firstCall) {
@@ -76,17 +90,22 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
         historical.length > 0
           ? ` (${historical.length} historical/superseded items also available)`
           : '';
-      note = `${totalInBrain} relevant decisions found in team brain${historicalNote}. Use teamind_search for specific queries.`;
+      const suppressedNote =
+        suppressed_count > 0
+          ? ` (${suppressed_count} similar results suppressed)`
+          : '';
+      note = `${totalInBrain} relevant decisions found in team brain${historicalNote}${suppressedNote}. Use teamind_search for specific queries.`;
       firstCall = false;
     }
 
     return {
-      decisions: grouped.decision,
-      constraints: grouped.constraint,
-      patterns: grouped.pattern,
-      lessons: grouped.lesson,
+      decisions,
+      constraints,
+      patterns,
+      lessons,
       historical,
       total_in_brain: totalInBrain,
+      suppressed_count,
       note,
     };
   } catch {
@@ -97,6 +116,7 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
       lessons: [],
       historical: [],
       total_in_brain: 0,
+      suppressed_count: 0,
       offline: true,
     };
   }

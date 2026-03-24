@@ -13,6 +13,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Decision, DecisionStatus } from '../types.js';
 import {
   buildRemoteDecisionEvent,
+  buildProposedDecisionEvent,
   buildDeprecationEvent,
   type ChannelEvent,
 } from '../channel/push.js';
@@ -77,6 +78,15 @@ export function handleInsertEvent(
 
   // Dedup: skip if this is an echo of our own store
   if (isLocalEcho(row, localAuthor)) return null;
+
+  // T015: Proposed decisions get a distinct push event with proposed label
+  if (row.status === 'proposed') {
+    return buildProposedDecisionEvent(
+      row.author ?? 'unknown',
+      row.type ?? 'decision',
+      row.summary ?? row.detail.substring(0, 100),
+    );
+  }
 
   return buildRemoteDecisionEvent({
     author: row.author ?? 'unknown',

@@ -10,7 +10,7 @@ import {
 import type { StoreExtras } from '../../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../../cloud/qdrant.js';
 import { appendToQueue } from '../../offline/queue.js';
-import { buildNewDecisionEvent, buildContradictionEvent } from '../../channel/push.js';
+import { buildNewDecisionEvent, buildProposedDecisionEvent, buildContradictionEvent } from '../../channel/push.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
 import { detectContradictions } from '../../contradiction/detect.js';
@@ -239,11 +239,21 @@ export async function handleStore(
     // -----------------------------------------------------------------------
 
     try {
-      const _event = buildNewDecisionEvent(
-        config.author_name,
-        raw.type || 'pending',
-        raw.summary || args.text.substring(0, 100),
-      );
+      const summaryText = raw.summary || args.text.substring(0, 100);
+      if (extras.status === 'proposed') {
+        // T011: proposed decisions get a distinct push event
+        const _event = buildProposedDecisionEvent(
+          config.author_name,
+          raw.type || 'pending',
+          summaryText,
+        );
+      } else {
+        const _event = buildNewDecisionEvent(
+          config.author_name,
+          raw.type || 'pending',
+          summaryText,
+        );
+      }
       // Channel notification would be sent via MCP server.notification()
       // when channel transport is connected. For MVP, event is built but
       // push requires server reference — wired in serve command.

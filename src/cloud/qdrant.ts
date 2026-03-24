@@ -2,7 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { randomUUID } from 'node:crypto';
 import type { RawDecision, SearchResult, DecisionType } from '../types.js';
 
-const COLLECTION_NAME = 'decisions';
+export const COLLECTION_NAME = 'decisions';
 const VECTOR_SIZE = 384;
 
 let client: QdrantClient | null = null;
@@ -48,12 +48,21 @@ export async function ensureCollection(qdrant: QdrantClient): Promise<void> {
   }
 }
 
+/** Optional extended fields for decision upsert (Phase 3 — search growth). */
+export interface UpsertExtras {
+  pinned?: boolean;
+  status?: string;
+  depends_on?: string[];
+  replaces?: string | null;
+}
+
 export async function upsertDecision(
   qdrant: QdrantClient,
   orgId: string,
   decisionId: string,
   raw: RawDecision,
   author: string,
+  extras?: UpsertExtras,
 ): Promise<void> {
   // Use Qdrant's server-side embedding by sending the text as document
   // Qdrant Cloud with FastEmbed generates embeddings server-side
@@ -69,9 +78,10 @@ export async function upsertDecision(
           author,
           affects: raw.affects || [],
           confidence: raw.confidence || null,
-          replaces: null as string | null,
-          depends_on: [] as string[],
-          status: 'active',
+          pinned: extras?.pinned ?? false,
+          replaces: extras?.replaces ?? null as string | null,
+          depends_on: extras?.depends_on ?? [] as string[],
+          status: extras?.status ?? 'active',
           created_at: new Date().toISOString(),
         },
         // Placeholder zero vector — Qdrant Cloud with server-side embedding
@@ -81,6 +91,23 @@ export async function upsertDecision(
         vector: new Array(VECTOR_SIZE).fill(0),
       },
     ],
+  });
+}
+
+/**
+ * Update the `pinned` payload field on an existing Qdrant point.
+ *
+ * Used by the pin/unpin lifecycle actions to keep Qdrant in sync with
+ * Postgres so that the recencyDecay signal can read `pinned` at search time.
+ */
+export async function updatePinnedPayload(
+  qdrant: QdrantClient,
+  decisionId: string,
+  pinned: boolean,
+): Promise<void> {
+  await qdrant.setPayload(COLLECTION_NAME, {
+    payload: { pinned },
+    points: [decisionId],
   });
 }
 
@@ -108,21 +135,7 @@ export async function hybridSearch(
       with_payload: true,
     });
 
-    return results.points.map((point) => {
-      const payload = point.payload as Record<string, unknown>;
-      return {
-        id: point.id as string,
-        score: point.score || 0,
-        type: payload.type as DecisionType,
-        summary: (payload.summary as string) || null,
-        detail: payload.detail as string,
-        author: payload.author as string,
-        affects: (payload.affects as string[]) || [],
-        created_at: payload.created_at as string,
-        status: (payload.status as import('../types.js').DecisionStatus) || 'active',
-        replaces: (payload.replaces as string) || null,
-      };
-    });
+    return results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
   } catch {
     // Fallback: scroll with filter only (no vector search)
     const results = await qdrant.scroll(COLLECTION_NAME, {
@@ -131,22 +144,51 @@ export async function hybridSearch(
       with_payload: true,
     });
 
-    return results.points.map((point) => {
-      const payload = point.payload as Record<string, unknown>;
-      return {
-        id: point.id as string,
-        score: 0,
-        type: payload.type as DecisionType,
-        summary: (payload.summary as string) || null,
-        detail: payload.detail as string,
-        author: payload.author as string,
-        affects: (payload.affects as string[]) || [],
-        created_at: payload.created_at as string,
-        status: (payload.status as import('../types.js').DecisionStatus) || 'active',
-        replaces: (payload.replaces as string) || null,
-      };
-    });
+    return results.points.map((point) => mapPointToSearchResult(point, 0));
   }
+}
+
+/**
+ * Map a Qdrant point (from query or scroll) to a SearchResult.
+ * Extracts all payload fields including Phase 3 reranker inputs
+ * (confidence, pinned, depends_on).
+ */
+function mapPointToSearchResult(
+  point: { id: string | number; payload?: Record<string, unknown> | null | undefined; score?: number },
+  score: number,
+): SearchResult {
+  const payload = (point.payload ?? {}) as Record<string, unknown>;
+  return {
+    id: point.id as string,
+    score,
+    type: payload.type as DecisionType,
+    summary: (payload.summary as string) || null,
+    detail: payload.detail as string,
+    author: payload.author as string,
+    affects: (payload.affects as string[]) || [],
+    created_at: payload.created_at as string,
+    status: (payload.status as import('../types.js').DecisionStatus) || 'active',
+    replaces: (payload.replaces as string) || null,
+    confidence: (payload.confidence as number) ?? null,
+    pinned: (payload.pinned as boolean) ?? false,
+    depends_on: (payload.depends_on as string[]) ?? [],
+  };
+}
+
+/**
+ * Update the `pinned` payload field for an existing decision point.
+ *
+ * Used by the pin/unpin lifecycle actions (T042).
+ */
+export async function updatePinnedPayload(
+  qdrant: QdrantClient,
+  decisionId: string,
+  pinned: boolean,
+): Promise<void> {
+  await qdrant.setPayload(COLLECTION_NAME, {
+    payload: { pinned },
+    points: [decisionId],
+  });
 }
 
 export async function getDashboardStats(
@@ -173,6 +215,27 @@ export async function healthCheck(qdrant: QdrantClient): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Payload update — pin/unpin (T042)
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the `pinned` field on an existing Qdrant point's payload.
+ *
+ * Used by the lifecycle pin/unpin handler to keep Qdrant in sync
+ * with the Postgres `decisions.pinned` column.
+ */
+export async function updatePinnedPayload(
+  qdrant: QdrantClient,
+  decisionId: string,
+  pinned: boolean,
+): Promise<void> {
+  await qdrant.setPayload(COLLECTION_NAME, {
+    payload: { pinned },
+    points: [decisionId],
+  });
 }
 
 // ---------------------------------------------------------------------------

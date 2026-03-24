@@ -32,6 +32,7 @@ export function createMcpServer(): McpServer {
       confidence: z.number().int().min(1).max(10).optional().describe('Confidence score 1-10'),
       project_id: z.string().optional().describe('Project directory name'),
       session_id: z.string().optional().describe('Session UUID for dedup'),
+      status: z.enum(['active', 'proposed']).optional().describe("Initial status — defaults to 'active'. Use 'proposed' for team review workflow"),
     },
     async (args) => {
       const result = await handleStore(args);
@@ -47,6 +48,7 @@ export function createMcpServer(): McpServer {
       query: z.string().min(1).describe('Search query text'),
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Filter by type'),
       limit: z.number().int().min(1).max(50).default(10).optional().describe('Max results'),
+      all: z.boolean().optional().describe('When true, include suppressed results with suppressed label'),
     },
     async (args) => {
       const result = await handleSearch(args);
@@ -71,9 +73,9 @@ export function createMcpServer(): McpServer {
   // teamind_lifecycle
   server.tool(
     'teamind_lifecycle',
-    'Manage decision lifecycle: deprecate outdated decisions, promote proposed ones to active, or view status change history.',
+    'Manage decision lifecycle: deprecate outdated decisions, promote proposed ones to active, pin/unpin decisions (admin-only), or view status change history.',
     {
-      action: z.enum(['deprecate', 'promote', 'history']).describe('Lifecycle action to perform'),
+      action: z.enum(['deprecate', 'promote', 'history', 'pin', 'unpin']).describe('Lifecycle action to perform'),
       decision_id: z.string().describe('UUID of the target decision'),
       reason: z.string().optional().describe('Reason for the status change'),
     },

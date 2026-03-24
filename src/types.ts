@@ -337,6 +337,8 @@ export interface ContextResponse {
   /** Deprecated/superseded results kept for historical reference. */
   historical?: SearchResult[];
   total_in_brain: number;
+  /** Number of results suppressed from default view (T050). */
+  suppressed_count?: number;
   note?: string;
   offline?: boolean;
 }
@@ -349,6 +351,8 @@ export interface DashboardStats {
   pending_count: number;
   /** Counts by lifecycle status (Phase 2). */
   by_status?: Record<DecisionStatus, number>;
+  /** Number of pinned decisions (Phase 3 — US5). */
+  pinned_count?: number;
   /** Decisions whose dependencies include deprecated/superseded decisions. */
   dependency_warnings?: DependencyWarning[];
 }

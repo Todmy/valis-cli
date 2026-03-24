@@ -60,19 +60,19 @@ describe('checkUsageOrProceed', () => {
   describe('fail-open guarantee', () => {
     it('returns allowed=true when config is null', async () => {
       vi.mocked(loadConfig).mockResolvedValue(null);
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
 
     it('returns allowed=true on network error', async () => {
       mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
 
     it('returns allowed=true on timeout', async () => {
       mockFetch.mockRejectedValue(new DOMException('Aborted', 'AbortError'));
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
 
@@ -81,7 +81,7 @@ describe('checkUsageOrProceed', () => {
         ok: false,
         status: 500,
       });
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
 
@@ -90,7 +90,7 @@ describe('checkUsageOrProceed', () => {
         ok: true,
         json: () => { throw new SyntaxError('Unexpected token'); },
       });
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
 
@@ -99,7 +99,7 @@ describe('checkUsageOrProceed', () => {
         ok: true,
         json: () => Promise.resolve({ allowed: true, plan: 'free' }),
       });
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
   });
@@ -118,7 +118,7 @@ describe('checkUsageOrProceed', () => {
           },
         }),
       });
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(false);
       expect(result.message).toContain('Free tier limit reached');
       expect(result.upgrade).toBeDefined();
@@ -155,7 +155,7 @@ describe('checkUsageOrProceed', () => {
           overage_rate: '$0.005 per decision',
         }),
       });
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
   });
@@ -166,27 +166,22 @@ describe('checkUsageOrProceed', () => {
         ok: true,
         json: () => Promise.resolve({ allowed: true }),
       });
-      await checkUsageOrProceed('org-123', 'store');
+      await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(mockFetch).toHaveBeenCalledOnce();
       const callArgs = mockFetch.mock.calls[0];
       expect(callArgs[1].headers.Authorization).toBe('Bearer jwt-token');
     });
 
-    it('falls back to service role key when no JWT', async () => {
+    it('fail-open when no JWT token available', async () => {
       vi.mocked(getToken).mockResolvedValue(null);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ allowed: true }),
-      });
-      await checkUsageOrProceed('org-123', 'store');
-      expect(mockFetch).toHaveBeenCalledOnce();
-      const callArgs = mockFetch.mock.calls[0];
-      expect(callArgs[1].headers.Authorization).toBe('Bearer test-service-role-key');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
+      expect(result.allowed).toBe(true);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('fail-open when getToken throws', async () => {
       vi.mocked(getToken).mockRejectedValue(new Error('Token error'));
-      const result = await checkUsageOrProceed('org-123', 'store');
+      const result = await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
       expect(result.allowed).toBe(true);
     });
   });
@@ -197,7 +192,7 @@ describe('checkUsageOrProceed', () => {
         ok: true,
         json: () => Promise.resolve({ allowed: true }),
       });
-      await checkUsageOrProceed('org-123', 'store');
+      await checkUsageOrProceed('https://test.supabase.co', 'test-api-key', 'org-123', 'store');
 
       const [url, options] = mockFetch.mock.calls[0];
       expect(url).toBe('https://test.supabase.co/functions/v1/check-usage');

@@ -1,36 +1,73 @@
 /**
- * T062-T063-T066: Synthesis runner — orchestrates pattern detection,
- * idempotent creation, stale pattern deprecation, audit, and push notifications.
+ * T063: Synthesis runner — orchestrate pattern detection, idempotency,
+ * pattern creation, stale deprecation, and audit entries.
+ *
+ * Pipeline:
+ * 1. Fetch active decisions from time window
+ * 2. Detect pattern candidates
+ * 3. Idempotency check — skip if existing pattern overlaps >0.8 on depends_on
+ * 4. Create new patterns via normal store pipeline (source = 'synthesis')
+ * 5. Deprecate stale patterns (all source decisions deprecated)
+ * 6. Create audit entries and push notifications
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { PatternCandidate, Decision } from '../types.js';
-import { detectPatterns, jaccard, type DetectPatternsOptions } from './patterns.js';
+import type { Decision, PatternCandidate } from '../types.js';
+import {
+  detectPatterns,
+  jaccard,
+  patternSummary,
+  type ClusterDecision,
+} from './patterns.js';
 import { storeDecision, changeDecisionStatus } from '../cloud/supabase.js';
-import { createAuditEntry, buildAuditPayload } from '../auth/audit.js';
+import { buildAuditPayload, createAuditEntry } from '../auth/audit.js';
 
 // ---------------------------------------------------------------------------
-// Types
+// Synthesis report
 // ---------------------------------------------------------------------------
 
-export interface SynthesisOptions extends DetectPatternsOptions {
-  /** If true, report patterns without creating decisions. */
-  dryRun?: boolean;
-  /** Member ID for audit entries. Falls back to 'system'. */
+export interface SynthesisReport {
+  mode: 'dry_run' | 'applied';
+  candidates_detected: number;
+  patterns_created: number;
+  patterns_skipped_idempotent: number;
+  stale_patterns_deprecated: number;
+  errors: Array<{ area: string; error: string }>;
+  candidates: PatternCandidate[];
+}
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+export interface SynthesisOptions {
+  orgId: string;
+  windowDays: number;
+  minCluster: number;
+  dryRun: boolean;
   memberId?: string;
 }
 
-export interface SynthesisReport {
-  /** Whether this was a dry-run. */
-  dry_run: boolean;
-  /** Pattern candidates detected (including already-existing). */
-  candidates: PatternCandidate[];
-  /** Number of new pattern decisions created. */
-  patterns_created: number;
-  /** Number of stale patterns auto-deprecated. */
-  patterns_deprecated: number;
-  /** Error messages for individual failures (non-fatal). */
-  errors: string[];
+// ---------------------------------------------------------------------------
+// Fetch active decisions from window
+// ---------------------------------------------------------------------------
+
+async function fetchActiveDecisions(
+  supabase: SupabaseClient,
+  orgId: string,
+  windowDays: number,
+): Promise<ClusterDecision[]> {
+  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+
+  const { data, error } = await supabase
+    .from('decisions')
+    .select('id, affects, summary, type, created_at')
+    .eq('org_id', orgId)
+    .eq('status', 'active')
+    .gte('created_at', since);
+
+  if (error) throw new Error(`Failed to fetch decisions: ${error.message}`);
+  return (data ?? []) as ClusterDecision[];
 }
 
 // ---------------------------------------------------------------------------
@@ -38,18 +75,16 @@ export interface SynthesisReport {
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether a pattern with overlapping source decisions already exists.
- *
- * Queries active pattern decisions with source='synthesis' whose `affects`
- * overlap the candidate's areas, then computes Jaccard on the depends_on
- * arrays. Overlap > 0.8 means the pattern already exists.
+ * Check if an existing active synthesis pattern already covers this cluster.
+ * Returns true if an existing pattern's depends_on has Jaccard > 0.8 overlap
+ * with the candidate's decision_ids AND shares overlapping areas.
  */
 async function patternAlreadyExists(
   supabase: SupabaseClient,
   orgId: string,
   candidate: PatternCandidate,
 ): Promise<boolean> {
-  const { data: existing, error } = await supabase
+  const { data, error } = await supabase
     .from('decisions')
     .select('id, depends_on, affects')
     .eq('org_id', orgId)
@@ -58,10 +93,12 @@ async function patternAlreadyExists(
     .eq('status', 'active')
     .overlaps('affects', candidate.affects);
 
-  if (error || !existing || existing.length === 0) return false;
+  if (error || !data || data.length === 0) return false;
 
-  for (const row of existing) {
-    const existingDeps = (row.depends_on as string[]) ?? [];
+  for (const existing of data) {
+    const existingDeps = (existing.depends_on as string[]) ?? [];
+    if (existingDeps.length === 0) continue;
+
     const overlap = jaccard(existingDeps, candidate.decision_ids);
     if (overlap > 0.8) return true;
   }
@@ -70,60 +107,19 @@ async function patternAlreadyExists(
 }
 
 // ---------------------------------------------------------------------------
-// Pattern creation
+// Stale pattern deprecation
 // ---------------------------------------------------------------------------
 
 /**
- * Create a single pattern decision from a PatternCandidate.
- *
- * Stores via the normal pipeline (Postgres + Qdrant through storeDecision),
- * using source='synthesis' and type='pattern'.
- */
-async function createPattern(
-  supabase: SupabaseClient,
-  orgId: string,
-  candidate: PatternCandidate,
-  memberId: string,
-  windowDays: number,
-): Promise<Decision> {
-  const summary = `Team pattern: ${candidate.affects[0]} — ${candidate.decision_ids.length} decisions in ${windowDays} days`;
-
-  const raw = {
-    text: summary,
-    type: 'pattern' as const,
-    summary,
-    affects: candidate.affects,
-    confidence: Math.min(candidate.cohesion, 1),
-  };
-
-  const decision = await storeDecision(
-    supabase,
-    orgId,
-    raw,
-    'system',
-    'synthesis',
-    {
-      status: 'active',
-      depends_on: candidate.decision_ids,
-    },
-  );
-
-  return decision;
-}
-
-// ---------------------------------------------------------------------------
-// Stale pattern deprecation (T066)
-// ---------------------------------------------------------------------------
-
-/**
- * Auto-deprecate patterns when ALL of their source decisions are
- * deprecated or superseded.
+ * Find and deprecate patterns whose source decisions are all deprecated
+ * or superseded.
  */
 async function deprecateStalePatterns(
   supabase: SupabaseClient,
   orgId: string,
   memberId: string,
-): Promise<{ deprecated: number; errors: string[] }> {
+): Promise<number> {
+  // Fetch all active synthesis patterns
   const { data: patterns, error } = await supabase
     .from('decisions')
     .select('id, depends_on')
@@ -132,152 +128,122 @@ async function deprecateStalePatterns(
     .eq('source', 'synthesis')
     .eq('status', 'active');
 
-  if (error || !patterns) return { deprecated: 0, errors: [] };
+  if (error || !patterns || patterns.length === 0) return 0;
 
   let deprecated = 0;
-  const errors: string[] = [];
-
   for (const pattern of patterns) {
     const dependsOn = (pattern.depends_on as string[]) ?? [];
     if (dependsOn.length === 0) continue;
 
-    const { data: sources, error: srcErr } = await supabase
+    // Check status of all source decisions
+    const { data: sources } = await supabase
       .from('decisions')
       .select('id, status')
       .in('id', dependsOn);
 
-    if (srcErr || !sources) continue;
-
-    const allDeprecated = sources.every(
+    const allDeprecated = (sources ?? []).every(
       (s: { status: string }) =>
         s.status === 'deprecated' || s.status === 'superseded',
     );
 
-    if (allDeprecated) {
+    if (allDeprecated && (sources ?? []).length > 0) {
       try {
         await changeDecisionStatus(
           supabase,
           orgId,
           pattern.id as string,
           'deprecated',
-          memberId,
+          'system',
           'All source decisions deprecated',
         );
-
-        await createAuditEntry(
-          supabase,
-          buildAuditPayload(
-            'decision_deprecated',
-            'decision',
-            pattern.id as string,
-            memberId,
-            orgId,
-            {
-              previousState: { status: 'active' },
-              newState: { status: 'deprecated' },
-              reason: 'Pattern auto-deprecated: all source decisions deprecated',
-            },
-          ),
-        );
-
         deprecated++;
-      } catch (err) {
-        errors.push(
-          `Failed to deprecate stale pattern ${pattern.id}: ${(err as Error).message}`,
-        );
+      } catch {
+        // Best-effort deprecation
       }
     }
   }
 
-  return { deprecated, errors };
+  return deprecated;
 }
 
 // ---------------------------------------------------------------------------
-// Main runner (T062)
+// Main runner
 // ---------------------------------------------------------------------------
 
-/**
- * Run the full synthesis pipeline:
- *
- * 1. Detect pattern clusters via `detectPatterns`.
- * 2. For each candidate, check idempotency (skip if existing pattern
- *    has > 0.8 Jaccard overlap on depends_on).
- * 3. Create new pattern decisions with source='synthesis'.
- * 4. Create audit entries ('pattern_synthesized').
- * 5. Deprecate stale patterns (all source decisions deprecated).
- *
- * Push notifications happen automatically through Supabase Realtime
- * INSERT events on the decisions table (Phase 2 infrastructure).
- */
 export async function runSynthesis(
   supabase: SupabaseClient,
-  orgId: string,
-  opts?: SynthesisOptions,
+  options: SynthesisOptions,
 ): Promise<SynthesisReport> {
-  const dryRun = opts?.dryRun ?? false;
-  const memberId = opts?.memberId ?? 'system';
-  const windowDays = opts?.windowDays ?? 30;
+  const { orgId, windowDays, minCluster, dryRun, memberId } = options;
 
   const report: SynthesisReport = {
-    dry_run: dryRun,
-    candidates: [],
+    mode: dryRun ? 'dry_run' : 'applied',
+    candidates_detected: 0,
     patterns_created: 0,
-    patterns_deprecated: 0,
+    patterns_skipped_idempotent: 0,
+    stale_patterns_deprecated: 0,
     errors: [],
+    candidates: [],
   };
 
-  // 1. Detect pattern clusters
-  try {
-    report.candidates = await detectPatterns(supabase, orgId, {
-      windowDays: opts?.windowDays,
-      minCluster: opts?.minCluster,
-    });
-  } catch (err) {
-    report.errors.push(`Pattern detection failed: ${(err as Error).message}`);
-    return report;
-  }
+  // 1. Fetch active decisions from time window
+  const decisions = await fetchActiveDecisions(supabase, orgId, windowDays);
+  if (decisions.length === 0) return report;
 
-  // 2. Mark existing patterns for idempotency
-  for (const candidate of report.candidates) {
+  // 2. Detect pattern candidates
+  const candidates = detectPatterns(decisions, minCluster, windowDays);
+  report.candidates_detected = candidates.length;
+
+  // 3. For each candidate: idempotency check, then create
+  for (const candidate of candidates) {
     try {
-      candidate.already_exists = await patternAlreadyExists(
-        supabase,
-        orgId,
-        candidate,
-      );
-    } catch (err) {
-      report.errors.push(
-        `Idempotency check failed for candidate [${candidate.affects.join(', ')}]: ${(err as Error).message}`,
-      );
-      // Mark as existing to be safe (skip creation)
-      candidate.already_exists = true;
-    }
-  }
+      // Idempotency check
+      const exists = await patternAlreadyExists(supabase, orgId, candidate);
+      if (exists) {
+        candidate.already_exists = true;
+        report.patterns_skipped_idempotent++;
+        report.candidates.push(candidate);
+        continue;
+      }
 
-  // If dry-run, stop here
-  if (dryRun) return report;
+      report.candidates.push(candidate);
 
-  // 3. Create new pattern decisions
-  for (const candidate of report.candidates) {
-    if (candidate.already_exists) continue;
+      if (dryRun) continue;
 
-    try {
-      const decision = await createPattern(
-        supabase,
-        orgId,
-        candidate,
-        memberId,
+      // Create pattern via normal store pipeline
+      const summary = patternSummary(
+        candidate.affects,
+        candidate.decision_ids.length,
         windowDays,
       );
 
-      // 4. Create audit entry (T063 — 'pattern_synthesized')
-      await createAuditEntry(
+      const confidence = Math.min(
+        1.0,
+        candidate.decision_ids.length / decisions.length,
+      );
+
+      const decision = await storeDecision(
         supabase,
-        buildAuditPayload(
+        orgId,
+        {
+          text: summary,
+          type: 'pattern',
+          summary,
+          affects: candidate.affects,
+          confidence,
+        },
+        'system',
+        'synthesis',
+        { depends_on: candidate.decision_ids },
+      );
+
+      // Create audit entry
+      try {
+        const auditPayload = buildAuditPayload(
           'pattern_synthesized',
           'decision',
           decision.id,
-          memberId,
+          memberId ?? 'system',
           orgId,
           {
             newState: {
@@ -287,30 +253,32 @@ export async function runSynthesis(
             },
             reason: `Pattern detected: ${candidate.affects.join(', ')}`,
           },
-        ),
-      );
+        );
+        await createAuditEntry(supabase, auditPayload);
+      } catch {
+        // Audit failures are non-fatal
+      }
 
       report.patterns_created++;
     } catch (err) {
-      report.errors.push(
-        `Failed to create pattern for [${candidate.affects.join(', ')}]: ${(err as Error).message}`,
-      );
+      report.errors.push({
+        area: candidate.affects.join(', '),
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  // 5. Deprecate stale patterns (T066)
-  try {
-    const staleResult = await deprecateStalePatterns(
-      supabase,
-      orgId,
-      memberId,
-    );
-    report.patterns_deprecated = staleResult.deprecated;
-    report.errors.push(...staleResult.errors);
-  } catch (err) {
-    report.errors.push(
-      `Stale pattern deprecation failed: ${(err as Error).message}`,
-    );
+  // 4. Deprecate stale patterns (only when applying)
+  if (!dryRun) {
+    try {
+      report.stale_patterns_deprecated = await deprecateStalePatterns(
+        supabase,
+        orgId,
+        memberId ?? 'system',
+      );
+    } catch {
+      // Best-effort
+    }
   }
 
   return report;

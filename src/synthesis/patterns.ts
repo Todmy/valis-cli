@@ -1,12 +1,13 @@
 /**
- * T061-T062: Pattern detection via inverted index + Jaccard similarity clustering.
+ * T061-T062: Pattern detection via affects-area overlap + Jaccard similarity.
  *
- * Builds an inverted index (area -> decision IDs), groups by overlapping
- * affects areas using Jaccard similarity >= 0.3, and returns clusters of
- * 3+ decisions within a configurable time window.
+ * Algorithm:
+ * 1. Build inverted index: area -> decision IDs
+ * 2. For each area with >= minCluster decisions, cluster by Jaccard on full affects arrays
+ * 3. Average pairwise Jaccard as cohesion metric
+ * 4. Deduplicate overlapping pattern candidates
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Decision, PatternCandidate } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -15,7 +16,7 @@ import type { Decision, PatternCandidate } from '../types.js';
 
 /**
  * Compute Jaccard similarity (intersection-over-union) on two string arrays.
- * Returns 0 when both arrays are empty.
+ * Returns 0 when both are empty.
  */
 export function jaccard(a: string[], b: string[]): number {
   const setA = new Set(a);
@@ -26,11 +27,11 @@ export function jaccard(a: string[], b: string[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Clustering helpers
+// Clustering (T061)
 // ---------------------------------------------------------------------------
 
-/** A lightweight decision projection used during clustering. */
-interface ClusterDecision {
+/** Minimal decision shape needed by the clustering algorithm. */
+export interface ClusterDecision {
   id: string;
   affects: string[];
   summary: string | null;
@@ -39,84 +40,94 @@ interface ClusterDecision {
 }
 
 /**
- * Cluster decisions by pairwise Jaccard similarity on their `affects` arrays.
+ * Single-linkage clustering by Jaccard similarity on `affects` arrays.
  *
- * Uses a simple single-linkage approach: start with the first unclustered
- * decision, greedily add any decision whose Jaccard similarity with *any*
- * member of the cluster is >= `threshold`.
+ * Two decisions are considered related when their Jaccard >= `threshold`.
+ * Returns an array of clusters (each cluster = array of decisions).
  */
 export function clusterByJaccard(
   decisions: ClusterDecision[],
   threshold: number,
 ): ClusterDecision[][] {
-  const used = new Set<number>();
-  const clusters: ClusterDecision[][] = [];
+  // Union-Find for clustering
+  const parent = new Map<number, number>();
+  const find = (i: number): number => {
+    if (!parent.has(i)) parent.set(i, i);
+    if (parent.get(i) !== i) parent.set(i, find(parent.get(i)!));
+    return parent.get(i)!;
+  };
+  const unite = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
 
+  // Initialize
   for (let i = 0; i < decisions.length; i++) {
-    if (used.has(i)) continue;
-
-    const cluster: ClusterDecision[] = [decisions[i]];
-    used.add(i);
-
-    // Keep scanning for new members until no more can be added
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let j = 0; j < decisions.length; j++) {
-        if (used.has(j)) continue;
-        // Check similarity against every member already in the cluster
-        const linked = cluster.some(
-          (m) => jaccard(m.affects, decisions[j].affects) >= threshold,
-        );
-        if (linked) {
-          cluster.push(decisions[j]);
-          used.add(j);
-          changed = true;
-        }
-      }
-    }
-
-    clusters.push(cluster);
+    parent.set(i, i);
   }
 
-  return clusters;
-}
-
-/**
- * Compute the average pairwise Jaccard similarity across a cluster of
- * decisions. Used as the cohesion metric for a PatternCandidate.
- */
-export function averagePairwiseJaccard(decisions: ClusterDecision[]): number {
-  if (decisions.length < 2) return 1;
-
-  let total = 0;
-  let pairs = 0;
-
+  // Pairwise Jaccard — unite when above threshold
   for (let i = 0; i < decisions.length; i++) {
     for (let j = i + 1; j < decisions.length; j++) {
-      total += jaccard(decisions[i].affects, decisions[j].affects);
-      pairs++;
+      const sim = jaccard(decisions[i].affects, decisions[j].affects);
+      if (sim >= threshold) {
+        unite(i, j);
+      }
     }
   }
 
-  return pairs === 0 ? 0 : total / pairs;
+  // Collect clusters
+  const clusters = new Map<number, ClusterDecision[]>();
+  for (let i = 0; i < decisions.length; i++) {
+    const root = find(i);
+    if (!clusters.has(root)) clusters.set(root, []);
+    clusters.get(root)!.push(decisions[i]);
+  }
+
+  return [...clusters.values()];
 }
 
 /**
- * Deduplicate overlapping pattern candidates.
- *
- * If two candidates share > 80% of their decision IDs (by Jaccard on the
- * ID sets), keep the one with higher cohesion.
+ * Compute average pairwise Jaccard similarity across a cluster of decisions.
+ * Returns 0 for clusters with fewer than 2 decisions.
  */
-export function deduplicatePatterns(candidates: PatternCandidate[]): PatternCandidate[] {
+export function averagePairwiseJaccard(cluster: ClusterDecision[]): number {
+  if (cluster.length < 2) return 0;
+
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < cluster.length; i++) {
+    for (let j = i + 1; j < cluster.length; j++) {
+      sum += jaccard(cluster[i].affects, cluster[j].affects);
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern detection (T061)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deduplicate pattern candidates that share >80% of their decision IDs.
+ * Keeps the candidate with higher cohesion.
+ */
+export function deduplicatePatterns(
+  candidates: PatternCandidate[],
+): PatternCandidate[] {
+  // Sort by cohesion descending so we keep the best candidates
   const sorted = [...candidates].sort((a, b) => b.cohesion - a.cohesion);
   const kept: PatternCandidate[] = [];
 
   for (const candidate of sorted) {
-    const isDuplicate = kept.some(
-      (existing) =>
-        jaccard(existing.decision_ids, candidate.decision_ids) > 0.8,
-    );
+    const candidateIds = candidate.decision_ids;
+    const isDuplicate = kept.some((existing) => {
+      const overlap = jaccard(candidateIds, existing.decision_ids);
+      return overlap > 0.8;
+    });
+
     if (!isDuplicate) {
       kept.push(candidate);
     }
@@ -125,56 +136,21 @@ export function deduplicatePatterns(candidates: PatternCandidate[]): PatternCand
   return kept;
 }
 
-// ---------------------------------------------------------------------------
-// Main detection (T061)
-// ---------------------------------------------------------------------------
-
-export interface DetectPatternsOptions {
-  /** Time window in days. Default 30. */
-  windowDays?: number;
-  /** Minimum decisions per cluster. Default 3. */
-  minCluster?: number;
-}
-
 /**
- * Detect pattern clusters from active decisions within a time window.
+ * Detect pattern candidates from a set of active decisions within a time window.
  *
- * Algorithm:
- * 1. Fetch active decisions from the window.
- * 2. Build inverted index: area -> decision IDs.
- * 3. For each area with enough decisions, cluster by Jaccard >= 0.3.
- * 4. Return PatternCandidate[] (deduplicated).
+ * Steps:
+ * 1. Build inverted index (area -> decision IDs)
+ * 2. For each area with >= minCluster decisions, run Jaccard clustering
+ * 3. Filter clusters >= minCluster, compute cohesion and summary
+ * 4. Deduplicate overlapping candidates
  */
-export async function detectPatterns(
-  supabase: SupabaseClient,
-  orgId: string,
-  opts?: DetectPatternsOptions,
-): Promise<PatternCandidate[]> {
-  const windowDays = opts?.windowDays ?? 30;
-  const minCluster = opts?.minCluster ?? 3;
-
-  // 1. Fetch active decisions from the time window
-  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-  const { data: rows, error } = await supabase
-    .from('decisions')
-    .select('id, affects, summary, type, created_at')
-    .eq('org_id', orgId)
-    .eq('status', 'active')
-    .gte('created_at', since);
-
-  if (error) throw new Error(`Failed to fetch decisions for pattern detection: ${error.message}`);
-
-  const decisions: ClusterDecision[] = (rows ?? []).map((r: Record<string, unknown>) => ({
-    id: r.id as string,
-    affects: (r.affects as string[]) ?? [],
-    summary: (r.summary as string) ?? null,
-    type: (r.type as string) ?? 'pending',
-    created_at: r.created_at as string,
-  }));
-
-  if (decisions.length < minCluster) return [];
-
-  // 2. Build inverted index: area -> decision IDs
+export function detectPatterns(
+  decisions: ClusterDecision[],
+  minCluster: number,
+  windowDays: number,
+): PatternCandidate[] {
+  // 1. Build inverted index: area -> decision IDs
   const areaIndex = new Map<string, string[]>();
   for (const d of decisions) {
     for (const area of d.affects) {
@@ -184,7 +160,7 @@ export async function detectPatterns(
     }
   }
 
-  // 3. Find areas with enough decisions and cluster
+  // 2. Find areas with enough decisions and cluster
   const candidates: PatternCandidate[] = [];
   for (const [area, ids] of areaIndex) {
     if (ids.length < minCluster) continue;
@@ -209,6 +185,17 @@ export async function detectPatterns(
     }
   }
 
-  // 4. Deduplicate overlapping candidates
+  // 3. Deduplicate overlapping candidates
   return deduplicatePatterns(candidates);
+}
+
+/**
+ * Generate a human-readable summary for a pattern candidate.
+ */
+export function patternSummary(
+  areas: string[],
+  clusterSize: number,
+  windowDays: number,
+): string {
+  return `Team pattern: ${areas.join(', ')} — ${clusterSize} decisions in ${windowDays} days`;
 }

@@ -1,12 +1,14 @@
 /**
- * Usage check helper for billing integration.
+ * Usage check helper for CLI store/search operations.
  *
- * Key invariant: Billing NEVER blocks operations (Constitution III).
- * All errors — network, timeout, Edge Function failure — result in
- * a fail-open response that allows the operation to proceed.
+ * Calls the `check-usage` Edge Function before each operation.
+ * Implements the fail-open guarantee (FR-018): if the check fails for
+ * any reason (network error, timeout, Edge Function error), the operation
+ * proceeds as if allowed.
+ *
+ * @module billing/usage
  */
 
-import { loadConfig } from '../config/store.js';
 import { getToken } from '../auth/jwt.js';
 
 // ---------------------------------------------------------------------------
@@ -18,116 +20,100 @@ export interface UsageCheckResult {
   allowed: boolean;
   /** Human-readable message when denied. */
   message?: string;
-  /** Upgrade info when denied (free tier). */
+  /** Upgrade info when denied (free tier limit reached). */
   upgrade?: {
     message: string;
     checkout_url: string | null;
   };
+  /** Current plan name. */
+  plan?: string;
+  /** Whether this operation incurs overage charges. */
+  overage?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Fail-open constant
+// Constants
 // ---------------------------------------------------------------------------
-
-const FAIL_OPEN: UsageCheckResult = { allowed: true };
 
 /** Timeout for usage check requests (3 seconds). */
 const USAGE_CHECK_TIMEOUT_MS = 3_000;
 
 // ---------------------------------------------------------------------------
-// Main helper
+// Main function
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether the current org has capacity for the given operation.
+ * Check whether the current org can perform a store or search operation.
  *
- * Fail-open guarantee: returns `{ allowed: true }` on ANY error —
- * network failure, timeout, Edge Function error, missing config, etc.
+ * **Fail-open guarantee**: On ANY error (network, timeout, HTTP error,
+ * parse error, missing config), returns `{ allowed: true }`. Billing
+ * failures must never block core operations.
  *
- * @param orgId - The organization ID to check
+ * @param supabaseUrl - Supabase project URL
+ * @param apiKey - API key (org-level or per-member) for JWT exchange
+ * @param orgId - Organization ID
  * @param operation - 'store' or 'search'
- * @returns UsageCheckResult with allowed/denied status
+ * @returns UsageCheckResult — check `allowed` to decide whether to proceed
  */
 export async function checkUsageOrProceed(
+  supabaseUrl: string,
+  apiKey: string,
   orgId: string,
   operation: 'store' | 'search',
 ): Promise<UsageCheckResult> {
   try {
-    const config = await loadConfig();
-    if (!config) {
-      return FAIL_OPEN; // No config -> fail open
+    // Get JWT token for authenticated Edge Function call
+    const tokenCache = await getToken(supabaseUrl, apiKey);
+    const jwt = tokenCache?.jwt.token;
+
+    // No token available — fail-open (offline / auth issue)
+    if (!jwt) {
+      return { allowed: true };
     }
 
-    // Resolve JWT for auth header
-    let jwt: string | undefined;
-    if (config.auth_mode === 'jwt' && config.member_api_key) {
-      const cache = await getToken(config.supabase_url, config.member_api_key);
-      jwt = cache?.jwt.token;
-    }
-
-    // Fall back to service role key if no JWT available
-    const authToken = jwt || config.supabase_service_role_key;
-    if (!authToken) {
-      return FAIL_OPEN;
-    }
-
-    const url = `${config.supabase_url}/functions/v1/check-usage`;
+    const url = `${supabaseUrl}/functions/v1/check-usage`;
 
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${authToken}`,
+        Authorization: `Bearer ${jwt}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ org_id: orgId, operation }),
       signal: AbortSignal.timeout(USAGE_CHECK_TIMEOUT_MS),
     });
 
-    // Non-OK response -> fail open
+    // HTTP error from Edge Function — fail-open
     if (!response.ok) {
-      return FAIL_OPEN;
+      return { allowed: true };
     }
 
-    const data = await response.json();
+    const data = await response.json() as {
+      allowed: boolean;
+      plan?: string;
+      reason?: string;
+      overage?: boolean;
+      overage_rate?: string;
+      upgrade?: { message: string; checkout_url: string | null };
+    };
 
     if (data.allowed === false) {
       return {
         allowed: false,
-        message: data.reason || 'Usage limit reached.',
+        message: data.reason ?? 'Usage limit reached.',
         upgrade: data.upgrade,
+        plan: data.plan,
       };
     }
 
-    // Allowed (possibly with overage info — still allowed)
-    return FAIL_OPEN;
+    return {
+      allowed: true,
+      plan: data.plan,
+      overage: data.overage ?? false,
+    };
   } catch {
-    // Network error, timeout, JSON parse error, etc. — never block
-    return FAIL_OPEN;
+    // Network error, timeout, JSON parse error, etc.
+    // NEVER block the operation — fail-open guarantee (FR-018)
+    return { allowed: true };
   }
-}
-
-// ---------------------------------------------------------------------------
-// Convenience wrappers
-// ---------------------------------------------------------------------------
-
-/**
- * Check usage before a store operation. Returns a UsageCheckResult.
- * If `allowed` is false, the caller should return an error with upgrade info
- * instead of proceeding with the store.
- */
-export async function checkUsageBeforeStore(
-  orgId: string,
-): Promise<UsageCheckResult> {
-  return checkUsageOrProceed(orgId, 'store');
-}
-
-/**
- * Check usage before a search operation. Returns a UsageCheckResult.
- * If `allowed` is false, the caller should return empty results with the
- * upgrade message instead of proceeding with the search.
- */
-export async function checkUsageBeforeSearch(
-  orgId: string,
-): Promise<UsageCheckResult> {
-  return checkUsageOrProceed(orgId, 'search');
 }

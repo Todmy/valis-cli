@@ -85,22 +85,26 @@ import { runSynthesis } from '../../src/synthesis/runner.js';
 // ---------------------------------------------------------------------------
 
 function mockQueryChain(data: unknown[] | null, error: unknown = null) {
-  const chain: Record<string, unknown> = {};
   const terminal = { data, error, count: data?.length ?? 0 };
 
-  const self = new Proxy(chain, {
+  const handler: ProxyHandler<Record<string, unknown>> = {
     get(_target, prop) {
       if (prop === 'data') return data;
       if (prop === 'error') return error;
       if (prop === 'count') return terminal.count;
-      if (typeof prop === 'string' && ['single', 'then'].includes(prop)) {
-        return () => terminal;
+      // Make the chain a proper thenable so `await` resolves correctly
+      if (prop === 'then') {
+        return (resolve: (v: unknown) => unknown) => resolve(terminal);
       }
-      return (..._args: unknown[]) => self;
+      if (prop === 'single') {
+        return () => new Proxy({}, handler);
+      }
+      // Any other method call (select, eq, gte, overlaps, in, etc.)
+      return (..._args: unknown[]) => new Proxy({}, handler);
     },
-  });
+  };
 
-  return self;
+  return new Proxy({}, handler);
 }
 
 function createMockSupabase(fromImpl: () => unknown) {

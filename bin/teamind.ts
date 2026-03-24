@@ -13,6 +13,9 @@ import { adminMetricsCommand } from '../src/commands/admin-metrics.js';
 import { migrateAuthCommand } from '../src/commands/migrate-auth.js';
 import { adminAuditCommand } from '../src/commands/admin-audit.js';
 import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
+import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
+import { enrichCommand } from '../src/commands/enrich.js';
+import { upgradeCommand } from '../src/commands/upgrade.js';
 
 const program = new Command();
 
@@ -153,6 +156,21 @@ program
     }
   });
 
+program
+  .command('enrich')
+  .description('Classify pending decisions using LLM enrichment')
+  .option('--dry-run', 'Show what would be enriched without making changes')
+  .option('--provider <provider>', 'LLM provider to use (anthropic|openai)')
+  .option('--ceiling <dollars>', 'Daily cost ceiling in dollars (default: 1.00)')
+  .action(async (options) => {
+    try {
+      await enrichCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
 const adminCmd = program
   .command('admin')
   .description('Platform operator commands');
@@ -195,6 +213,22 @@ adminCmd
   .action(async (options) => {
     try {
       await adminCleanupCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('patterns')
+  .description('Detect and synthesize patterns from decision clusters')
+  .option('--window <days>', 'Time window for clustering in days (default 30)')
+  .option('--min-cluster <n>', 'Minimum decisions per cluster (default 3)')
+  .option('--dry-run', 'Report patterns without creating decisions')
+  .option('--org <org-id>', 'Target org ID (defaults to local config)')
+  .action(async (options) => {
+    try {
+      await adminPatternsCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

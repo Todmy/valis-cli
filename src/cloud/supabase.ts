@@ -425,31 +425,6 @@ export async function changeDecisionStatus(
 }
 
 /**
- * Update the `pinned` flag on a decision (T042).
- *
- * Returns the updated decision row.
- */
-export async function pinDecision(
-  supabase: SupabaseClient,
-  orgId: string,
-  decisionId: string,
-  pinned: boolean,
-): Promise<Decision> {
-  await setOrgContext(supabase, orgId);
-
-  const { data, error } = await supabase
-    .from('decisions')
-    .update({ pinned })
-    .eq('id', decisionId)
-    .eq('org_id', orgId)
-    .select()
-    .single();
-
-  if (error) throw new Error(`Failed to update pinned status: ${error.message}`);
-  return data as Decision;
-}
-
-/**
  * Retrieve the full lifecycle history for a decision via the
  * `get_lifecycle_history` RPC function.
  *

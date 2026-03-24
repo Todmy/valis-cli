@@ -105,3 +105,29 @@ export async function checkUsageOrProceed(
     return FAIL_OPEN;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Convenience wrappers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check usage before a store operation. Returns a UsageCheckResult.
+ * If `allowed` is false, the caller should return an error with upgrade info
+ * instead of proceeding with the store.
+ */
+export async function checkUsageBeforeStore(
+  orgId: string,
+): Promise<UsageCheckResult> {
+  return checkUsageOrProceed(orgId, 'store');
+}
+
+/**
+ * Check usage before a search operation. Returns a UsageCheckResult.
+ * If `allowed` is false, the caller should return empty results with the
+ * upgrade message instead of proceeding with the search.
+ */
+export async function checkUsageBeforeSearch(
+  orgId: string,
+): Promise<UsageCheckResult> {
+  return checkUsageOrProceed(orgId, 'search');
+}

@@ -2,7 +2,7 @@ import { loadConfig } from '../../config/store.js';
 import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
-import type { ContextResponse, SearchResult, RerankedResult, DecisionStatus } from '../../types.js';
+import type { ContextResponse, RerankedResult, DecisionStatus } from '../../types.js';
 
 interface ContextArgs {
   task_description: string;

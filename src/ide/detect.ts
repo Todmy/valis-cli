@@ -30,6 +30,15 @@ export async function detectIDEs(): Promise<DetectedIDE[]> {
     detected: codexDetected,
   });
 
+  // Cursor
+  const cursorDir = join(home, '.cursor');
+  const cursorDetected = await exists(cursorDir);
+  ides.push({
+    name: 'cursor',
+    configPath: join(cursorDir, 'mcp.json'),
+    detected: cursorDetected,
+  });
+
   return ides;
 }
 

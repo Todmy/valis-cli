@@ -1,52 +1,71 @@
 /**
- * T056: Enrichment runner — orchestrates LLM enrichment of pending decisions.
+ * T056: Enrichment runner — orchestrates LLM classification of pending decisions.
  *
- * Fetches pending decisions, calls the configured provider, updates Postgres
- * and Qdrant, creates audit entries, and respects the daily cost ceiling.
+ * Pipeline:
+ *   1. Resolve provider (with graceful no-key exit).
+ *   2. Fetch pending decisions from Postgres.
+ *   3. In dry-run mode, report candidates without mutations.
+ *   4. For each pending decision (respecting daily ceiling):
+ *      a. Call LLM provider to classify.
+ *      b. Update Postgres (type, summary, affects, enriched_by).
+ *      c. Update Qdrant payload.
+ *      d. Create audit entry (decision_enriched).
+ *      e. Track usage.
+ *   5. Return an enrichment report.
+ *
+ * Completely isolated — never imported by core operations.
+ *
+ * @module enrichment/runner
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
-import type { Decision } from '../types.js';
+import type { Decision, EnrichmentResult, AuditAction } from '../types.js';
 import type { EnrichmentProvider } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
 import { checkCeiling, trackUsage, DEFAULT_CEILING_CENTS } from './cost-tracker.js';
-import { buildAuditPayload, createAuditEntry } from '../auth/audit.js';
+import { createAuditEntry } from '../auth/audit.js';
 import { COLLECTION_NAME } from '../cloud/qdrant.js';
 
 // ---------------------------------------------------------------------------
-// Types
+// Constants
+// ---------------------------------------------------------------------------
+
+const AUDIT_ACTION_ENRICHED: AuditAction = 'decision_enriched';
+
+// ---------------------------------------------------------------------------
+// Options & Report
 // ---------------------------------------------------------------------------
 
 export interface EnrichOptions {
-  /** Override provider name ('anthropic' | 'openai'). */
-  provider?: string;
-  /** Dry-run mode — report without mutations or LLM calls. */
-  dryRun?: boolean;
-  /** Daily cost ceiling in cents. Default: 100 ($1.00). */
-  ceilingCents?: number;
-  /** Org ID to enrich for. */
+  /** Target org ID. */
   orgId: string;
-  /** Member ID for audit entries. */
+  /** Member ID for audit attribution. */
   memberId: string;
+  /** When true, report candidates without mutations or LLM calls. */
+  dryRun: boolean;
+  /** Provider override (defaults to auto-detect from env). */
+  provider?: 'anthropic' | 'openai';
+  /** Daily cost ceiling in cents (default 100 = $1.00). */
+  ceilingCents?: number;
 }
 
 export interface EnrichmentReport {
-  /** Run mode. */
-  mode: 'dry_run' | 'applied' | 'no_provider' | 'no_pending';
+  /** Mode the runner executed in. */
+  mode: 'dry_run' | 'applied' | 'no_provider';
   /** Number of decisions enriched. */
   enriched: number;
-  /** Number of decisions skipped (ceiling, errors). */
-  skipped: number;
-  /** Estimated total cost in cents. */
-  costCents: number;
+  /** Number of decisions that failed enrichment. */
+  failed: number;
   /** Total pending candidates found. */
   candidates: number;
+  /** Remaining candidates not processed (ceiling hit or batch end). */
+  remaining: number;
+  /** Per-decision details (populated in non-dry-run mode). */
+  details: EnrichmentResult[];
   /** Human-readable message. */
   message: string;
-  /** Per-decision errors (non-fatal). */
-  errors: Array<{ decisionId: string; error: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,29 +73,29 @@ export interface EnrichmentReport {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve an EnrichmentProvider from env vars / explicit name.
+ * Resolve an LLM provider from environment variables.
  *
- * Checks for API keys in environment:
- * - ANTHROPIC_API_KEY -> AnthropicProvider
- * - OPENAI_API_KEY    -> OpenAIProvider
- *
- * Returns null when no provider can be configured (graceful no-key path).
+ * Priority:
+ *   1. Explicit `--provider` flag.
+ *   2. ANTHROPIC_API_KEY env var -> Anthropic.
+ *   3. OPENAI_API_KEY env var -> OpenAI.
+ *   4. null (no provider available).
  */
-export function getProvider(preferredProvider?: string): EnrichmentProvider | null {
+export function getProvider(preferred?: 'anthropic' | 'openai'): EnrichmentProvider | null {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
 
-  // Explicit provider override
-  if (preferredProvider === 'anthropic') {
+  if (preferred === 'anthropic') {
     if (!anthropicKey) return null;
     return new AnthropicProvider(anthropicKey);
   }
-  if (preferredProvider === 'openai') {
+
+  if (preferred === 'openai') {
     if (!openaiKey) return null;
     return new OpenAIProvider(openaiKey);
   }
 
-  // Auto-detect: prefer Anthropic, fallback to OpenAI
+  // Auto-detect: prefer Anthropic, fall back to OpenAI
   if (anthropicKey) return new AnthropicProvider(anthropicKey);
   if (openaiKey) return new OpenAIProvider(openaiKey);
 
@@ -84,178 +103,190 @@ export function getProvider(preferredProvider?: string): EnrichmentProvider | nu
 }
 
 // ---------------------------------------------------------------------------
-// Pending decisions query
+// Runner
 // ---------------------------------------------------------------------------
 
-async function fetchPendingDecisions(
+/**
+ * Execute the enrichment pipeline.
+ *
+ * Gracefully exits when no LLM provider is configured — pending decisions
+ * are left untouched and core operations are never affected.
+ */
+export async function runEnrichment(
   supabase: SupabaseClient,
-  orgId: string,
-): Promise<Decision[]> {
-  const { data, error } = await supabase
+  qdrant: QdrantClient,
+  options: EnrichOptions,
+): Promise<EnrichmentReport> {
+  const {
+    orgId,
+    memberId,
+    dryRun,
+    provider: preferredProvider,
+    ceilingCents = DEFAULT_CEILING_CENTS,
+  } = options;
+
+  // 1. Resolve provider ---------------------------------------------------
+  const provider = getProvider(preferredProvider);
+  if (!provider) {
+    return {
+      mode: 'no_provider',
+      enriched: 0,
+      failed: 0,
+      candidates: 0,
+      remaining: 0,
+      details: [],
+      message: 'No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY. Pending decisions unchanged.',
+    };
+  }
+
+  // 2. Fetch pending decisions --------------------------------------------
+  const { data: pending, error: fetchError } = await supabase
     .from('decisions')
     .select('*')
     .eq('org_id', orgId)
     .eq('type', 'pending')
     .order('created_at', { ascending: true });
 
-  if (error) throw new Error(`Failed to fetch pending decisions: ${error.message}`);
-  return (data ?? []) as Decision[];
-}
-
-// ---------------------------------------------------------------------------
-// Main runner
-// ---------------------------------------------------------------------------
-
-/**
- * Run the enrichment pipeline for an organization.
- *
- * 1. Resolve provider (graceful exit if no key).
- * 2. Fetch pending decisions.
- * 3. Dry-run: report candidates without changes.
- * 4. For each decision: check ceiling, call provider, update DB + Qdrant, audit.
- */
-export async function runEnrichment(
-  supabase: SupabaseClient,
-  qdrant: QdrantClient | null,
-  options: EnrichOptions,
-): Promise<EnrichmentReport> {
-  // 1. Check for provider configuration (T059: graceful no-key path)
-  const provider = getProvider(options.provider);
-  if (!provider) {
-    return {
-      mode: 'no_provider',
-      enriched: 0,
-      skipped: 0,
-      costCents: 0,
-      candidates: 0,
-      message: 'No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY. Pending decisions unchanged.',
-      errors: [],
-    };
+  if (fetchError) {
+    throw new Error(`Failed to fetch pending decisions: ${fetchError.message}`);
   }
 
-  // 2. Fetch pending decisions
-  const pending = await fetchPendingDecisions(supabase, options.orgId);
-  if (pending.length === 0) {
+  const candidates = (pending ?? []) as Decision[];
+
+  if (candidates.length === 0) {
     return {
-      mode: 'no_pending',
+      mode: dryRun ? 'dry_run' : 'applied',
       enriched: 0,
-      skipped: 0,
-      costCents: 0,
+      failed: 0,
       candidates: 0,
+      remaining: 0,
+      details: [],
       message: 'No pending decisions to enrich.',
-      errors: [],
     };
   }
 
-  // 3. Dry-run: report without changes
-  if (options.dryRun) {
+  // 3. Dry-run: report without changes ------------------------------------
+  if (dryRun) {
     return {
       mode: 'dry_run',
       enriched: 0,
-      skipped: 0,
-      costCents: 0,
-      candidates: pending.length,
-      message: `Dry run: ${pending.length} pending decision(s) would be enriched using ${provider.name}.`,
-      errors: [],
+      failed: 0,
+      candidates: candidates.length,
+      remaining: candidates.length,
+      details: [],
+      message: `Found ${candidates.length} pending decision(s). Omit --dry-run to enrich.`,
     };
   }
 
-  // 4. Enrich each decision (respecting ceiling)
-  const ceilingCents = options.ceilingCents ?? DEFAULT_CEILING_CENTS;
+  // 4. Enrich each decision (respecting ceiling) --------------------------
   let enriched = 0;
-  let totalCostCents = 0;
-  const errors: Array<{ decisionId: string; error: string }> = [];
+  let failed = 0;
+  const details: EnrichmentResult[] = [];
 
-  for (const decision of pending) {
-    // T060: Check cost ceiling before each call
-    const ceiling = await checkCeiling(supabase, options.orgId, provider.name, ceilingCents);
+  for (const decision of candidates) {
+    // Check ceiling before each call
+    const ceiling = await checkCeiling(supabase, orgId, provider.name, ceilingCents);
     if (!ceiling.allowed) {
-      const skipped = pending.length - enriched;
+      const remaining = candidates.length - enriched - failed;
       return {
         mode: 'applied',
         enriched,
-        skipped,
-        costCents: totalCostCents,
-        candidates: pending.length,
-        message: `Daily cost ceiling reached ($${(ceiling.spent / 100).toFixed(2)} spent). ${enriched} enriched, ${skipped} skipped. Resuming tomorrow.`,
-        errors,
+        failed,
+        candidates: candidates.length,
+        remaining,
+        details,
+        message: `Daily cost ceiling reached ($${(ceiling.spent / 100).toFixed(2)} of $${(ceilingCents / 100).toFixed(2)}). ${enriched} enriched, ${remaining} remaining. Resuming tomorrow.`,
       };
     }
 
     try {
-      // Call LLM provider
+      // Call the LLM
       const result = await provider.enrich(decision.detail);
       const costCents = Math.ceil(result.tokensUsed * provider.estimatedCostPerToken * 100);
 
-      // Update decision in Postgres
+      // Update Postgres
       const { error: updateError } = await supabase
         .from('decisions')
         .update({
           type: result.type,
           summary: result.summary,
           affects: result.affects,
-          enriched_by: 'llm' as const,
+          enriched_by: 'llm',
         })
         .eq('id', decision.id)
-        .eq('org_id', options.orgId);
+        .eq('org_id', orgId);
 
       if (updateError) {
         throw new Error(`Postgres update failed: ${updateError.message}`);
       }
 
-      // Update Qdrant payload (if client available)
-      if (qdrant) {
-        try {
-          await qdrant.setPayload(COLLECTION_NAME, {
-            payload: {
-              type: result.type,
-              summary: result.summary,
-              affects: result.affects,
-            },
-            points: [decision.id],
-          });
-        } catch (qdrantErr) {
-          // Qdrant update failure is non-fatal — Postgres is source of truth
-          console.warn(`[teamind] Qdrant payload update failed for ${decision.id}: ${(qdrantErr as Error).message}`);
-        }
+      // Update Qdrant payload
+      try {
+        await qdrant.setPayload(COLLECTION_NAME, {
+          payload: {
+            type: result.type,
+            summary: result.summary,
+            affects: result.affects,
+          },
+          points: [decision.id],
+        });
+      } catch {
+        // Qdrant update failures are non-fatal — Postgres is source of truth
+        console.warn(`[teamind] Qdrant payload update failed for ${decision.id}`);
       }
 
-      // Track usage
-      await trackUsage(supabase, options.orgId, provider.name, result.tokensUsed, costCents);
-
       // Create audit entry
-      const auditPayload = buildAuditPayload(
-        'decision_enriched',
-        'decision',
-        decision.id,
-        options.memberId,
-        options.orgId,
-        {
-          previousState: { type: 'pending', summary: null, affects: [] },
-          newState: { type: result.type, summary: result.summary, affects: result.affects },
-          reason: `Enriched by ${provider.name}`,
+      await createAuditEntry(supabase, {
+        org_id: orgId,
+        member_id: memberId,
+        action: AUDIT_ACTION_ENRICHED,
+        target_type: 'decision',
+        target_id: decision.id,
+        previous_state: {
+          type: decision.type,
+          summary: decision.summary,
+          affects: decision.affects,
         },
-      );
-      await createAuditEntry(supabase, auditPayload);
+        new_state: {
+          type: result.type,
+          summary: result.summary,
+          affects: result.affects,
+          enriched_by: 'llm',
+        },
+        reason: `Enriched by ${provider.name}`,
+      });
+
+      // Track usage
+      await trackUsage(supabase, orgId, provider.name, result.tokensUsed, costCents);
+
+      details.push({
+        decision_id: decision.id,
+        type: result.type,
+        summary: result.summary,
+        affects: result.affects,
+        confidence: decision.confidence ?? 0,
+        provider: provider.name,
+        cost_cents: costCents,
+        tokens_used: result.tokensUsed,
+      });
 
       enriched++;
-      totalCostCents += costCents;
     } catch (err) {
-      // Individual decision failure is non-fatal
-      errors.push({
-        decisionId: decision.id,
-        error: (err as Error).message,
-      });
+      // Individual failures do not halt the batch
+      failed++;
+      console.warn(
+        `[teamind] enrichment failed for ${decision.id}: ${(err as Error).message}`,
+      );
     }
   }
 
   return {
     mode: 'applied',
     enriched,
-    skipped: errors.length,
-    costCents: totalCostCents,
-    candidates: pending.length,
-    message: `Enriched ${enriched}/${pending.length} pending decisions using ${provider.name}. Cost: $${(totalCostCents / 100).toFixed(2)}.`,
-    errors,
+    failed,
+    candidates: candidates.length,
+    remaining: 0,
+    details,
+    message: `Enriched ${enriched}/${candidates.length} pending decision(s) via ${provider.name}.${failed > 0 ? ` ${failed} failed.` : ''}`,
   };
 }

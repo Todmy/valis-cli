@@ -26,3 +26,13 @@ export {
   groupByAffectsArea,
   type SuppressionResult,
 } from './suppression.js';
+
+export {
+  ndcgAtK,
+  dcg,
+  runGoldenTests,
+  getGoldenPairs,
+  type GoldenPair,
+  type GoldenTestResult,
+  type GoldenSuiteResult,
+} from './golden-test.js';

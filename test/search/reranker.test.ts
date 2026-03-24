@@ -25,6 +25,7 @@ function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
     confidence: overrides.confidence ?? 0.7,
     pinned: overrides.pinned ?? false,
     depends_on: overrides.depends_on ?? [],
+    bm25_score: overrides.bm25_score ?? undefined,
   };
 }
 
@@ -197,9 +198,9 @@ describe('rerank', () => {
 
   it('normalizes BM25 scores across results', () => {
     const results = [
-      makeResult({ id: 'a', score: 0.5, bm25_score: 10.0 } as Partial<SearchResult>),
-      makeResult({ id: 'b', score: 0.5, bm25_score: 5.0 } as Partial<SearchResult>),
-      makeResult({ id: 'c', score: 0.5, bm25_score: 0.0 } as Partial<SearchResult>),
+      makeResult({ id: 'a', score: 0.5, bm25_score: 10.0 }),
+      makeResult({ id: 'b', score: 0.5, bm25_score: 5.0 }),
+      makeResult({ id: 'c', score: 0.5, bm25_score: 0.0 }),
     ];
     const reranked = rerank(
       results,
@@ -209,5 +210,54 @@ describe('rerank', () => {
     expect(reranked[0].id).toBe('a'); // highest BM25
     expect(reranked[0].signals.bm25_score).toBeCloseTo(1.0, 5);
     expect(reranked[2].signals.bm25_score).toBeCloseTo(0.0, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T048: Performance benchmark — rerank 50 results in <10ms
+// ---------------------------------------------------------------------------
+
+describe('performance benchmark (T048)', () => {
+  function generate50Results(): SearchResult[] {
+    const ts = Date.now();
+    const results: SearchResult[] = [];
+    for (let i = 0; i < 50; i++) {
+      const ageDays = Math.floor(Math.random() * 365);
+      results.push(
+        makeResult({
+          id: `d-${i.toString().padStart(3, '0')}`,
+          score: Math.random(),
+          bm25_score: Math.random() * 5,
+          confidence: Math.random(),
+          pinned: i % 10 === 0,
+          depends_on: i > 0 ? [`d-${(i - 1).toString().padStart(3, '0')}`] : [],
+          affects: [`area-${i % 5}`],
+          created_at: new Date(ts - ageDays * 86_400_000).toISOString(),
+        } as Partial<SearchResult>),
+      );
+    }
+    return results;
+  }
+
+  it('reranks 50 results in under 10ms', () => {
+    const results = generate50Results();
+
+    // Warm-up run to avoid JIT penalties
+    rerank(results);
+
+    // Benchmark: 10 iterations, take median
+    const times: number[] = [];
+    for (let run = 0; run < 10; run++) {
+      const start = performance.now();
+      rerank(results);
+      const elapsed = performance.now() - start;
+      times.push(elapsed);
+    }
+
+    times.sort((a, b) => a - b);
+    const median = times[Math.floor(times.length / 2)];
+
+    // Assert median time is under 10ms
+    expect(median).toBeLessThan(10);
   });
 });

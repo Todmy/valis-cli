@@ -15,6 +15,7 @@ import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
 import { detectContradictions } from '../../contradiction/detect.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
+import { checkUsageBeforeStore } from '../../billing/usage.js';
 import type {
   RawDecision,
   StoreArgs,
@@ -90,6 +91,18 @@ export async function handleStore(
   const config = await loadConfig();
   if (!config) {
     return { error: 'not_configured', action: 'blocked' as const };
+  }
+
+  // 0. Usage check (non-blocking — fail-open on any error per FR-018)
+  const usage = await checkUsageBeforeStore(config.org_id);
+  if (!usage.allowed) {
+    const upgradeMsg = usage.upgrade?.message
+      ? ` ${usage.upgrade.message}`
+      : ' Run `teamind upgrade` to increase your limits.';
+    return {
+      error: (usage.message || 'Usage limit reached.') + upgradeMsg,
+      action: 'blocked' as const,
+    };
   }
 
   // 1. Secret detection

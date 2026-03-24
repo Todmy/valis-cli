@@ -185,7 +185,17 @@ export interface LifecycleHistoryResponse {
   history: LifecycleHistoryEntry[];
 }
 
-export type LifecycleResponse = LifecycleStatusChange | LifecycleHistoryResponse;
+/** Response when a decision is pinned or unpinned (T043 — US5). */
+export interface LifecyclePinResponse {
+  decision_id: string;
+  pinned: boolean;
+  changed_by: string;
+}
+
+export type LifecycleResponse =
+  | LifecycleStatusChange
+  | LifecycleHistoryResponse
+  | LifecyclePinResponse;
 
 // ---------------------------------------------------------------------------
 // JWT Auth

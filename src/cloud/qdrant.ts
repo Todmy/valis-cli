@@ -168,27 +168,11 @@ function mapPointToSearchResult(
     affects: (payload.affects as string[]) || [],
     created_at: payload.created_at as string,
     status: (payload.status as import('../types.js').DecisionStatus) || 'active',
-    replaces: (payload.replaces as string) || null,
+    replaced_by: (payload.replaces as string) || null,
     confidence: (payload.confidence as number) ?? null,
     pinned: (payload.pinned as boolean) ?? false,
     depends_on: (payload.depends_on as string[]) ?? [],
   };
-}
-
-/**
- * Update the `pinned` payload field for an existing decision point.
- *
- * Used by the pin/unpin lifecycle actions (T042).
- */
-export async function updatePinnedPayload(
-  qdrant: QdrantClient,
-  decisionId: string,
-  pinned: boolean,
-): Promise<void> {
-  await qdrant.setPayload(COLLECTION_NAME, {
-    payload: { pinned },
-    points: [decisionId],
-  });
 }
 
 export async function getDashboardStats(
@@ -215,27 +199,6 @@ export async function healthCheck(qdrant: QdrantClient): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Payload update — pin/unpin (T042)
-// ---------------------------------------------------------------------------
-
-/**
- * Update the `pinned` field on an existing Qdrant point's payload.
- *
- * Used by the lifecycle pin/unpin handler to keep Qdrant in sync
- * with the Postgres `decisions.pinned` column.
- */
-export async function updatePinnedPayload(
-  qdrant: QdrantClient,
-  decisionId: string,
-  pinned: boolean,
-): Promise<void> {
-  await qdrant.setPayload(COLLECTION_NAME, {
-    payload: { pinned },
-    points: [decisionId],
-  });
 }
 
 // ---------------------------------------------------------------------------

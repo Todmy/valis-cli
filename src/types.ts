@@ -259,6 +259,8 @@ export interface StoreResponse {
   id: string;
   status: 'stored' | 'duplicate';
   synced?: boolean;
+  /** When true, the decision was stored with proposed status (Phase 3 — US1). */
+  proposed?: boolean;
   /** Contradiction warnings detected after store (Phase 2). */
   contradictions?: StoreContradictionWarning[];
   /** Supersession detail when `replaces` triggered a transition (Phase 2). */
@@ -325,6 +327,14 @@ export interface RerankedResult extends SearchResult {
   suppressed?: boolean;
 }
 
+/** Org-level reranking configuration overrides. */
+export interface RerankConfig {
+  /** Custom signal weights (partial — missing keys use defaults). */
+  weights?: Partial<SignalWeights>;
+  /** Custom half-life in days for recency decay. Default 90. */
+  halfLifeDays?: number;
+}
+
 export interface RerankedSearchResponse {
   results: RerankedResult[];
   /** Number of results suppressed from default view. */
@@ -378,7 +388,7 @@ export interface DependencyWarning {
 }
 
 export interface ManifestEntry {
-  type: 'mcp_config' | 'claude_md_marker' | 'agents_md_marker' | 'hook_config' | 'config_dir';
+  type: 'mcp_config' | 'claude_md_marker' | 'agents_md_marker' | 'cursorrules_marker' | 'hook_config' | 'config_dir';
   path: string;
   ide?: string;
   created_at: string;

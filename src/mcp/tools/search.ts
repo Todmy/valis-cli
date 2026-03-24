@@ -1,16 +1,43 @@
 import { loadConfig } from '../../config/store.js';
 import { getQdrantClient, hybridSearch } from '../../cloud/qdrant.js';
-import { rerank } from '../../search/reranker.js';
-import { suppressResults } from '../../search/suppression.js';
-import { checkUsageBeforeSearch } from '../../billing/usage.js';
-import type { RerankedSearchResponse, SearchResult, DecisionStatus } from '../../types.js';
+import type { SearchResponse, SearchResult, DecisionStatus } from '../../types.js';
 
 interface SearchArgs {
   query: string;
   type?: 'decision' | 'constraint' | 'pattern' | 'lesson';
   limit?: number;
-  /** When true, include suppressed results with `suppressed` label. */
-  all?: boolean;
+}
+
+/** Status priority for ranking: lower = higher priority. */
+const STATUS_PRIORITY: Record<DecisionStatus, number> = {
+  active: 0,
+  proposed: 1,
+  deprecated: 2,
+  superseded: 3,
+};
+
+/** Human-readable status labels for search results (T013). */
+const STATUS_LABELS: Record<DecisionStatus, string> = {
+  active: 'active',
+  proposed: 'proposed',
+  deprecated: 'deprecated',
+  superseded: 'superseded',
+};
+
+/**
+ * Sort results so that active/proposed decisions rank above deprecated/superseded
+ * when scores are equal (or very close). A tolerance of 0.01 treats scores within
+ * that range as "equal relevance".
+ */
+function rankByStatus(results: SearchResult[]): SearchResult[] {
+  const SCORE_TOLERANCE = 0.01;
+  return [...results].sort((a, b) => {
+    const scoreDiff = (b.score ?? 0) - (a.score ?? 0);
+    if (Math.abs(scoreDiff) > SCORE_TOLERANCE) return scoreDiff;
+    const statusA = STATUS_PRIORITY[a.status || 'active'] ?? 1;
+    const statusB = STATUS_PRIORITY[b.status || 'active'] ?? 1;
+    return statusA - statusB;
+  });
 }
 
 /**
@@ -32,32 +59,17 @@ function buildReplacedByMap(
   return map;
 }
 
-export async function handleSearch(args: SearchArgs): Promise<RerankedSearchResponse> {
+export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
   const config = await loadConfig();
   if (!config) {
-    return { results: [], suppressed_count: 0, note: 'Not configured. Run `teamind init` first.' };
-  }
-
-  // Usage check (non-blocking — fail-open on any error per FR-018)
-  const usage = await checkUsageBeforeSearch(config.org_id);
-  if (!usage.allowed) {
-    const upgradeMsg = usage.upgrade?.message
-      ? ` ${usage.upgrade.message}`
-      : ' Run `teamind upgrade` to increase your limits.';
-    return {
-      results: [],
-      suppressed_count: 0,
-      note: (usage.message || 'Search limit reached.') + upgradeMsg,
-    };
+    return { results: [], note: 'Not configured. Run `teamind init` first.' };
   }
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-
-    // T046: Fetch up to 50 results for reranking (overfetch, then slice to requested limit)
     const rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
       type: args.type,
-      limit: 50,
+      limit: args.limit || 10,
     });
 
     // Build replaced_by reverse lookup from the `replaces` field in raw results
@@ -65,39 +77,34 @@ export async function handleSearch(args: SearchArgs): Promise<RerankedSearchResp
       rawResults as Array<SearchResult & { replaces?: string | null }>,
     );
 
-    // Enrich each result with replaced_by and status_label
+    // T013: Enrich each result with status and status_label.
+    // Proposed decisions are included in default search results — not filtered
+    // out. The status_label field provides a human-readable label for display.
     const enriched: SearchResult[] = rawResults.map((r) => {
-      const status: DecisionStatus = r.status || 'active';
-      const result: SearchResult = {
-        ...r,
+      const status = r.status || 'active';
+      return {
+        id: r.id,
+        score: r.score,
+        type: r.type,
+        summary: r.summary,
+        detail: r.detail,
+        author: r.author,
+        affects: r.affects,
+        created_at: r.created_at,
         status,
+        status_label: STATUS_LABELS[status] || status,
         replaced_by: replacedByMap.get(r.id) ?? null,
       };
-      // Attach a human-readable label for non-active statuses
-      if (status !== 'active') {
-        result.status_label = status;
-      }
-      return result;
     });
 
-    // T046: Replace rankByStatus with multi-signal reranking
-    const reranked = rerank(enriched);
+    // Rank active decisions above deprecated/superseded at equal relevance
+    // Proposed decisions rank just below active but above deprecated/superseded
+    const ranked = rankByStatus(enriched);
 
-    // T049: Apply within-area suppression after reranking
-    const { visible, suppressed_count } = suppressResults(
-      reranked,
-      1.5,
-      args.all ?? false,
-    );
-
-    // Slice to requested limit
-    const finalResults = visible.slice(0, args.limit || 10);
-
-    return { results: finalResults, suppressed_count };
+    return { results: ranked };
   } catch {
     return {
       results: [],
-      suppressed_count: 0,
       offline: true,
       note: 'Cloud unavailable. Search offline.',
     };

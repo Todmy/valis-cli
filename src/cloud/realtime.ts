@@ -13,8 +13,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Decision, DecisionStatus } from '../types.js';
 import {
   buildRemoteDecisionEvent,
-  buildProposedDecisionEvent,
   buildDeprecationEvent,
+  buildProposedDecisionEvent,
+  buildProposedPromotedEvent,
+  buildProposedRejectedEvent,
   type ChannelEvent,
 } from '../channel/push.js';
 
@@ -68,6 +70,10 @@ function isLocalEcho(decision: Partial<Decision>, localAuthor: string): boolean 
 /**
  * Parse and handle an INSERT event from Supabase Realtime.
  * Returns a ChannelEvent or null if the event should be suppressed.
+ *
+ * T015: When the inserted decision has status 'proposed', emit a
+ * dedicated proposed event so other sessions are alerted about the
+ * new proposal awaiting review.
  */
 export function handleInsertEvent(
   payload: { new: Record<string, unknown> },
@@ -79,12 +85,13 @@ export function handleInsertEvent(
   // Dedup: skip if this is an echo of our own store
   if (isLocalEcho(row, localAuthor)) return null;
 
-  // T015: Proposed decisions get a distinct push event with proposed label
+  // T015: Proposed decisions get a dedicated push event with proposed label
   if (row.status === 'proposed') {
     return buildProposedDecisionEvent(
       row.author ?? 'unknown',
       row.type ?? 'decision',
       row.summary ?? row.detail.substring(0, 100),
+      row.id,
     );
   }
 
@@ -117,25 +124,41 @@ export function handleUpdateEvent(
     if (Date.now() - changedAt < DEDUP_WINDOW_MS) return null;
   }
 
-  // Only emit deprecation/supersession events
+  // Emit events for status transitions
   const newStatus = row.status as DecisionStatus | undefined;
   const oldStatus = oldRow.status as DecisionStatus | undefined;
 
-  if (
-    newStatus &&
-    (newStatus === 'deprecated' || newStatus === 'superseded') &&
-    newStatus !== oldStatus
-  ) {
-    return buildDeprecationEvent(
-      {
-        author: row.author ?? 'unknown',
-        summary: row.summary ?? row.detail.substring(0, 100),
-        detail: row.detail,
-        status: newStatus,
-        status_reason: (row.status_reason as string) ?? undefined,
-      },
-      row.status_changed_by ?? 'unknown',
-    );
+  if (newStatus && newStatus !== oldStatus) {
+    const changedBy = row.status_changed_by ?? 'unknown';
+    const summary = row.summary ?? row.detail.substring(0, 100);
+
+    // T015: Proposed workflow transitions — promote or reject
+    if (oldStatus === 'proposed' && newStatus === 'active') {
+      return buildProposedPromotedEvent(changedBy, summary, row.id!);
+    }
+
+    if (oldStatus === 'proposed' && newStatus === 'deprecated') {
+      return buildProposedRejectedEvent(
+        changedBy,
+        summary,
+        row.id!,
+        (row.status_reason as string) ?? undefined,
+      );
+    }
+
+    // Deprecation/supersession events
+    if (newStatus === 'deprecated' || newStatus === 'superseded') {
+      return buildDeprecationEvent(
+        {
+          author: row.author ?? 'unknown',
+          summary,
+          detail: row.detail,
+          status: newStatus,
+          status_reason: (row.status_reason as string) ?? undefined,
+        },
+        changedBy,
+      );
+    }
   }
 
   return null;

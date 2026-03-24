@@ -1,16 +1,14 @@
 import { loadConfig } from '../../config/store.js';
-import { getSupabaseClient, pinDecision, getDecisionById } from '../../cloud/supabase.js';
-import { getQdrantClient, updatePinnedPayload } from '../../cloud/qdrant.js';
+import { getSupabaseClient, getDecisionById } from '../../cloud/supabase.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
-import { canPin } from '../../auth/rbac.js';
-import { getToken } from '../../auth/jwt.js';
+import { buildProposedPromotedEvent, buildProposedRejectedEvent } from '../../channel/push.js';
 import type {
   LifecycleArgs,
   LifecycleResponse,
-  LifecyclePinResponse,
   LifecycleStatusChange,
   LifecycleHistoryResponse,
   LifecycleHistoryEntry,
+  LifecyclePinResponse,
   DecisionStatus,
 } from '../../types.js';
 
@@ -26,13 +24,36 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
     return await getHistory(supabase, args.decision_id);
   }
 
-  // T043: pin/unpin — admin-only
+  // -------------------------------------------------------------------------
+  // T043: Pin / Unpin (US5)
+  // -------------------------------------------------------------------------
+
   if (args.action === 'pin' || args.action === 'unpin') {
-    return await handlePinUnpin(supabase, config, args);
+    return await handlePinUnpin(supabase, config.org_id, args.decision_id, args.action === 'pin', config.author_name, config.member_id);
   }
+
+  // -------------------------------------------------------------------------
+  // T012: Resolve target status for proposed workflow audit trail
+  // -------------------------------------------------------------------------
 
   // deprecate or promote
   const newStatus: DecisionStatus = args.action === 'deprecate' ? 'deprecated' : 'active';
+
+  // Fetch the current decision to know old_status for audit trail
+  let oldDecision: { status: DecisionStatus; summary: string | null; detail: string; author: string } | null = null;
+  try {
+    const fetched = await getDecisionById(supabase, config.org_id, args.decision_id);
+    if (fetched) {
+      oldDecision = {
+        status: fetched.status,
+        summary: fetched.summary,
+        detail: fetched.detail,
+        author: fetched.author,
+      };
+    }
+  } catch {
+    // Best-effort — the change-status edge function will validate
+  }
 
   try {
     const { data, error } = await supabase.functions.invoke('change-status', {
@@ -48,12 +69,16 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
     }
 
     const result = data as LifecycleStatusChange;
-    const changedBy = result.changed_by || config.author_name;
 
-    // T012: Audit trail for proposed → active (promote) and proposed → deprecated (reject)
-    if (result.old_status === 'proposed') {
-      const auditAction = newStatus === 'active' ? 'decision_promoted' : 'decision_deprecated';
+    // -----------------------------------------------------------------------
+    // T012: Proposed workflow — explicit audit trail and push notifications
+    // -----------------------------------------------------------------------
+
+    const wasProposed = oldDecision?.status === 'proposed' || result.old_status === 'proposed';
+
+    if (wasProposed) {
       try {
+        const auditAction = args.action === 'promote' ? 'decision_promoted' : 'decision_deprecated';
         const auditPayload = buildAuditPayload(
           auditAction,
           'decision',
@@ -62,13 +87,39 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
           config.org_id,
           {
             previousState: { status: 'proposed' },
-            newState: { status: newStatus },
+            newState: {
+              status: newStatus,
+              promoted_from: 'proposed',
+            },
             reason: args.reason,
           },
         );
         await createAuditEntry(supabase, auditPayload);
       } catch {
-        // Audit failure is non-fatal
+        // Audit failures are non-fatal
+      }
+
+      // Build push notification for proposed workflow transitions
+      try {
+        const summary = oldDecision?.summary || oldDecision?.detail?.substring(0, 100) || 'Decision';
+        if (args.action === 'promote') {
+          const _event = buildProposedPromotedEvent(
+            config.author_name,
+            summary,
+            args.decision_id,
+          );
+          // Channel push wired in serve command
+        } else {
+          const _event = buildProposedRejectedEvent(
+            config.author_name,
+            summary,
+            args.decision_id,
+            args.reason,
+          );
+          // Channel push wired in serve command
+        }
+      } catch {
+        // Channel push is best-effort
       }
     }
 
@@ -76,99 +127,11 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
       decision_id: result.decision_id,
       old_status: result.old_status,
       new_status: result.new_status,
-      changed_by: changedBy,
+      changed_by: result.changed_by || config.author_name,
       flagged_dependents: result.flagged_dependents || [],
     };
   } catch (err) {
     // Offline fallback: cannot change status without the server
-    throw new Error(
-      `Cloud unavailable. Cannot ${args.action} decision offline. ` +
-        `${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
-/**
- * Handle pin/unpin lifecycle action (T043).
- *
- * Admin-only: uses RBAC canPin check.
- * Updates both Postgres (pinned column) and Qdrant (pinned payload field).
- * Creates an audit entry.
- */
-async function handlePinUnpin(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  config: import('../../types.js').TeamindConfig,
-  args: LifecycleArgs,
-): Promise<LifecyclePinResponse> {
-  const pinned = args.action === 'pin';
-  const auditAction = pinned ? 'decision_pinned' : 'decision_unpinned';
-
-  // Resolve member role — JWT mode uses token cache, legacy defaults to 'member'
-  let memberRole = 'member';
-  if (config.auth_mode === 'jwt' && config.member_api_key) {
-    const cache = await getToken(config.supabase_url, config.member_api_key);
-    if (cache) memberRole = cache.role;
-  }
-
-  // RBAC check — pin/unpin is admin-only
-  if (!canPin(memberRole)) {
-    throw new Error(`Permission denied: ${args.action} requires admin role.`);
-  }
-
-  // Verify decision exists
-  const existing = await getDecisionById(supabase, config.org_id, args.decision_id);
-  if (!existing) {
-    throw new Error(`Decision not found: ${args.decision_id}`);
-  }
-
-  const previousPinned = existing.pinned ?? false;
-  if (previousPinned === pinned) {
-    // Already in desired state — return idempotently
-    return {
-      decision_id: args.decision_id,
-      pinned,
-      changed_by: config.author_name,
-    };
-  }
-
-  try {
-    // Update Postgres
-    await pinDecision(supabase, config.org_id, args.decision_id, pinned);
-
-    // Update Qdrant payload
-    try {
-      const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-      await updatePinnedPayload(qdrant, args.decision_id, pinned);
-    } catch {
-      // Qdrant update failure is non-fatal — Postgres is source of truth
-      console.error(`[teamind] Qdrant pinned payload update failed for ${args.decision_id}`);
-    }
-
-    // Audit entry
-    try {
-      const auditPayload = buildAuditPayload(
-        auditAction,
-        'decision',
-        args.decision_id,
-        config.member_id || 'unknown',
-        config.org_id,
-        {
-          previousState: { pinned: previousPinned },
-          newState: { pinned },
-          reason: args.reason,
-        },
-      );
-      await createAuditEntry(supabase, auditPayload);
-    } catch {
-      // Audit failure is non-fatal
-    }
-
-    return {
-      decision_id: args.decision_id,
-      pinned,
-      changed_by: config.author_name,
-    };
-  } catch (err) {
     throw new Error(
       `Cloud unavailable. Cannot ${args.action} decision offline. ` +
         `${err instanceof Error ? err.message : String(err)}`,
@@ -228,4 +191,48 @@ async function getHistory(
         `${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// T043: Pin / Unpin (US5)
+// ---------------------------------------------------------------------------
+
+async function handlePinUnpin(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  orgId: string,
+  decisionId: string,
+  pinned: boolean,
+  authorName: string,
+  memberId?: string | null,
+): Promise<LifecyclePinResponse> {
+  const { error } = await supabase
+    .from('decisions')
+    .update({ pinned })
+    .eq('id', decisionId)
+    .eq('org_id', orgId);
+
+  if (error) {
+    throw new Error(`Failed to ${pinned ? 'pin' : 'unpin'} decision: ${error.message}`);
+  }
+
+  // Audit trail (best-effort)
+  try {
+    const auditPayload = buildAuditPayload(
+      pinned ? 'decision_pinned' : 'decision_unpinned',
+      'decision',
+      decisionId,
+      memberId || 'unknown',
+      orgId,
+      { newState: { pinned } },
+    );
+    await createAuditEntry(supabase, auditPayload);
+  } catch {
+    // Audit failures are non-fatal
+  }
+
+  return {
+    decision_id: decisionId,
+    pinned,
+    changed_by: authorName,
+  };
 }

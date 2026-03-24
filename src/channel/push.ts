@@ -37,32 +37,6 @@ export function buildNewDecisionEvent(
 }
 
 // ---------------------------------------------------------------------------
-// T015: Proposed decision push event
-// ---------------------------------------------------------------------------
-
-/**
- * Build a channel event when a new proposed decision is stored.
- * Distinguished from regular new_decision by `status: proposed` in meta.
- */
-export function buildProposedDecisionEvent(
-  author: string,
-  type: DecisionType,
-  summary: string,
-): ChannelEvent {
-  return {
-    source: 'teamind',
-    event: 'new_decision',
-    content: `[Proposed] ${summary}`,
-    meta: {
-      event: 'new_decision',
-      author,
-      type,
-      status: 'proposed',
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // T018: Cross-session push event builders
 // ---------------------------------------------------------------------------
 
@@ -157,6 +131,84 @@ export function buildContradictionEvent(
       event: 'contradiction_detected',
       author: decisionA.author,
       type: 'warning',
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// T015: Proposed decision workflow push events (Phase 3 — US1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a channel event when a new proposed decision is stored.
+ * Triggers cross-session notification so all team members see the proposal.
+ */
+export function buildProposedDecisionEvent(
+  author: string,
+  type: DecisionType,
+  summary: string,
+  decisionId: string,
+): ChannelEvent {
+  return {
+    source: 'teamind',
+    event: 'decision_proposed',
+    content:
+      `New proposed decision by ${author}: "${summary}". ` +
+      `Review and promote or reject via teamind_lifecycle.`,
+    meta: {
+      event: 'decision_proposed',
+      author,
+      type,
+      decision_id: decisionId,
+      status: 'proposed',
+    },
+  };
+}
+
+/**
+ * Build a channel event when a proposed decision is promoted to active.
+ */
+export function buildProposedPromotedEvent(
+  promotedBy: string,
+  summary: string,
+  decisionId: string,
+): ChannelEvent {
+  return {
+    source: 'teamind',
+    event: 'decision_promoted',
+    content:
+      `Proposed decision promoted to active by ${promotedBy}: "${summary}".`,
+    meta: {
+      event: 'decision_promoted',
+      author: promotedBy,
+      type: 'info',
+      decision_id: decisionId,
+      status: 'active',
+    },
+  };
+}
+
+/**
+ * Build a channel event when a proposed decision is rejected (deprecated).
+ */
+export function buildProposedRejectedEvent(
+  rejectedBy: string,
+  summary: string,
+  decisionId: string,
+  reason?: string,
+): ChannelEvent {
+  const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+  return {
+    source: 'teamind',
+    event: 'decision_rejected',
+    content:
+      `Proposed decision rejected by ${rejectedBy}: "${summary}".${reasonSuffix}`,
+    meta: {
+      event: 'decision_rejected',
+      author: rejectedBy,
+      type: 'info',
+      decision_id: decisionId,
+      status: 'deprecated',
     },
   };
 }

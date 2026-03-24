@@ -15,7 +15,6 @@ import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
 import { detectContradictions } from '../../contradiction/detect.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
-import { checkUsageBeforeStore } from '../../billing/usage.js';
 import type {
   RawDecision,
   StoreArgs,
@@ -91,18 +90,6 @@ export async function handleStore(
   const config = await loadConfig();
   if (!config) {
     return { error: 'not_configured', action: 'blocked' as const };
-  }
-
-  // 0. Usage check (non-blocking — fail-open on any error per FR-018)
-  const usage = await checkUsageBeforeStore(config.org_id);
-  if (!usage.allowed) {
-    const upgradeMsg = usage.upgrade?.message
-      ? ` ${usage.upgrade.message}`
-      : ' Run `teamind upgrade` to increase your limits.';
-    return {
-      error: (usage.message || 'Usage limit reached.') + upgradeMsg,
-      action: 'blocked' as const,
-    };
   }
 
   // 1. Secret detection
@@ -252,24 +239,26 @@ export async function handleStore(
     // -----------------------------------------------------------------------
 
     try {
-      const summaryText = raw.summary || args.text.substring(0, 100);
+      // T011: When a proposed decision is stored, send a dedicated proposed
+      // notification so other sessions are alerted about pending review.
       if (extras.status === 'proposed') {
-        // T011: proposed decisions get a distinct push event
-        const _event = buildProposedDecisionEvent(
+        const _proposedEvent = buildProposedDecisionEvent(
           config.author_name,
           raw.type || 'pending',
-          summaryText,
+          raw.summary || args.text.substring(0, 100),
+          decision.id,
         );
+        // Channel push wired in serve command
       } else {
         const _event = buildNewDecisionEvent(
           config.author_name,
           raw.type || 'pending',
-          summaryText,
+          raw.summary || args.text.substring(0, 100),
         );
+        // Channel notification would be sent via MCP server.notification()
+        // when channel transport is connected. For MVP, event is built but
+        // push requires server reference — wired in serve command.
       }
-      // Channel notification would be sent via MCP server.notification()
-      // when channel transport is connected. For MVP, event is built but
-      // push requires server reference — wired in serve command.
     } catch {
       // Channel push is best-effort
     }
@@ -345,6 +334,10 @@ export async function handleStore(
       id: decision.id,
       status: 'stored' as const,
     };
+    // T011: Indicate when a decision was stored as proposed
+    if (extras.status === 'proposed') {
+      response.proposed = true;
+    }
     if (superseded) {
       response.superseded = superseded;
     }

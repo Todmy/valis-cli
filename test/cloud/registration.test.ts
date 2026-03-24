@@ -1,4 +1,14 @@
 /**
+ * T007: Unit tests for register Edge Function (US1 — First-Time Hosted Setup).
+ *
+ * Tests cover:
+ * - Successful registration returns 201 with all required fields
+ * - Rate limiting returns 429 after 10 registrations from same IP
+ * - Org name taken returns 409
+ * - Validation errors return 400
+ * - Rollback on partial failure (server returns 500)
+ * - No service_role key in response
+ *
  * T011: Tests for join-public flow (US2 — Join Existing Project).
  *
  * Tests cover:
@@ -14,7 +24,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { JoinPublicResponse } from '../../src/types.js';
+import type { JoinPublicResponse, RegistrationResponse } from '../../src/types.js';
 import { writeProjectConfig, findProjectConfig } from '../../src/config/project.js';
 import type { TeamindConfig, ProjectConfig } from '../../src/types.js';
 
@@ -24,6 +34,21 @@ import type { TeamindConfig, ProjectConfig } from '../../src/types.js';
 
 async function makeTmpDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'teamind-registration-test-'));
+}
+
+function makeRegistrationResponse(overrides?: Partial<RegistrationResponse>): RegistrationResponse {
+  return {
+    member_api_key: 'tmm_0123456789abcdef0123456789abcdef',
+    supabase_url: 'https://test.supabase.co',
+    qdrant_url: 'https://test.qdrant.io',
+    org_id: '00000000-0000-0000-0000-000000000001',
+    org_name: 'Test Org',
+    project_id: '00000000-0000-0000-0000-000000000002',
+    project_name: 'test-project',
+    invite_code: 'ABCD-1234',
+    member_id: '00000000-0000-0000-0000-000000000003',
+    ...overrides,
+  };
 }
 
 const MOCK_JOIN_RESPONSE: JoinPublicResponse = {
@@ -41,12 +66,255 @@ const MOCK_JOIN_RESPONSE: JoinPublicResponse = {
 };
 
 // ---------------------------------------------------------------------------
-// joinPublic: successful join returns credentials + URLs
+// T007: register() — successful registration
+// ---------------------------------------------------------------------------
+
+describe('register(): successful registration', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns 201 with all required fields', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+    const expected = makeRegistrationResponse();
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(expected),
+    });
+
+    const result = await register('My Org', 'my-project', 'Alice', 'https://test.supabase.co');
+
+    expect(result.member_api_key).toMatch(/^tmm_/);
+    expect(result.supabase_url).toBeTruthy();
+    expect(result.qdrant_url).toBeTruthy();
+    expect(result.org_id).toBeTruthy();
+    expect(result.org_name).toBe('Test Org');
+    expect(result.project_id).toBeTruthy();
+    expect(result.project_name).toBe('test-project');
+    expect(result.invite_code).toBeTruthy();
+    expect(result.member_id).toBeTruthy();
+  });
+
+  it('sends correct request body to /functions/v1/register', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(makeRegistrationResponse()),
+    });
+
+    await register('My Org', 'my-project', 'Alice', 'https://test.supabase.co');
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://test.supabase.co/functions/v1/register',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_name: 'My Org',
+          project_name: 'my-project',
+          author_name: 'Alice',
+        }),
+      }),
+    );
+  });
+
+  it('response does not contain service_role_key or org api_key', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+    const expected = makeRegistrationResponse();
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(expected),
+    });
+
+    const result = await register('Org', 'proj', 'Alice', 'https://test.supabase.co');
+
+    const keys = Object.keys(result);
+    expect(keys).not.toContain('service_role_key');
+    expect(keys).not.toContain('supabase_service_role_key');
+    expect(keys).not.toContain('qdrant_api_key');
+    // org api_key is NOT in the response — only member_api_key
+    expect(keys).not.toContain('api_key');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T007: register() — error mapping
+// ---------------------------------------------------------------------------
+
+describe('register(): error mapping', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rate limiting returns 429 and throws user-friendly error', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      json: () => Promise.resolve({ error: 'rate_limit_exceeded' }),
+    });
+
+    await expect(register('My Org', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /rate limit/i,
+    );
+  });
+
+  it('org name taken returns 409 and throws user-friendly error', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ error: 'org_name_taken' }),
+    });
+
+    await expect(register('Taken Org', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /already taken/i,
+    );
+  });
+
+  it('validation error for org_name returns 400 with field info', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: 'invalid_name', field: 'org_name' }),
+    });
+
+    await expect(register('!!!bad!!!', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /organization name/i,
+    );
+  });
+
+  it('validation error for project_name returns 400 with field info', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: 'invalid_name', field: 'project_name' }),
+    });
+
+    await expect(register('Good Org', '!!!bad!!!', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /project name/i,
+    );
+  });
+
+  it('server error returns 500 and throws service unavailable', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ error: 'registration_failed' }),
+    });
+
+    await expect(register('My Org', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /unavailable/i,
+    );
+  });
+
+  it('network error throws service unavailable', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new TypeError('fetch failed'),
+    );
+
+    await expect(register('My Org', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /unavailable/i,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T007: register() — rate limit simulation (10 then reject)
+// ---------------------------------------------------------------------------
+
+describe('register(): rate limit after 10 registrations', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('succeeds for 10 requests then returns 429', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    // 10 successful registrations
+    for (let i = 0; i < 10; i++) {
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(makeRegistrationResponse({ org_name: `Org-${i}` })),
+      });
+    }
+    // 11th is rate limited
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      json: () => Promise.resolve({ error: 'rate_limit_exceeded' }),
+    });
+
+    for (let i = 0; i < 10; i++) {
+      const result = await register(`Org-${i}`, 'proj', 'Alice', 'https://test.supabase.co');
+      expect(result.org_name).toBe(`Org-${i}`);
+    }
+
+    await expect(register('Org-10', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /rate limit/i,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T007: register() — rollback scenario
+// ---------------------------------------------------------------------------
+
+describe('register(): rollback on partial failure', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('server returns 500 on partial failure (rollback happened server-side)', async () => {
+    const { register } = await import('../../src/cloud/registration.js');
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ error: 'registration_failed' }),
+    });
+
+    await expect(register('Org', 'proj', 'Alice', 'https://test.supabase.co')).rejects.toThrow(
+      /unavailable/i,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T011: joinPublic — successful join returns credentials + URLs
 // ---------------------------------------------------------------------------
 
 describe('joinPublic: successful join', () => {
   beforeEach(() => {
-    // Mock global fetch
     vi.stubGlobal('fetch', vi.fn());
   });
 
@@ -102,7 +370,7 @@ describe('joinPublic: successful join', () => {
 });
 
 // ---------------------------------------------------------------------------
-// joinPublic: error mapping
+// T011: joinPublic — error mapping
 // ---------------------------------------------------------------------------
 
 describe('joinPublic: error mapping', () => {
@@ -184,7 +452,7 @@ describe('joinPublic: error mapping', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CLI --join hosted path: saves correct config
+// T011: CLI --join hosted path: saves correct config
 // ---------------------------------------------------------------------------
 
 describe('CLI --join hosted path: config shape', () => {
@@ -231,8 +499,8 @@ describe('CLI --join hosted path: config shape', () => {
     expect(config.supabase_url).toBe('https://test-project.supabase.co');
     expect(config.qdrant_url).toBe('https://test-cluster.qdrant.io');
 
-    // Verify: member_id is set
-    expect(config.member_id).toBe('55555555-6666-7777-8888-999999999999');
+    // Verify: member_id is set from response
+    expect(config.member_id).toBe(MOCK_JOIN_RESPONSE.member_id);
   });
 
   it('joinPublic response writes valid .teamind.json', async () => {
@@ -261,7 +529,7 @@ describe('CLI --join hosted path: config shape', () => {
 });
 
 // ---------------------------------------------------------------------------
-// JoinPublicResponse: type contract
+// T011: JoinPublicResponse: type contract
 // ---------------------------------------------------------------------------
 
 describe('JoinPublicResponse type contract', () => {

@@ -18,11 +18,11 @@ import {
   joinProject,
 } from '../cloud/supabase.js';
 import type { ProjectInfo } from '../cloud/supabase.js';
-import { register, joinPublic } from '../cloud/registration.js';
 import { getQdrantClient, ensureCollection, countLegacyPoints } from '../cloud/qdrant.js';
 import { upsertDecision, hybridSearch } from '../cloud/qdrant.js';
 import type { TeamindConfig, ProjectConfig } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
+import { register } from '../cloud/registration.js';
 
 type SetupMode = 'hosted' | 'community';
 
@@ -36,40 +36,101 @@ async function prompt(question: string): Promise<string> {
   }
 }
 
+async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: string, authorName: string) {
+  const response = await fetch(`${supabaseUrl}/functions/v1/create-org`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, author_name: authorName }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Failed to create org: ${error.error || 'unknown error'}`);
+  }
+
+  return response.json() as Promise<{
+    org_id: string;
+    api_key: string;
+    invite_code: string;
+    author_name: string;
+    role: string;
+    member_id?: string;
+  }>;
+}
+
+async function joinOrg(supabaseUrl: string, serviceRoleKey: string, inviteCode: string, authorName: string) {
+  const response = await fetch(`${supabaseUrl}/functions/v1/join-org`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invite_code: inviteCode, author_name: authorName }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Failed to join org: ${error.error || 'unknown error'}`);
+  }
+
+  return response.json() as Promise<{
+    org_id: string;
+    org_name: string;
+    api_key: string;
+    member_count: number;
+    decision_count: number;
+    role: string;
+    member_id?: string;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
-// Resolve community credentials (hosted mode uses registration API instead)
+// Resolve hosted/community credentials
 // ---------------------------------------------------------------------------
 
-interface CommunityCredentials {
+interface ResolvedCredentials {
   supabaseUrl: string;
   serviceRoleKey: string;
   qdrantUrl: string;
   qdrantApiKey: string;
+  setupMode: SetupMode;
 }
 
-/**
- * Prompt the user to choose hosted vs community mode.
- * Returns 'hosted' or 'community'.
- */
-async function promptSetupMode(): Promise<SetupMode> {
-  console.log(pc.bold('Choose your setup:\n'));
-  console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
-  console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
-  const modeAnswer = await prompt('Your choice (1/2): ');
-  return modeAnswer.trim() === '2' ? 'community' : 'hosted';
-}
+async function resolveCredentials(isJoin: boolean): Promise<ResolvedCredentials | null> {
+  let setupMode: SetupMode;
 
-/**
- * Prompt for community mode credentials (self-hosted infrastructure).
- * Community users provide Supabase URL, Service Role Key, Qdrant URL, Qdrant API Key.
- */
-async function promptCommunityCredentials(): Promise<CommunityCredentials> {
-  console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));
-  const supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
-  const qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
-  const qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
-  return { supabaseUrl, serviceRoleKey, qdrantUrl, qdrantApiKey };
+  if (isJoin) {
+    setupMode = 'hosted';
+  } else {
+    console.log(pc.bold('Choose your setup:\n'));
+    console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
+    console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
+    const modeAnswer = await prompt('Your choice (1/2): ');
+    setupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
+  }
+
+  let supabaseUrl: string;
+  let serviceRoleKey: string;
+  let qdrantUrl: string;
+  let qdrantApiKey: string;
+
+  if (setupMode === 'hosted') {
+    // Hosted mode: public URLs only, no service_role_key needed.
+    // The registration API and join-project endpoints are public.
+    supabaseUrl = HOSTED_SUPABASE_URL;
+    serviceRoleKey = ''; // NO service_role_key on client in hosted mode
+    qdrantUrl = ''; // Qdrant URL comes from registration/join response
+    qdrantApiKey = ''; // NO qdrant_api_key on client in hosted mode
+
+    if (!isJoin) {
+      console.log(pc.green('\n✓ Using hosted Teamind infrastructure'));
+    }
+  } else {
+    console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));
+    supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
+    serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
+    qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
+    qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
+  }
+
+  return { supabaseUrl, serviceRoleKey, qdrantUrl, qdrantApiKey, setupMode };
 }
 
 // ---------------------------------------------------------------------------
@@ -275,107 +336,86 @@ export async function initCommand(options: { join?: string }): Promise<void> {
 
   // -----------------------------------------------------------------------
   // Case 3: --join <invite-code> — join a project via invite code
-  //
-  // Hosted mode (no existing config): call joinPublic() — a public endpoint
-  // that requires no pre-existing credentials. The response includes
-  // supabase_url, qdrant_url, and member_api_key — everything the CLI
-  // needs to configure itself from scratch.
-  //
-  // Community / existing config: fall through to the legacy joinProject()
-  // path which uses the already-known supabase_url.
   // -----------------------------------------------------------------------
   if (options.join) {
+    const creds = await resolveCredentials(true);
+    if (!creds) return;
+
     console.log(pc.cyan(`\nJoining project with invite code: ${options.join}`));
     const authorName = await prompt('Your name: ');
 
+    // Try join-project first (project-level invite code)
+    let joinedViaProject = false;
     let projectConfig: ProjectConfig | undefined;
     let config: TeamindConfig;
 
-    // Determine if we should use the hosted public join flow.
-    // Hosted: no existing config, or existing config is from hosted mode
-    //         (indicated by no service_role_key).
-    const useHostedJoin = !existing || !existing.supabase_service_role_key;
+    try {
+      const result = await joinProject(creds.supabaseUrl, options.join, authorName);
+      joinedViaProject = true;
+      console.log(pc.green(`✓ Joined project "${result.project_name}" in org "${result.org_name}"`));
 
-    if (useHostedJoin) {
-      // ------------------------------------------------------------------
-      // Hosted join: call the public joinPublic() endpoint.
-      // No credentials needed — the response provides everything.
-      // ------------------------------------------------------------------
-      const supabaseUrl = existing?.supabase_url || HOSTED_SUPABASE_URL;
+      projectConfig = {
+        project_id: result.project_id,
+        project_name: result.project_name,
+      };
 
-      try {
-        const result = await joinPublic(options.join, authorName, supabaseUrl);
-        console.log(pc.green(`✓ Joined project "${result.project_name}" in org "${result.org_name}"`));
-        console.log(`  ${result.decision_count} decisions already available`);
-
-        projectConfig = {
-          project_id: result.project_id,
-          project_name: result.project_name,
-        };
-
-        // Save config with member_api_key only — no service_role_key
+      // Save or keep global config
+      if (!existing || existing.org_id !== result.org_id) {
         config = {
           org_id: result.org_id,
           org_name: result.org_name,
-          api_key: '', // not available via public join
+          api_key: result.api_key,
           invite_code: options.join,
           author_name: authorName,
-          supabase_url: result.supabase_url,
-          supabase_service_role_key: '', // not needed for hosted mode
-          qdrant_url: result.qdrant_url,
-          qdrant_api_key: '', // not needed for hosted mode
+          supabase_url: creds.supabaseUrl,
+          supabase_service_role_key: creds.serviceRoleKey,
+          qdrant_url: creds.qdrantUrl,
+          qdrant_api_key: creds.qdrantApiKey,
           configured_ides: existing?.configured_ides || [],
           created_at: new Date().toISOString(),
-          member_api_key: result.member_api_key,
-          member_id: result.member_id,
+          member_api_key: result.member_api_key || null,
+          member_id: result.member_id || null,
         };
         await saveConfig(config);
         await trackFile({ type: 'config_dir', path: getConfigDir() });
         console.log(pc.green('✓ Global config saved'));
-      } catch (err) {
-        console.log(pc.red(`\n${(err as Error).message}`));
-        return;
+      } else {
+        config = existing;
+        console.log(pc.dim('  Global config unchanged (same org)'));
       }
-    } else {
-      // ------------------------------------------------------------------
-      // Community / existing config: use joinProject() with known URL
-      // ------------------------------------------------------------------
-      try {
-        const result = await joinProject(existing.supabase_url, options.join, authorName);
-        console.log(pc.green(`✓ Joined project "${result.project_name}" in org "${result.org_name}"`));
+    } catch {
+      // Fall back to join-org (legacy org-level invite code)
+      const result = await joinOrg(creds.supabaseUrl, creds.serviceRoleKey, options.join, authorName);
+      console.log(pc.green(`✓ Joined org "${result.org_name}" (${result.member_count} members)`));
+      console.log(`  ${result.decision_count} decisions already available`);
 
-        projectConfig = {
-          project_id: result.project_id,
-          project_name: result.project_name,
-        };
+      config = {
+        org_id: result.org_id,
+        org_name: result.org_name,
+        api_key: result.api_key,
+        invite_code: options.join,
+        author_name: authorName,
+        supabase_url: creds.supabaseUrl,
+        supabase_service_role_key: creds.serviceRoleKey,
+        qdrant_url: creds.qdrantUrl,
+        qdrant_api_key: creds.qdrantApiKey,
+        configured_ides: [],
+        created_at: new Date().toISOString(),
+        member_id: result.member_id || null,
+      };
 
-        if (existing.org_id !== result.org_id) {
-          config = {
-            org_id: result.org_id,
-            org_name: result.org_name,
-            api_key: result.api_key,
-            invite_code: options.join,
-            author_name: authorName,
-            supabase_url: result.supabase_url || existing.supabase_url,
-            supabase_service_role_key: existing.supabase_service_role_key,
-            qdrant_url: result.qdrant_url || existing.qdrant_url,
-            qdrant_api_key: existing.qdrant_api_key,
-            configured_ides: existing.configured_ides || [],
-            created_at: new Date().toISOString(),
-            member_api_key: result.member_api_key || null,
-            member_id: result.member_id || null,
-          };
-          await saveConfig(config);
-          await trackFile({ type: 'config_dir', path: getConfigDir() });
-          console.log(pc.green('✓ Global config saved'));
-        } else {
-          config = existing;
-          console.log(pc.dim('  Global config unchanged (same org)'));
-        }
-      } catch (err) {
-        console.log(pc.red(`\n${(err as Error).message}`));
-        return;
-      }
+      await saveConfig(config);
+      await trackFile({ type: 'config_dir', path: getConfigDir() });
+      console.log(pc.green('✓ Global config saved'));
+
+      // After joining org, select/create project
+      projectConfig = await selectOrCreateProject(
+        creds.supabaseUrl,
+        creds.serviceRoleKey,
+        config.api_key,
+        config.org_id,
+        config.member_id || null,
+      );
     }
 
     // Write .teamind.json
@@ -512,110 +552,71 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   // -----------------------------------------------------------------------
   // Case 1: Fresh install — full org + project creation
   // -----------------------------------------------------------------------
-  const setupMode = await promptSetupMode();
+
+  // Choose setup mode
+  console.log(pc.bold('Choose your setup:\n'));
+  console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
+  console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
+  const modeAnswer = await prompt('Your choice (1/2): ');
+  const setupMode: SetupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
 
   let config: TeamindConfig;
   let projectConfig: ProjectConfig;
 
   if (setupMode === 'hosted') {
     // -----------------------------------------------------------------
-    // Hosted mode: use the public registration API.
-    // No credentials needed — the server creates everything atomically
-    // and returns member_api_key + public URLs.
+    // Hosted mode: public registration API — no credentials needed
     // -----------------------------------------------------------------
-    console.log(pc.green('\n✓ Using hosted Teamind infrastructure'));
-
     const orgName = await prompt('Organization name: ');
-    const defaultProjectName = basename(process.cwd());
-    const projectName = await prompt(
-      `Project name${defaultProjectName ? ` (${defaultProjectName})` : ''}: `,
-    ) || defaultProjectName;
+    const projectName = await prompt(`Project name (${basename(process.cwd())}): `) || basename(process.cwd());
     const authorName = await prompt('Your name: ');
 
-    console.log(pc.cyan('\nCreating organization and project...'));
+    console.log(pc.cyan('\nRegistering with Teamind Cloud...'));
 
-    let result;
     try {
-      result = await register(orgName, projectName, authorName);
+      const regResult = await register(orgName, projectName, authorName, HOSTED_SUPABASE_URL);
+      console.log(pc.green(`✓ Organization "${regResult.org_name}" created`));
+      console.log(pc.green(`✓ Project "${regResult.project_name}" created`));
+
+      config = {
+        org_id: regResult.org_id,
+        org_name: regResult.org_name,
+        api_key: '', // no org api_key on client in hosted mode
+        invite_code: regResult.invite_code,
+        author_name: authorName,
+        supabase_url: regResult.supabase_url,
+        supabase_service_role_key: '', // NO service_role_key in hosted mode
+        qdrant_url: regResult.qdrant_url,
+        qdrant_api_key: '', // NO qdrant_api_key in hosted mode
+        configured_ides: [],
+        created_at: new Date().toISOString(),
+        member_api_key: regResult.member_api_key,
+        member_id: regResult.member_id,
+      };
+
+      projectConfig = {
+        project_id: regResult.project_id,
+        project_name: regResult.project_name,
+      };
     } catch (err) {
       console.log(pc.red(`\n${(err as Error).message}`));
       return;
     }
-    console.log(pc.green(`✓ Organization "${orgName}" created`));
-    console.log(pc.green(`✓ Project "${projectName}" created`));
-
-    // Save config with member_api_key only — NO service_role_key
-    config = {
-      org_id: result.org_id,
-      org_name: result.org_name,
-      api_key: '', // not exposed by registration API
-      invite_code: result.invite_code,
-      author_name: authorName,
-      supabase_url: result.supabase_url,
-      supabase_service_role_key: '', // not needed for hosted mode
-      qdrant_url: result.qdrant_url,
-      qdrant_api_key: '', // not needed for hosted mode
-      configured_ides: [],
-      created_at: new Date().toISOString(),
-      member_api_key: result.member_api_key,
-      member_id: result.member_id || null,
-    };
-
-    projectConfig = {
-      project_id: result.project_id,
-      project_name: result.project_name,
-    };
-
-    // Save global config
-    await saveConfig(config);
-    await trackFile({ type: 'config_dir', path: getConfigDir() });
-    console.log(pc.green('✓ Config saved'));
-
-    // Write .teamind.json
-    const projectConfigPath = await writeProjectConfig(process.cwd(), projectConfig);
-    console.log(pc.green(`✓ Project config saved to ${projectConfigPath}`));
-
-    // Detect and configure IDEs
-    const detectedNames = await setupIDEs(config);
-    config.configured_ides = detectedNames;
-    await saveConfig(config);
-
-    // Qdrant setup and seed are handled via exchange-token flow for hosted
-    // mode (subsequent operations use member_api_key → JWT). Skip direct
-    // Qdrant/seed setup since we have no qdrant_api_key on the client.
-
-    // Print final summary
-    printSummary(config, projectConfig, false);
   } else {
     // -----------------------------------------------------------------
-    // Community mode: user provides their own infrastructure credentials.
+    // Community mode: user provides own credentials (unchanged)
     // -----------------------------------------------------------------
-    const creds = await promptCommunityCredentials();
+    console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));
+    const supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
+    const qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
+    const qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
 
     const orgName = await prompt('Organization name: ');
     const authorName = await prompt('Your name: ');
 
     console.log(pc.cyan('\nCreating organization...'));
-    const response = await fetch(`${creds.supabaseUrl}/functions/v1/create-org`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: orgName, author_name: authorName }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      console.log(pc.red(`\nFailed to create org: ${(error as { error?: string }).error || 'unknown error'}`));
-      return;
-    }
-
-    const result = await response.json() as {
-      org_id: string;
-      api_key: string;
-      invite_code: string;
-      author_name: string;
-      role: string;
-      member_id?: string;
-    };
+    const result = await createOrg(supabaseUrl, serviceRoleKey, orgName, authorName);
     console.log(pc.green(`✓ Organization "${orgName}" created`));
 
     config = {
@@ -624,45 +625,49 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       api_key: result.api_key,
       invite_code: result.invite_code,
       author_name: authorName,
-      supabase_url: creds.supabaseUrl,
-      supabase_service_role_key: creds.serviceRoleKey,
-      qdrant_url: creds.qdrantUrl,
-      qdrant_api_key: creds.qdrantApiKey,
+      supabase_url: supabaseUrl,
+      supabase_service_role_key: serviceRoleKey,
+      qdrant_url: qdrantUrl,
+      qdrant_api_key: qdrantApiKey,
       configured_ides: [],
       created_at: new Date().toISOString(),
       member_id: result.member_id || null,
     };
 
-    // Save global config
-    await saveConfig(config);
-    await trackFile({ type: 'config_dir', path: getConfigDir() });
-    console.log(pc.green('✓ Config saved'));
-
     // Create first project
     const defaultProjectName = basename(process.cwd());
     projectConfig = await promptAndCreateProject(
-      creds.supabaseUrl,
+      supabaseUrl,
       config.api_key,
       config.org_id,
       defaultProjectName,
     );
-
-    // Write .teamind.json
-    const projectConfigPath = await writeProjectConfig(process.cwd(), projectConfig);
-    console.log(pc.green(`✓ Project config saved to ${projectConfigPath}`));
-
-    // Detect and configure IDEs
-    const detectedNames = await setupIDEs(config);
-    config.configured_ides = detectedNames;
-    await saveConfig(config);
-
-    // Ensure Qdrant collection
-    const qdrant = await setupQdrant(creds.qdrantUrl, creds.qdrantApiKey);
-
-    // Seed brain
-    await seedAndVerify(config, projectConfig, qdrant);
-
-    // Print final summary
-    printSummary(config, projectConfig, false);
   }
+
+  // Save global config
+  await saveConfig(config);
+  await trackFile({ type: 'config_dir', path: getConfigDir() });
+  console.log(pc.green('✓ Config saved'));
+
+  // Write .teamind.json
+  const projectConfigPath = await writeProjectConfig(process.cwd(), projectConfig);
+  console.log(pc.green(`✓ Project config saved to ${projectConfigPath}`));
+
+  // Detect and configure IDEs
+  const detectedNames = await setupIDEs(config);
+  config.configured_ides = detectedNames;
+  await saveConfig(config);
+
+  // Ensure Qdrant collection (community mode has qdrant_api_key; hosted skips gracefully)
+  const qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
+
+  // Seed brain (community mode has service_role_key; hosted mode will skip gracefully)
+  if (config.supabase_service_role_key) {
+    await seedAndVerify(config, projectConfig, qdrant);
+  } else {
+    console.log(pc.dim('\n  Seed skipped — hosted mode uses exchange-token flow for subsequent operations.'));
+  }
+
+  // Print final summary
+  printSummary(config, projectConfig, false);
 }

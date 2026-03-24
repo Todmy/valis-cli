@@ -314,6 +314,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
           created_at: new Date().toISOString(),
           member_api_key: result.member_api_key,
           member_id: result.member_id,
+          auth_mode: 'jwt' as const, // hosted mode always uses JWT
         };
         await saveConfig(config);
         await trackFile({ type: 'config_dir', path: getConfigDir() });
@@ -538,6 +539,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
         created_at: new Date().toISOString(),
         member_api_key: regResult.member_api_key,
         member_id: regResult.member_id,
+        auth_mode: 'jwt' as const, // hosted mode always uses JWT
       };
 
       projectConfig = {

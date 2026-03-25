@@ -646,7 +646,8 @@ export interface CreateProjectResponse {
   project_id: string;
   project_name: string;
   invite_code: string;
-  role: string;
+  role?: string;
+  org_id?: string;
 }
 
 /**
@@ -657,22 +658,53 @@ export async function createProject(
   apiKey: string,
   orgId: string,
   projectName: string,
+  serviceRoleKey?: string,
 ): Promise<CreateProjectResponse> {
-  const response = await fetch(`${supabaseUrl}/functions/v1/create-project`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ org_id: orgId, project_name: projectName }),
-  });
+  // Try Edge Function first (Supabase Cloud)
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/create-project`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ org_id: orgId, project_name: projectName }),
+    });
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'unknown error' }));
-    throw new Error(`Failed to create project: ${(error as Record<string, string>).error || 'unknown error'}`);
+    if (response.ok) {
+      return response.json() as Promise<CreateProjectResponse>;
+    }
+
+    if (response.status !== 404 && response.status !== 502 && response.status !== 503) {
+      const error = await response.json().catch(() => ({ error: 'unknown error' }));
+      throw new Error(`Failed to create project: ${(error as Record<string, string>).error || 'unknown error'}`);
+    }
+  } catch (err) {
+    if ((err as Error).message.startsWith('Failed to create project:')) throw err;
+    // Fall through to direct SQL
   }
 
-  return response.json() as Promise<CreateProjectResponse>;
+  // Direct SQL fallback (community / self-hosted mode)
+  if (!serviceRoleKey) {
+    throw new Error('Failed to create project: Edge Functions unavailable and no service_role_key for direct SQL');
+  }
+  const supabase = getSupabaseClient(supabaseUrl, serviceRoleKey);
+  const projectId = crypto.randomUUID();
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const inviteCode = [...Array(4)].map(() => chars[Math.floor(Math.random() * chars.length)]).join('')
+    + '-' + [...Array(4)].map(() => chars[Math.floor(Math.random() * chars.length)]).join('');
+
+  const { error: projErr } = await supabase.from('projects').insert({
+    id: projectId, org_id: orgId, name: projectName, invite_code: inviteCode,
+  });
+  if (projErr) throw new Error(`Failed to create project: ${projErr.message}`);
+
+  return {
+    project_id: projectId,
+    project_name: projectName,
+    invite_code: inviteCode,
+    org_id: orgId,
+  };
 }
 
 /** Response from the join-project Edge Function. */

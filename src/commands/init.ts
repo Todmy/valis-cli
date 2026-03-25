@@ -37,25 +37,66 @@ async function prompt(question: string): Promise<string> {
 }
 
 async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: string, authorName: string) {
-  const response = await fetch(`${supabaseUrl}/functions/v1/create-org`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, author_name: authorName }),
-  });
+  // Try Edge Function first (works with Supabase Cloud)
+  // Fall back to direct SQL (works with local Postgres / community mode)
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/create-org`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, author_name: authorName }),
+    });
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Failed to create org: ${error.error || 'unknown error'}`);
+    if (response.ok) {
+      return response.json() as Promise<{
+        org_id: string;
+        api_key: string;
+        invite_code: string;
+        author_name: string;
+        role: string;
+        member_id?: string;
+        member_api_key?: string;
+      }>;
+    }
+
+    const error = await response.json().catch(() => ({ error: 'unknown' }));
+    // If Edge Function not found (404) or unavailable, fall through to direct SQL
+    if (response.status !== 404 && response.status !== 502 && response.status !== 503) {
+      throw new Error(`Failed to create org: ${error.error || 'unknown error'}`);
+    }
+  } catch (err) {
+    if ((err as Error).message.startsWith('Failed to create org:')) throw err;
+    // Network error or EF not available — fall through to direct SQL
   }
 
-  return response.json() as Promise<{
-    org_id: string;
-    api_key: string;
-    invite_code: string;
-    author_name: string;
-    role: string;
-    member_id?: string;
-  }>;
+  // Direct SQL fallback (community / self-hosted mode)
+  const supabase = getSupabaseClient(supabaseUrl, serviceRoleKey);
+  const orgId = crypto.randomUUID();
+  const hex = (n: number) => [...Array(n)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+  const apiKey = `tm_${hex(32)}`;
+  const memberKey = `tmm_${hex(32)}`;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const inviteCode = [...Array(4)].map(() => chars[Math.floor(Math.random() * chars.length)]).join('')
+    + '-' + [...Array(4)].map(() => chars[Math.floor(Math.random() * chars.length)]).join('');
+
+  const { error: orgErr } = await supabase.from('orgs').insert({
+    id: orgId, name, api_key: apiKey, invite_code: inviteCode, plan: 'free',
+  });
+  if (orgErr) throw new Error(`Failed to create org: ${orgErr.message}`);
+
+  const memberId = crypto.randomUUID();
+  const { error: memErr } = await supabase.from('members').insert({
+    id: memberId, org_id: orgId, author_name: authorName, role: 'admin', api_key: memberKey,
+  });
+  if (memErr) {
+    await supabase.from('orgs').delete().eq('id', orgId);
+    throw new Error(`Failed to create member: ${memErr.message}`);
+  }
+
+  return {
+    org_id: orgId, api_key: apiKey, invite_code: inviteCode,
+    author_name: authorName, role: 'admin',
+    member_id: memberId, member_api_key: memberKey,
+  };
 }
 
 
@@ -73,13 +114,14 @@ async function promptAndCreateProject(
   apiKey: string,
   orgId: string,
   defaultName?: string,
+  serviceRoleKey?: string,
 ): Promise<ProjectConfig> {
   const projectName = await prompt(
     `Project name${defaultName ? ` (${defaultName})` : ''}: `,
   ) || defaultName || basename(process.cwd());
 
   console.log(pc.cyan(`\nCreating project "${projectName}"...`));
-  const result = await createProject(supabaseUrl, apiKey, orgId, projectName);
+  const result = await createProject(supabaseUrl, apiKey, orgId, projectName, serviceRoleKey);
   console.log(pc.green(`✓ Project "${projectName}" created`));
 
   return {

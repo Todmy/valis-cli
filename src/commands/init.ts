@@ -607,12 +607,20 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   await saveConfig(config);
 
   // Ensure Qdrant collection (community mode has qdrant_api_key; hosted skips gracefully)
+  // TODO: implement server-side Qdrant verification for hosted mode
+  // In hosted mode, qdrant_api_key is empty so ensureCollection will fail silently.
+  // A future `/functions/v1/verify-qdrant` endpoint should verify the collection
+  // exists and is healthy using server-side credentials.
   const qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
 
   // Seed brain (community mode has service_role_key; hosted mode will skip gracefully)
   if (config.supabase_service_role_key) {
     await seedAndVerify(config, projectConfig, qdrant);
   } else {
+    // TODO: implement server-side seed endpoint for hosted mode
+    // Hosted mode cannot seed because seedAndVerify requires service_role_key
+    // for direct Supabase writes. A future server-side `/functions/v1/seed`
+    // endpoint should accept JWT auth and perform the seed on behalf of the user.
     console.log(pc.dim('\n  Seed skipped — hosted mode uses exchange-token flow for subsequent operations.'));
   }
 

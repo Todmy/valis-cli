@@ -328,6 +328,11 @@ export interface StoreErrorResponse {
   error: string;
   pattern?: string;
   action: 'blocked';
+  /** Upgrade info when billing limit is reached. */
+  upgrade?: {
+    message: string;
+    checkout_url: string | null;
+  };
 }
 
 export interface SearchResult {
@@ -406,6 +411,8 @@ export interface RerankedSearchResponse {
 
 export interface SearchResponse {
   results: SearchResult[];
+  /** Number of results suppressed from default view. */
+  suppressed_count?: number;
   offline?: boolean;
   note?: string;
 }

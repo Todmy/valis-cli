@@ -13,6 +13,7 @@ import { migrateAuthCommand } from '../src/commands/migrate-auth.js';
 import { adminAuditCommand } from '../src/commands/admin-audit.js';
 import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
 import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
+import { adminMigrateQdrantCommand } from '../src/commands/admin-migrate-qdrant.js';
 import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
@@ -99,6 +100,7 @@ program
   .option('--type <type>', 'Filter by type (decision/constraint/pattern/lesson)')
   .option('--limit <n>', 'Max results (default 10)')
   .option('--all', 'Include suppressed results')
+  .option('--all-projects', 'Search across all accessible projects')
   .action(async (query, options) => {
     try {
       await searchCommand(query, options);
@@ -234,6 +236,19 @@ adminCmd
   .action(async (options) => {
     try {
       await adminPatternsCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('migrate-qdrant')
+  .description('Backfill project_id into Qdrant points missing it')
+  .option('--dry-run', 'Report findings without making changes')
+  .action(async (options) => {
+    try {
+      await adminMigrateQdrantCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

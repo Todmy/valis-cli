@@ -2,8 +2,10 @@ import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { detectSecrets } from '../../security/secrets.js';
 import { isDuplicate, markAsSeen } from '../../capture/dedup.js';
+import { checkUsageOrProceed } from '../../billing/usage.js';
 import {
   getSupabaseClient,
+  getSupabaseJwtClient,
   storeDecision,
   getDecisionById,
   getDecisionsByIds,
@@ -134,9 +136,30 @@ export async function handleStore(
     session_id: args.session_id,
   };
 
+  // 2b. Billing check (fail-open: never block on billing errors)
+  try {
+    const usageResult = await checkUsageOrProceed(
+      config.supabase_url,
+      config.member_api_key || config.api_key,
+      config.org_id,
+      'store',
+    );
+    if (!usageResult.allowed) {
+      return {
+        error: 'usage_limit_reached',
+        action: 'blocked' as const,
+        upgrade: usageResult.upgrade,
+      };
+    }
+  } catch {
+    // Fail-open: billing check failure must never block store operations
+  }
+
   // 3. Try dual write
   try {
-    const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    const supabase = config.auth_mode === 'jwt'
+      ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+      : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
     // -----------------------------------------------------------------------
     // Phase 2 pre-write validations
@@ -293,11 +316,13 @@ export async function handleStore(
         // Qdrant unavailable — Tier 1 (area overlap) only
       }
 
+      // Ensure project_id is set on decision for project-scoped contradiction detection
+      const decisionWithProject = { ...decision, project_id: decision.project_id || projectId };
       const warnings = await detectContradictions(
         supabase,
         qdrantForDetection,
         config.org_id,
-        decision,
+        decisionWithProject,
       );
 
       if (warnings.length > 0) {

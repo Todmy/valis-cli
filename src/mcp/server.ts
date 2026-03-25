@@ -33,6 +33,8 @@ export function createMcpServer(): McpServer {
       project_id: z.string().optional().describe('Project directory name'),
       session_id: z.string().optional().describe('Session UUID for dedup'),
       status: z.enum(['active', 'proposed']).optional().describe("Initial status — 'proposed' for team review, defaults to 'active'"),
+      replaces: z.string().uuid().optional().describe('UUID of decision being replaced (target transitions to superseded)'),
+      depends_on: z.array(z.string().uuid()).optional().describe('UUIDs of dependency decisions'),
     },
     async (args) => {
       const result = await handleStore(args);

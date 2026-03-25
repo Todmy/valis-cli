@@ -1,8 +1,10 @@
 import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
-import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
-import type { SearchResponse, SearchResult, DecisionStatus } from '../../types.js';
+import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
+import { rerank } from '../../search/reranker.js';
+import { suppressResults } from '../../search/suppression.js';
+import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus } from '../../types.js';
 
 interface SearchArgs {
   query: string;
@@ -82,7 +84,9 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
       let projectIds: string[] = [];
       try {
         if (config.member_id) {
-          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = config.auth_mode === 'jwt'
+            ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
         }
@@ -93,20 +97,20 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
       if (projectIds.length > 0) {
         rawResults = await hybridSearchAllProjects(qdrant, config.org_id, args.query, projectIds, {
           type: args.type,
-          limit: args.limit || 10,
+          limit: 50,
         });
       } else {
         // Fallback: search org-wide (no project filter)
         rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
           type: args.type,
-          limit: args.limit || 10,
+          limit: 50,
         });
       }
     } else {
       // T021: Default — search scoped to active project
       rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
         type: args.type,
-        limit: args.limit || 10,
+        limit: 50,
         projectId,
       });
     }
@@ -122,7 +126,9 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
       projectNameMap = new Map<string, string>();
       try {
         if (config.member_id) {
-          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = config.auth_mode === 'jwt'
+            ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           for (const p of projects) {
             projectNameMap.set(p.id, p.name);
@@ -160,7 +166,17 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
     // Proposed decisions rank just below active but above deprecated/superseded
     const ranked = rankByStatus(enriched);
 
-    return { results: ranked };
+    // Apply multi-signal reranking for consistent ordering with CLI search
+    const reranked: RerankedResult[] = rerank(ranked);
+
+    // Apply within-area suppression after reranking
+    const { visible, suppressed_count } = suppressResults(reranked, 1.5, false);
+
+    // Respect requested limit after suppression
+    const finalLimit = args.limit || 10;
+    const finalResults = visible.slice(0, finalLimit);
+
+    return { results: finalResults, suppressed_count };
   } catch {
     return {
       results: [],

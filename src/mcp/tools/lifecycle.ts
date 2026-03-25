@@ -1,5 +1,7 @@
 import { loadConfig } from '../../config/store.js';
-import { getSupabaseClient, getDecisionById } from '../../cloud/supabase.js';
+import { getSupabaseClient, getSupabaseJwtClient, getDecisionById } from '../../cloud/supabase.js';
+import { getToken } from '../../auth/jwt.js';
+import { canPin } from '../../auth/rbac.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import { buildProposedPromotedEvent, buildProposedRejectedEvent } from '../../channel/push.js';
 import type {
@@ -18,7 +20,9 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
     throw new Error('Not configured. Run `teamind init` first.');
   }
 
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  const supabase = config.auth_mode === 'jwt'
+    ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+    : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
   if (args.action === 'history') {
     return await getHistory(supabase, args.decision_id);
@@ -29,6 +33,19 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
   // -------------------------------------------------------------------------
 
   if (args.action === 'pin' || args.action === 'unpin') {
+    // RBAC: only admins may pin/unpin decisions
+    let memberRole = 'member';
+    if (config.auth_mode === 'jwt' && config.member_api_key) {
+      try {
+        const cache = await getToken(config.supabase_url, config.member_api_key);
+        if (cache) memberRole = cache.role;
+      } catch {
+        // Token fetch failed — default to 'member' (deny pin)
+      }
+    }
+    if (!canPin(memberRole)) {
+      throw new Error('admin_required: Only admins may pin or unpin decisions.');
+    }
     return await handlePinUnpin(supabase, config.org_id, args.decision_id, args.action === 'pin', config.author_name, config.member_id);
   }
 

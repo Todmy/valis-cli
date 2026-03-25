@@ -1,7 +1,7 @@
 import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
-import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
+import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import type { ContextResponse, RerankedResult, DecisionStatus } from '../../types.js';
@@ -55,7 +55,9 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
       let projectIds: string[] = [];
       try {
         if (config.member_id) {
-          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = config.auth_mode === 'jwt'
+            ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
         }

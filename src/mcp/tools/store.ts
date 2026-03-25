@@ -41,7 +41,7 @@ async function supersedeDecision(
 ): Promise<{ old_status: DecisionStatus; new_status: 'superseded' }> {
   // Prefer JWT token (works in hosted mode where serviceRoleKey is empty).
   // Fall back to serviceRoleKey for community/self-hosted mode.
-  let bearer = serviceRoleKey;
+  let bearer = '';
   if (memberApiKey) {
     try {
       const tokenCache = await getToken(supabaseUrl, memberApiKey);
@@ -49,8 +49,14 @@ async function supersedeDecision(
         bearer = tokenCache.jwt.token;
       }
     } catch {
-      // Token exchange failed — fall back to serviceRoleKey
+      // Token exchange failed — try serviceRoleKey
     }
+  }
+  if (!bearer && serviceRoleKey) {
+    bearer = serviceRoleKey;
+  }
+  if (!bearer) {
+    throw new Error('No valid auth token available for supersede operation');
   }
 
   const url = `${supabaseUrl}/functions/v1/change-status`;

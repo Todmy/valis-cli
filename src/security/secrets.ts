@@ -13,6 +13,7 @@ const SECRET_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'Database URL', regex: /(postgres|mysql|mongodb|redis):\/\/[^\s]+@/ },
   { name: 'Slack Token', regex: /xox[bpras]-[0-9]{10,}/ },
   { name: 'Stripe Key', regex: /(sk|pk)_(test|live)_[A-Za-z0-9]{24,}/ },
+  { name: 'Supabase Service Role Key', regex: /sb_secret_[A-Za-z0-9_-]{20,}/ },
   { name: 'Generic Secret', regex: /(password|secret|token|api_key)\s*[:=]\s*['"][^\s]{8,}/ },
 ];
 

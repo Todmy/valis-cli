@@ -4,6 +4,7 @@ import { getToken } from '../../auth/jwt.js';
 import { canPin } from '../../auth/rbac.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import { buildProposedPromotedEvent, buildProposedRejectedEvent } from '../../channel/push.js';
+import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
 import type {
   LifecycleArgs,
   LifecycleResponse,
@@ -13,6 +14,7 @@ import type {
   LifecyclePinResponse,
   DecisionStatus,
 } from '../../types.js';
+import { HOSTED_SUPABASE_URL } from '../../types.js';
 
 export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleResponse> {
   const config = await loadConfig();
@@ -73,19 +75,48 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
   }
 
   try {
-    const { data, error } = await supabase.functions.invoke('change-status', {
-      body: {
+    // Resolve auth token: prefer JWT (works in hosted mode), fall back to service_role key
+    let bearer = '';
+    if (config.member_api_key) {
+      try {
+        const tokenCache = await getToken(config.supabase_url, config.member_api_key);
+        if (tokenCache) {
+          bearer = tokenCache.jwt.token;
+        }
+      } catch {
+        // Token exchange failed — try service_role key
+      }
+    }
+    if (!bearer && config.supabase_service_role_key) {
+      bearer = config.supabase_service_role_key;
+    }
+    if (!bearer) {
+      throw new Error('No valid auth token available for change-status operation');
+    }
+
+    const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
+    const apiBase = resolveApiUrl(config.supabase_url, isHosted);
+    const url = resolveApiPath(apiBase, 'change-status');
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         decision_id: args.decision_id,
         new_status: newStatus,
         reason: args.reason,
-      },
+      }),
     });
 
-    if (error) {
-      throw new Error(`change-status failed: ${error.message}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`change-status failed (HTTP ${res.status}): ${body}`);
     }
 
-    const result = data as LifecycleStatusChange;
+    const result = (await res.json()) as LifecycleStatusChange;
 
     // -----------------------------------------------------------------------
     // T012: Proposed workflow — explicit audit trail and push notifications

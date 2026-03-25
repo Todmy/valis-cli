@@ -135,8 +135,8 @@ export async function checkUsageOrProceed(
  * store or search operation.
  *
  * Uses an upsert into the `rate_limits` table:
- *   INSERT (org_id, day, decision_count, search_count_today)
- *   ON CONFLICT (org_id) DO UPDATE SET <counter> = <counter> + 1
+ *   INSERT (org_id, day, store_count, search_count)
+ *   ON CONFLICT (org_id, day) DO UPDATE SET <counter> = <counter> + 1
  *
  * **Best-effort**: callers MUST wrap this in try/catch. A failure to
  * increment usage must never block the store/search operation.
@@ -161,46 +161,38 @@ export async function incrementUsage(
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
   if (operation === 'store') {
-    // Upsert: insert new row or increment decision_count
+    // Upsert: insert new row or increment store_count
     const { error } = await supabase
       .from('rate_limits')
       .upsert(
         {
           org_id: orgId,
           day: today,
-          decision_count: 1,
-          search_count_today: 0,
+          store_count: 1,
+          search_count: 0,
         },
-        { onConflict: 'org_id' },
+        { onConflict: 'org_id,day' },
       );
 
     if (error) {
-      // Fallback: try an RPC increment if the upsert fails (e.g. no upsert
-      // permissions). This is still best-effort.
-      await supabase.rpc('increment_rate_limit', {
-        p_org_id: orgId,
-        p_field: 'decision_count',
-      });
+      throw new Error(`incrementUsage(store) upsert failed: ${error.message}`);
     }
   } else {
-    // Upsert: insert new row or increment search_count_today
+    // Upsert: insert new row or increment search_count
     const { error } = await supabase
       .from('rate_limits')
       .upsert(
         {
           org_id: orgId,
           day: today,
-          decision_count: 0,
-          search_count_today: 1,
+          store_count: 0,
+          search_count: 1,
         },
-        { onConflict: 'org_id' },
+        { onConflict: 'org_id,day' },
       );
 
     if (error) {
-      await supabase.rpc('increment_rate_limit', {
-        p_org_id: orgId,
-        p_field: 'search_count_today',
-      });
+      throw new Error(`incrementUsage(search) upsert failed: ${error.message}`);
     }
   }
 }

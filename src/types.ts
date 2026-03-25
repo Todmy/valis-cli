@@ -125,7 +125,8 @@ export type AuditAction =
   | 'project_created'
   | 'project_member_added'
   | 'project_member_removed'
-  | 'migration_default_project';
+  | 'migration_default_project'
+  | 'org_created';
 
 export type AuditTargetType = 'decision' | 'member' | 'org';
 

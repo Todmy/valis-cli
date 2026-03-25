@@ -4,6 +4,7 @@ import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cl
 import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
+import { incrementUsage } from '../../billing/usage.js';
 import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus } from '../../types.js';
 
 interface SearchArgs {
@@ -175,6 +176,22 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
     // Respect requested limit after suppression
     const finalLimit = args.limit || 10;
     const finalResults = visible.slice(0, finalLimit);
+
+    // Increment usage counter (best-effort — never block the search)
+    try {
+      const usageApiKey = config.auth_mode === 'jwt'
+        ? (config.member_api_key || config.api_key)
+        : config.supabase_service_role_key;
+      await incrementUsage(
+        config.supabase_url,
+        usageApiKey,
+        config.org_id,
+        'search',
+        config.auth_mode,
+      );
+    } catch {
+      // Best-effort: usage increment failure must never block search operations
+    }
 
     return { results: finalResults, suppressed_count };
   } catch {

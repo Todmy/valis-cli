@@ -2,7 +2,7 @@ import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { detectSecrets } from '../../security/secrets.js';
 import { isDuplicate, markAsSeen } from '../../capture/dedup.js';
-import { checkUsageOrProceed } from '../../billing/usage.js';
+import { checkUsageOrProceed, incrementUsage } from '../../billing/usage.js';
 import {
   getSupabaseClient,
   getSupabaseJwtClient,
@@ -265,6 +265,24 @@ export async function handleStore(
     }
 
     markAsSeen(args.text, args.session_id);
+
+    // -----------------------------------------------------------------------
+    // Increment usage counter (best-effort — never block the store)
+    // -----------------------------------------------------------------------
+    try {
+      const usageApiKey = config.auth_mode === 'jwt'
+        ? (config.member_api_key || config.api_key)
+        : config.supabase_service_role_key;
+      await incrementUsage(
+        config.supabase_url,
+        usageApiKey,
+        config.org_id,
+        'store',
+        config.auth_mode,
+      );
+    } catch {
+      // Best-effort: usage increment failure must never block store operations
+    }
 
     // -----------------------------------------------------------------------
     // Phase 2 post-write: supersede the replaced decision

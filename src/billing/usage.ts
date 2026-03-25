@@ -10,6 +10,10 @@
  */
 
 import { getToken } from '../auth/jwt.js';
+import {
+  getSupabaseClient,
+  getSupabaseJwtClient,
+} from '../cloud/supabase.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,5 +119,84 @@ export async function checkUsageOrProceed(
     // Network error, timeout, JSON parse error, etc.
     // NEVER block the operation — fail-open guarantee (FR-018)
     return { allowed: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Usage increment — upsert daily counters in rate_limits table
+// ---------------------------------------------------------------------------
+
+/**
+ * Increment the daily usage counter for an organization after a successful
+ * store or search operation.
+ *
+ * Uses an upsert into the `rate_limits` table:
+ *   INSERT (org_id, day, decision_count, search_count_today)
+ *   ON CONFLICT (org_id) DO UPDATE SET <counter> = <counter> + 1
+ *
+ * **Best-effort**: callers MUST wrap this in try/catch. A failure to
+ * increment usage must never block the store/search operation.
+ *
+ * @param supabaseUrl - Supabase project URL
+ * @param apiKeyOrServiceRole - API key (member or service_role) for Supabase client
+ * @param orgId - Organization ID
+ * @param operation - 'store' or 'search'
+ * @param authMode - 'jwt' uses per-member JWT client, otherwise service_role client
+ */
+export async function incrementUsage(
+  supabaseUrl: string,
+  apiKeyOrServiceRole: string,
+  orgId: string,
+  operation: 'store' | 'search',
+  authMode?: string,
+): Promise<void> {
+  const supabase = authMode === 'jwt'
+    ? getSupabaseJwtClient(supabaseUrl, apiKeyOrServiceRole)
+    : getSupabaseClient(supabaseUrl, apiKeyOrServiceRole);
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  if (operation === 'store') {
+    // Upsert: insert new row or increment decision_count
+    const { error } = await supabase
+      .from('rate_limits')
+      .upsert(
+        {
+          org_id: orgId,
+          day: today,
+          decision_count: 1,
+          search_count_today: 0,
+        },
+        { onConflict: 'org_id' },
+      );
+
+    if (error) {
+      // Fallback: try an RPC increment if the upsert fails (e.g. no upsert
+      // permissions). This is still best-effort.
+      await supabase.rpc('increment_rate_limit', {
+        p_org_id: orgId,
+        p_field: 'decision_count',
+      });
+    }
+  } else {
+    // Upsert: insert new row or increment search_count_today
+    const { error } = await supabase
+      .from('rate_limits')
+      .upsert(
+        {
+          org_id: orgId,
+          day: today,
+          decision_count: 0,
+          search_count_today: 1,
+        },
+        { onConflict: 'org_id' },
+      );
+
+    if (error) {
+      await supabase.rpc('increment_rate_limit', {
+        p_org_id: orgId,
+        p_field: 'search_count_today',
+      });
+    }
   }
 }

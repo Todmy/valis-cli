@@ -611,6 +611,7 @@ export interface RegistrationResponse {
   member_api_key: string;
   supabase_url: string;
   qdrant_url: string;
+  qdrant_api_key?: string;
   org_id: string;
   org_name: string;
   project_id: string;
@@ -629,6 +630,7 @@ export interface JoinPublicResponse {
   member_id: string;
   supabase_url: string;
   qdrant_url: string;
+  qdrant_api_key?: string;
   member_count: number;
   decision_count: number;
   role: ProjectRole;

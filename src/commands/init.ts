@@ -351,7 +351,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
           supabase_url: result.supabase_url,
           supabase_service_role_key: '', // not needed for hosted mode
           qdrant_url: result.qdrant_url,
-          qdrant_api_key: '', // not needed for hosted mode
+          qdrant_api_key: result.qdrant_api_key || '', // read-only key for hosted search
           configured_ides: existing?.configured_ides || [],
           created_at: new Date().toISOString(),
           member_api_key: result.member_api_key,
@@ -576,7 +576,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
         supabase_url: regResult.supabase_url,
         supabase_service_role_key: '', // NO service_role_key in hosted mode
         qdrant_url: regResult.qdrant_url,
-        qdrant_api_key: '', // NO qdrant_api_key in hosted mode
+        qdrant_api_key: regResult.qdrant_api_key || '', // read-only key for hosted search
         configured_ides: [],
         created_at: new Date().toISOString(),
         member_api_key: regResult.member_api_key,

@@ -3,15 +3,15 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { trackFile } from '../config/manifest.js';
 
-const CURSORRULES_INSTRUCTIONS = `## Team Knowledge (Teamind)
+const CURSORRULES_INSTRUCTIONS = `## Team Knowledge (Valis)
 
 ### Auto-search triggers
-Call \`teamind_search\` automatically when the user mentions:
+Call \`valis_search\` automatically when the user mentions:
 - "remember", "recall", "find", "what did we decide", "how did we handle"
 - Any question about architecture, conventions, past decisions, or existing patterns
 
 ### Auto-store triggers
-Call \`teamind_store\` when:
+Call \`valis_store\` when:
 - A technical choice is made between alternatives
 - The user says "remember this", "store this"
 - A constraint is identified (client/regulatory/infra)
@@ -21,10 +21,10 @@ Call \`teamind_store\` when:
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of modules).
 
 ### Context loading
-Call \`teamind_context\` at the start of every new task or when switching to a different part of the codebase.
+Call \`valis_context\` at the start of every new task or when switching to a different part of the codebase.
 
 ### Channel reminders
-When you receive a \`<channel source="teamind" event="capture_reminder">\`, review your recent work and store any decisions made via \`teamind_store\`.`;
+When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;
 
 export async function configureCursorMCP(): Promise<void> {
   const configPath = join(homedir(), '.cursor', 'mcp.json');
@@ -38,8 +38,8 @@ export async function configureCursorMCP(): Promise<void> {
   }
 
   const mcpServers = (config.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['teamind'] = {
-    command: 'teamind',
+  mcpServers['valis'] = {
+    command: 'valis',
     args: ['serve'],
   };
   config.mcpServers = mcpServers;
@@ -52,8 +52,8 @@ export async function configureCursorMCP(): Promise<void> {
 
 export async function injectCursorrules(projectDir: string): Promise<void> {
   const cursorrulesPath = join(projectDir, '.cursorrules');
-  const startMarker = '<!-- teamind:start -->';
-  const endMarker = '<!-- teamind:end -->';
+  const startMarker = '<!-- valis:start -->';
+  const endMarker = '<!-- valis:end -->';
 
   let content = '';
   try {

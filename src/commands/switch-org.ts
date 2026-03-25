@@ -1,5 +1,5 @@
 /**
- * `teamind switch` — Switch from community/standalone to a team org,
+ * `valis switch` — Switch from community/standalone to a team org,
  * or switch between orgs. Preserves existing decisions in the old org.
  *
  * @module commands/switch-org
@@ -21,11 +21,11 @@ async function prompt(question: string): Promise<string> {
 }
 
 export async function switchOrgCommand(options: { join: string }): Promise<void> {
-  console.log(pc.bold('\n🔄 Teamind Switch Org\n'));
+  console.log(pc.bold('\n🔄 Valis Switch Org\n'));
 
   const existing = await loadConfig();
   if (!existing) {
-    console.log(pc.red('Teamind is not configured. Run `teamind init` first.'));
+    console.log(pc.red('Valis is not configured. Run `valis init` first.'));
     return;
   }
 
@@ -79,5 +79,5 @@ export async function switchOrgCommand(options: { join: string }): Promise<void>
   console.log(pc.green(`\n✓ Switched to "${result.org_name}" (${result.member_count} members)`));
   console.log(`  ${result.decision_count} decisions already available`);
   console.log(pc.dim(`\n  Your previous org "${existing.org_name}" data is preserved in the cloud.`));
-  console.log(`\n  Next: Restart your IDE or run ${pc.dim('teamind serve')} to connect.\n`);
+  console.log(`\n  Next: Restart your IDE or run ${pc.dim('valis serve')} to connect.\n`);
 }

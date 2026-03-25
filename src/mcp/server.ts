@@ -9,7 +9,7 @@ import { handleLifecycle } from './tools/lifecycle.js';
 export function createMcpServer(): McpServer {
   const server = new McpServer(
     {
-      name: 'teamind',
+      name: 'valis',
       version: '0.1.0',
     },
     {
@@ -20,9 +20,9 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_store
+  // valis_store
   server.tool(
-    'teamind_store',
+    'valis_store',
     'Store a team decision, constraint, pattern, or lesson into the shared team brain. Call this whenever an important technical decision is made. Use status: "proposed" for decisions that need team review before becoming active.',
     {
       text: z.string().min(10).describe('Full decision text (min 10 chars)'),
@@ -42,9 +42,9 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_search — T024: add all_projects parameter for cross-project search
+  // valis_search — T024: add all_projects parameter for cross-project search
   server.tool(
-    'teamind_search',
+    'valis_search',
     "Search the team's shared decision history. Use before making architectural decisions to check what the team already decided. Results are scoped to the active project by default. Set all_projects to search across all accessible projects.",
     {
       query: z.string().min(1).describe('Search query text'),
@@ -58,9 +58,9 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_context — T024: add all_projects parameter for cross-project context
+  // valis_context — T024: add all_projects parameter for cross-project context
   server.tool(
-    'teamind_context',
+    'valis_context',
     'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases. Results are scoped to the active project by default.',
     {
       task_description: z.string().min(1).describe('What you are working on'),
@@ -73,9 +73,9 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // teamind_lifecycle
+  // valis_lifecycle
   server.tool(
-    'teamind_lifecycle',
+    'valis_lifecycle',
     'Manage decision lifecycle: deprecate outdated decisions, promote proposed ones to active, pin/unpin decisions, or view status change history.',
     {
       action: z.enum(['deprecate', 'promote', 'history', 'pin', 'unpin']).describe('Lifecycle action to perform'),
@@ -95,5 +95,5 @@ export async function startMcpServer(): Promise<void> {
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Teamind MCP server running (stdio)');
+  console.error('Valis MCP server running (stdio)');
 }

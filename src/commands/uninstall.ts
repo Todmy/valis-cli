@@ -10,7 +10,7 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
     const rl = createInterface({ input: stdin, output: stdout });
     try {
       const answer = await rl.question(
-        pc.yellow('This will remove all local Teamind configuration. Continue? (y/N) '),
+        pc.yellow('This will remove all local Valis configuration. Continue? (y/N) '),
       );
       if (answer.trim().toLowerCase() !== 'y') {
         console.log('Aborted.');
@@ -27,11 +27,11 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
     try {
       switch (entry.type) {
         case 'mcp_config': {
-          // Surgical JSON edit — remove teamind from mcpServers
+          // Surgical JSON edit — remove valis from mcpServers
           const data = await readFile(entry.path, 'utf-8');
           const settings = JSON.parse(data);
-          if (settings.mcpServers?.teamind) {
-            delete settings.mcpServers.teamind;
+          if (settings.mcpServers?.valis) {
+            delete settings.mcpServers.valis;
             await writeFile(entry.path, JSON.stringify(settings, null, 2));
             console.log(pc.green(`  ✓ Removed MCP config from ${entry.ide || 'unknown'}`));
           }
@@ -41,11 +41,11 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
         case 'claude_md_marker':
         case 'agents_md_marker':
         case 'cursorrules_marker': {
-          // Remove teamind markers
+          // Remove valis markers
           try {
             const content = await readFile(entry.path, 'utf-8');
-            const startMarker = '<!-- teamind:start -->';
-            const endMarker = '<!-- teamind:end -->';
+            const startMarker = '<!-- valis:start -->';
+            const endMarker = '<!-- valis:end -->';
 
             if (content.includes(startMarker)) {
               const regex = new RegExp(
@@ -71,7 +71,7 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
     }
   }
 
-  // Delete ~/.teamind/
+  // Delete ~/.valis/
   try {
     await rm(getConfigDir(), { recursive: true, force: true });
     console.log(pc.green(`  ✓ Removed ${getConfigDir()}`));
@@ -79,7 +79,7 @@ export async function uninstallCommand(options: { yes?: boolean }): Promise<void
     // Already gone
   }
 
-  console.log(pc.bold('\nTeamind uninstalled.'));
+  console.log(pc.bold('\nValis uninstalled.'));
   console.log(pc.dim('Cloud data preserved. Contact org admin to delete.\n'));
 }
 

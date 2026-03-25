@@ -28,7 +28,7 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
       lessons: [],
       historical: [],
       total_in_brain: 0,
-      note: 'Not configured. Run `teamind init` first.',
+      note: 'Not configured. Run `valis init` first.',
     };
   }
 
@@ -127,7 +127,7 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
         suppressed_count > 0
           ? ` (${suppressed_count} similar results suppressed)`
           : '';
-      note = `${totalInBrain} relevant decisions found in team brain${historicalNote}${suppressedNote}. Use teamind_search for specific queries.`;
+      note = `${totalInBrain} relevant decisions found in team brain${historicalNote}${suppressedNote}. Use valis_search for specific queries.`;
       firstCall = false;
     }
 

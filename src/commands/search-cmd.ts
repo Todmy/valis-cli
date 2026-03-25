@@ -21,7 +21,7 @@ export async function searchCommand(
 ): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 

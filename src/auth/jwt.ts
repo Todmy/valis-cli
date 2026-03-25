@@ -14,7 +14,7 @@
 import type {
   AuthMode,
   ExchangeTokenResponse,
-  TeamindConfig,
+  ValisConfig,
   TokenCache,
 } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
@@ -113,7 +113,7 @@ export async function exchangeToken(
   } catch (err) {
     // Network failure — offline, DNS issue, etc.
     console.error(
-      `[teamind] Token exchange failed (network): ${err instanceof Error ? err.message : String(err)}`,
+      `[valis] Token exchange failed (network): ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
   }
@@ -126,9 +126,9 @@ export async function exchangeToken(
       // Ignore — best-effort count
     }
     console.error(
-      `[teamind] API key rejected (revoked or invalid). ` +
+      `[valis] API key rejected (revoked or invalid). ` +
         `${pendingCount} decision(s) queued locally. ` +
-        `Run \`teamind init\` to re-authenticate.`,
+        `Run \`valis init\` to re-authenticate.`,
     );
     return null;
   }
@@ -141,7 +141,7 @@ export async function exchangeToken(
       // ignore
     }
     console.error(
-      `[teamind] Project access denied: ${responseBody}`,
+      `[valis] Project access denied: ${responseBody}`,
     );
     return null;
   }
@@ -154,7 +154,7 @@ export async function exchangeToken(
       // ignore
     }
     console.error(
-      `[teamind] Token exchange failed (HTTP ${res.status}): ${responseBody}`,
+      `[valis] Token exchange failed (HTTP ${res.status}): ${responseBody}`,
     );
     return null;
   }
@@ -164,7 +164,7 @@ export async function exchangeToken(
     return data;
   } catch (err) {
     console.error(
-      `[teamind] Token exchange response parse error: ${err instanceof Error ? err.message : String(err)}`,
+      `[valis] Token exchange response parse error: ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
   }
@@ -277,7 +277,7 @@ export async function getOrgToken(
 /**
  * Check whether the given config is operating in JWT auth mode.
  */
-export function isJwtMode(config: TeamindConfig): boolean {
+export function isJwtMode(config: ValisConfig): boolean {
   return config.auth_mode === 'jwt';
 }
 

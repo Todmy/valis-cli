@@ -26,14 +26,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { JoinPublicResponse, RegistrationResponse } from '../../src/types.js';
 import { writeProjectConfig, findProjectConfig } from '../../src/config/project.js';
-import type { TeamindConfig, ProjectConfig } from '../../src/types.js';
+import type { ValisConfig, ProjectConfig } from '../../src/types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 async function makeTmpDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'teamind-registration-test-'));
+  return mkdtemp(join(tmpdir(), 'valis-registration-test-'));
 }
 
 function makeRegistrationResponse(overrides?: Partial<RegistrationResponse>): RegistrationResponse {
@@ -469,7 +469,7 @@ describe('CLI --join hosted path: config shape', () => {
   it('joinPublic response produces config with member_api_key and no service_role_key', () => {
     // Simulate the config that would be built from joinPublic response
     const result = MOCK_JOIN_RESPONSE;
-    const config: TeamindConfig = {
+    const config: ValisConfig = {
       org_id: result.org_id,
       org_name: result.org_name,
       api_key: '', // not available via public join
@@ -503,7 +503,7 @@ describe('CLI --join hosted path: config shape', () => {
     expect(config.member_id).toBe(MOCK_JOIN_RESPONSE.member_id);
   });
 
-  it('joinPublic response writes valid .teamind.json', async () => {
+  it('joinPublic response writes valid .valis.json', async () => {
     const result = MOCK_JOIN_RESPONSE;
     const projectConfig: ProjectConfig = {
       project_id: result.project_id,
@@ -517,8 +517,8 @@ describe('CLI --join hosted path: config shape', () => {
     expect(loaded!.project_id).toBe(MOCK_JOIN_RESPONSE.project_id);
     expect(loaded!.project_name).toBe(MOCK_JOIN_RESPONSE.project_name);
 
-    // Verify .teamind.json has no secrets
-    const raw = await readFile(join(tmpDir, '.teamind.json'), 'utf-8');
+    // Verify .valis.json has no secrets
+    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     expect(Object.keys(parsed)).toContain('project_id');
     expect(Object.keys(parsed)).toContain('project_name');

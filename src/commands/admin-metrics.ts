@@ -19,7 +19,7 @@ function pad(label: string, width: number): string {
 function formatTable(metrics: PlatformMetrics): void {
   const periodLabel = metrics.period === '7d' ? '7 days' : '30 days';
 
-  console.log(pc.bold(`\nTeamind Metrics (last ${periodLabel})`));
+  console.log(pc.bold(`\nValis Metrics (last ${periodLabel})`));
   console.log(pc.dim('\u2500'.repeat(35)));
 
   // Org counts
@@ -86,14 +86,14 @@ export async function adminMetricsCommand(options: AdminMetricsOptions): Promise
 
   if (!serviceRoleKey) {
     console.error(
-      'Error: service_role key required. Set SUPABASE_SERVICE_ROLE_KEY env var or run `teamind init`.',
+      'Error: service_role key required. Set SUPABASE_SERVICE_ROLE_KEY env var or run `valis init`.',
     );
     process.exit(1);
   }
 
   if (!supabaseUrl) {
     console.error(
-      'Error: Supabase URL required. Set SUPABASE_URL env var or run `teamind init`.',
+      'Error: Supabase URL required. Set SUPABASE_URL env var or run `valis init`.',
     );
     process.exit(1);
   }

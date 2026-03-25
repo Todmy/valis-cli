@@ -15,8 +15,8 @@ export async function configureCodexMCP(): Promise<void> {
   }
 
   const mcpServers = (config.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['teamind'] = {
-    command: 'teamind',
+  mcpServers['valis'] = {
+    command: 'valis',
     args: ['serve'],
   };
   config.mcpServers = mcpServers;
@@ -29,14 +29,14 @@ export async function configureCodexMCP(): Promise<void> {
 
 export async function injectAgentsMdMarkers(projectDir: string): Promise<void> {
   const agentsMdPath = join(projectDir, 'AGENTS.md');
-  const startMarker = '<!-- teamind:start -->';
-  const endMarker = '<!-- teamind:end -->';
+  const startMarker = '<!-- valis:start -->';
+  const endMarker = '<!-- valis:end -->';
 
-  const instructions = `## Team Knowledge (Teamind)
+  const instructions = `## Team Knowledge (Valis)
 
-Use \`teamind_search\` before making architectural decisions.
-Use \`teamind_store\` when decisions are made.
-Use \`teamind_context\` at the start of each task.`;
+Use \`valis_search\` before making architectural decisions.
+Use \`valis_store\` when decisions are made.
+Use \`valis_context\` at the start of each task.`;
 
   let content = '';
   try {

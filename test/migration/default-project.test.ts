@@ -4,7 +4,7 @@
  * Verifies:
  * - Qdrant project_id backfill migration (migrateQdrantProjectIds)
  * - Legacy filter includes points without project_id
- * - Legacy config detection (global config without .teamind.json)
+ * - Legacy config detection (global config without .valis.json)
  * - Search still works after migration
  * - Init detects legacy config and offers migration
  */
@@ -250,11 +250,11 @@ describe('migrateQdrantProjectIds', () => {
 describe('detectConfigState', () => {
   // These tests validate the config state detection logic directly.
   // They don't hit the filesystem because we test with a temp directory
-  // that won't have a real ~/.teamind/config.json.
+  // that won't have a real ~/.valis/config.json.
 
-  it('returns unconfigured when no global config and no .teamind.json', async () => {
+  it('returns unconfigured when no global config and no .valis.json', async () => {
     // /tmp/some-random-dir has neither global nor project config
-    const state = await detectConfigState('/tmp/teamind-nonexistent-' + Date.now());
+    const state = await detectConfigState('/tmp/valis-nonexistent-' + Date.now());
     // Since there's no global config on a clean machine, this should be 'unconfigured'
     // However if the test runner machine has a real config, it could be 'no-project'
     expect(['unconfigured', 'no-project']).toContain(state);
@@ -264,7 +264,7 @@ describe('detectConfigState', () => {
 describe('isLegacyConfig', () => {
   it('returns false when nothing is configured', async () => {
     // On a clean system with no global config
-    const result = await isLegacyConfig('/tmp/teamind-nonexistent-' + Date.now());
+    const result = await isLegacyConfig('/tmp/valis-nonexistent-' + Date.now());
     // Without global config, this is 'unconfigured', not 'no-project'
     // So isLegacyConfig should return false
     // (unless the test machine has a real config, in which case 'no-project' is valid)

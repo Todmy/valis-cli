@@ -3,9 +3,9 @@
  *
  * Implements the walk-up algorithm from contracts/config.md:
  * - Start at a given directory (typically cwd)
- * - Walk up looking for `.teamind.json`
+ * - Walk up looking for `.valis.json`
  * - First match wins (closest to startDir)
- * - Returns null if no `.teamind.json` found
+ * - Returns null if no `.valis.json` found
  *
  * @module config/project
  */
@@ -17,7 +17,7 @@ import type { ProjectConfig, ResolvedConfig } from '../types.js';
 import { loadConfig } from './store.js';
 
 // ---------------------------------------------------------------------------
-// Zod schema for .teamind.json validation
+// Zod schema for .valis.json validation
 // ---------------------------------------------------------------------------
 
 export const projectConfigSchema = z.object({
@@ -30,7 +30,7 @@ export const projectConfigSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * Walk up from `startDir` to the filesystem root looking for `.teamind.json`.
+ * Walk up from `startDir` to the filesystem root looking for `.valis.json`.
  * Returns the path to the first match, or null if none found.
  */
 export async function findProjectConfigPath(startDir: string): Promise<string | null> {
@@ -38,7 +38,7 @@ export async function findProjectConfigPath(startDir: string): Promise<string | 
   const root = parse(dir).root; // '/' on Unix, 'C:\' on Windows
 
   while (true) {
-    const configPath = join(dir, '.teamind.json');
+    const configPath = join(dir, '.valis.json');
     try {
       await readFile(configPath, 'utf-8');
       return configPath;
@@ -55,7 +55,7 @@ export async function findProjectConfigPath(startDir: string): Promise<string | 
 }
 
 /**
- * Walk up from `startDir` to the filesystem root looking for `.teamind.json`.
+ * Walk up from `startDir` to the filesystem root looking for `.valis.json`.
  * Returns the parsed and validated ProjectConfig, or null if not found.
  */
 export async function findProjectConfig(startDir: string): Promise<ProjectConfig | null> {
@@ -65,7 +65,7 @@ export async function findProjectConfig(startDir: string): Promise<ProjectConfig
 }
 
 /**
- * Load and validate a `.teamind.json` file at the given path.
+ * Load and validate a `.valis.json` file at the given path.
  * Throws on invalid JSON or schema validation failure.
  */
 export async function loadProjectConfig(configPath: string): Promise<ProjectConfig> {
@@ -76,8 +76,8 @@ export async function loadProjectConfig(configPath: string): Promise<ProjectConf
     parsed = JSON.parse(data);
   } catch {
     throw new Error(
-      `Invalid .teamind.json — file is not valid JSON.\n` +
-        `  Fix the file at ${configPath} or run \`teamind init\` to reconfigure.`,
+      `Invalid .valis.json — file is not valid JSON.\n` +
+        `  Fix the file at ${configPath} or run \`valis init\` to reconfigure.`,
     );
   }
 
@@ -85,21 +85,21 @@ export async function loadProjectConfig(configPath: string): Promise<ProjectConf
   if (!result.success) {
     const firstIssue = result.error.issues[0];
     throw new Error(
-      `Invalid .teamind.json — ${firstIssue?.path.join('.')}: ${firstIssue?.message}.\n` +
-        `  Fix the file at ${configPath} or run \`teamind init\` to reconfigure.`,
+      `Invalid .valis.json — ${firstIssue?.path.join('.')}: ${firstIssue?.message}.\n` +
+        `  Fix the file at ${configPath} or run \`valis init\` to reconfigure.`,
     );
   }
   return result.data;
 }
 
 /**
- * Write a `.teamind.json` file to the given directory.
+ * Write a `.valis.json` file to the given directory.
  */
 export async function writeProjectConfig(
   targetDir: string,
   config: ProjectConfig,
 ): Promise<string> {
-  const configPath = join(targetDir, '.teamind.json');
+  const configPath = join(targetDir, '.valis.json');
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
   return configPath;
 }
@@ -121,10 +121,10 @@ export async function resolveConfig(startDir?: string): Promise<ResolvedConfig> 
 /**
  * Config state from the perspective of multi-project support.
  *
- * - `ready`:       Both global config and .teamind.json exist — fully configured.
- * - `no-project`:  Global config exists but no .teamind.json — legacy installation.
- *                  The user should run `teamind init` to pick/create a project.
- * - `no-org`:      .teamind.json exists but no global config — unusual state.
+ * - `ready`:       Both global config and .valis.json exist — fully configured.
+ * - `no-project`:  Global config exists but no .valis.json — legacy installation.
+ *                  The user should run `valis init` to pick/create a project.
+ * - `no-org`:      .valis.json exists but no global config — unusual state.
  * - `unconfigured`: Neither exists — brand new installation.
  */
 export type ConfigState = 'ready' | 'no-project' | 'no-org' | 'unconfigured';
@@ -133,7 +133,7 @@ export type ConfigState = 'ready' | 'no-project' | 'no-org' | 'unconfigured';
  * Detect the current config state for multi-project support.
  *
  * Commands that require a project should call this and, when the result is
- * `no-project`, print: "No project configured. Run `teamind init`."
+ * `no-project`, print: "No project configured. Run `valis init`."
  *
  * This is the primary entry point for T038 legacy config detection.
  */
@@ -148,7 +148,7 @@ export async function detectConfigState(startDir?: string): Promise<ConfigState>
 
 /**
  * Returns true when the installation looks like a pre-multi-project
- * (legacy) config: global config exists but no .teamind.json.
+ * (legacy) config: global config exists but no .valis.json.
  */
 export async function isLegacyConfig(startDir?: string): Promise<boolean> {
   return (await detectConfigState(startDir)) === 'no-project';

@@ -6,7 +6,7 @@ import { getSupabaseClient, getDashboardStats, getProposedDecisions } from '../c
 export async function dashboardCommand(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 
@@ -23,7 +23,7 @@ export async function dashboardCommand(): Promise<void> {
 
     // T027: Show project name in dashboard header when scoped
     const headerSuffix = projectName ? ` / ${projectName}` : '';
-    console.log(pc.bold(`\nTeamind Dashboard — ${config.org_name}${headerSuffix}\n`));
+    console.log(pc.bold(`\nValis Dashboard — ${config.org_name}${headerSuffix}\n`));
     console.log(`  Total decisions: ${pc.bold(String(stats.total_decisions))}`);
 
     // Lifecycle stats

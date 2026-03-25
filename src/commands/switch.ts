@@ -1,11 +1,11 @@
 /**
- * `teamind switch` — Switch the active project for the current directory.
+ * `valis switch` — Switch the active project for the current directory.
  *
  * Usage:
- *   teamind switch --project <name-or-id>   Switch to a named/ID'd project
- *   teamind switch                           Interactive — show list and prompt
+ *   valis switch --project <name-or-id>   Switch to a named/ID'd project
+ *   valis switch                           Interactive — show list and prompt
  *
- * Updates `.teamind.json` in cwd with the selected project.
+ * Updates `.valis.json` in cwd with the selected project.
  *
  * @module commands/switch
  */
@@ -47,14 +47,14 @@ export async function switchCommand(options: { project?: string }): Promise<void
   const config = await loadConfig();
   if (!config) {
     console.error(formatError(ERRORS.no_project_configured));
-    console.error('\nRun `teamind init` first to configure your organization.');
+    console.error('\nRun `valis init` first to configure your organization.');
     process.exit(1);
   }
 
   // Need member_id for listing projects — require JWT auth mode
   if (!config.member_id) {
     console.error(pc.red('Error: Member ID not available.'));
-    console.error('Run `teamind init` or `teamind migrate-auth` to set up per-member authentication.');
+    console.error('Run `valis init` or `valis migrate-auth` to set up per-member authentication.');
     process.exit(1);
   }
 
@@ -70,7 +70,7 @@ export async function switchCommand(options: { project?: string }): Promise<void
   }
 
   if (projects.length === 0) {
-    console.error(pc.yellow('No projects found. Run `teamind init` to create one.'));
+    console.error(pc.yellow('No projects found. Run `valis init` to create one.'));
     process.exit(1);
   }
 
@@ -126,7 +126,7 @@ export async function switchCommand(options: { project?: string }): Promise<void
     return;
   }
 
-  // Write .teamind.json in cwd
+  // Write .valis.json in cwd
   const configPath = await writeProjectConfig(process.cwd(), {
     project_id: selected.id,
     project_name: selected.name,

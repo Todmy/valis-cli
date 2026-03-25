@@ -9,10 +9,10 @@ export interface ChannelEvent {
 
 export function buildCaptureReminder(): ChannelEvent {
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'capture_reminder',
     content:
-      'Review your recent work. If any decisions, constraints, patterns, or lessons were established, store them via teamind_store with type, summary, and affects.',
+      'Review your recent work. If any decisions, constraints, patterns, or lessons were established, store them via valis_store with type, summary, and affects.',
     meta: {
       event: 'capture_reminder',
     },
@@ -25,7 +25,7 @@ export function buildNewDecisionEvent(
   summary: string,
 ): ChannelEvent {
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'new_decision',
     content: summary,
     meta: {
@@ -74,7 +74,7 @@ export function buildRemoteDecisionEvent(decision: RemoteDecisionInput): Channel
   if (decision.project_name) meta.project_name = decision.project_name;
 
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'new_decision',
     content: `${projectPrefix}${decision.summary || decision.detail.substring(0, 100)}`,
     meta,
@@ -116,7 +116,7 @@ export function buildDeprecationEvent(
   if (decision.project_id) meta.project_id = decision.project_id;
 
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'decision_deprecated',
     content:
       `Decision ${label} by ${changedBy}: "${decision.summary || decision.detail.substring(0, 100)}"${reason}`,
@@ -151,7 +151,7 @@ export function buildContradictionEvent(
   if (projectId) meta.project_id = projectId;
 
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'contradiction_detected',
     content:
       `Potential contradiction: "${decisionA.summary}" by ${decisionA.author} ` +
@@ -176,11 +176,11 @@ export function buildProposedDecisionEvent(
   decisionId: string,
 ): ChannelEvent {
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'decision_proposed',
     content:
       `New proposed decision by ${author}: "${summary}". ` +
-      `Review and promote or reject via teamind_lifecycle.`,
+      `Review and promote or reject via valis_lifecycle.`,
     meta: {
       event: 'decision_proposed',
       author,
@@ -200,7 +200,7 @@ export function buildProposedPromotedEvent(
   decisionId: string,
 ): ChannelEvent {
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'decision_promoted',
     content:
       `Proposed decision promoted to active by ${promotedBy}: "${summary}".`,
@@ -225,7 +225,7 @@ export function buildProposedRejectedEvent(
 ): ChannelEvent {
   const reasonSuffix = reason ? ` Reason: ${reason}` : '';
   return {
-    source: 'teamind',
+    source: 'valis',
     event: 'decision_rejected',
     content:
       `Proposed decision rejected by ${rejectedBy}: "${summary}".${reasonSuffix}`,

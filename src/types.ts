@@ -30,15 +30,15 @@ export interface ProjectMember {
   joined_at: string;
 }
 
-/** Per-directory project config stored in `.teamind.json`. */
+/** Per-directory project config stored in `.valis.json`. */
 export interface ProjectConfig {
   project_id: string;
   project_name: string;
 }
 
-/** Resolved config combining global TeamindConfig with per-directory ProjectConfig. */
+/** Resolved config combining global ValisConfig with per-directory ProjectConfig. */
 export interface ResolvedConfig {
-  global: TeamindConfig | null;
+  global: ValisConfig | null;
   project: ProjectConfig | null;
 }
 
@@ -289,7 +289,7 @@ export interface TokenCache {
 // Config
 // ---------------------------------------------------------------------------
 
-export interface TeamindConfig {
+export interface ValisConfig {
   org_id: string;
   org_name: string;
   api_key: string;
@@ -608,7 +608,7 @@ export const HOSTED_SUPABASE_URL = 'https://rmawxpdaudinbansjfpd.supabase.co';
 export const HOSTED_QDRANT_URL = 'https://c424cb8c-c7b6-4afc-963a-dfb86f82dd2c.eu-central-1-0.aws.cloud.qdrant.io';
 
 /** Public Vercel API URL for hosted mode (not a secret). */
-export const HOSTED_API_URL = 'https://teamind.krukit.co';
+export const HOSTED_API_URL = 'https://valis.krukit.co';
 
 /** Response from the public `/functions/v1/register` endpoint. */
 export interface RegistrationResponse {

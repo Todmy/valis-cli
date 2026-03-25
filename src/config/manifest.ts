@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Manifest, ManifestEntry } from '../types.js';
 
-const MANIFEST_FILE = join(homedir(), '.teamind', 'manifest.json');
+const MANIFEST_FILE = join(homedir(), '.valis', 'manifest.json');
 
 export async function loadManifest(): Promise<Manifest> {
   try {
@@ -15,7 +15,7 @@ export async function loadManifest(): Promise<Manifest> {
 }
 
 export async function saveManifest(manifest: Manifest): Promise<void> {
-  const dir = join(homedir(), '.teamind');
+  const dir = join(homedir(), '.valis');
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2), { mode: 0o600 });
 }

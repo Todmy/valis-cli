@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolveApiUrl, resolveApiPath, isHostedMode } from '../../src/cloud/api-url.js';
-import { HOSTED_API_URL, HOSTED_SUPABASE_URL, type TeamindConfig } from '../../src/types.js';
+import { HOSTED_API_URL, HOSTED_SUPABASE_URL, type ValisConfig } from '../../src/types.js';
 
 // ---------------------------------------------------------------------------
 // T030: resolveApiUrl
@@ -85,7 +85,7 @@ describe('resolveApiPath', () => {
 // ---------------------------------------------------------------------------
 
 describe('isHostedMode', () => {
-  const baseConfig: TeamindConfig = {
+  const baseConfig: ValisConfig = {
     org_id: 'org-1',
     org_name: 'Test Org',
     api_key: '',

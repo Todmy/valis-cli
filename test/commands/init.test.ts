@@ -3,11 +3,11 @@
  *
  * Tests cover:
  * - Case 2: org exists shows project list and allows selection
- * - Case 3: --join writes .teamind.json with project_id/name
- * - Fresh init (Case 1) creates project + writes .teamind.json
+ * - Case 3: --join writes .valis.json with project_id/name
+ * - Fresh init (Case 1) creates project + writes .valis.json
  * - Global config unchanged when only project changes (Case 4 switch)
  * - T013: Community mode prompts for 4 credentials, saves supabase_service_role_key, no registration API
- * - T016: Static assertion that HOSTED_CREDENTIALS / loadHostedEnv / .hosted-env / TEAMIND_HOSTED_ are removed
+ * - T016: Static assertion that HOSTED_CREDENTIALS / loadHostedEnv / .hosted-env / VALIS_HOSTED_ are removed
  * - T017: E2E test for full hosted registration flow
  * - T018: E2E test for full join flow
  */
@@ -23,7 +23,7 @@ import {
   writeProjectConfig,
   loadProjectConfig,
 } from '../../src/config/project.js';
-import type { ProjectConfig, TeamindConfig, RegistrationResponse, JoinPublicResponse } from '../../src/types.js';
+import type { ProjectConfig, ValisConfig, RegistrationResponse, JoinPublicResponse } from '../../src/types.js';
 import type { ProjectInfo, CreateProjectResponse, JoinProjectResponse } from '../../src/cloud/supabase.js';
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ import type { ProjectInfo, CreateProjectResponse, JoinProjectResponse } from '..
 // ---------------------------------------------------------------------------
 
 async function makeTmpDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'teamind-init-test-'));
+  return mkdtemp(join(tmpdir(), 'valis-init-test-'));
 }
 
 const MOCK_PROJECT_A: ProjectConfig = {
@@ -44,7 +44,7 @@ const MOCK_PROJECT_B: ProjectConfig = {
   project_name: 'backend-api',
 };
 
-const MOCK_GLOBAL_CONFIG: TeamindConfig = {
+const MOCK_GLOBAL_CONFIG: ValisConfig = {
   org_id: 'org-1111-2222-3333-444444444444',
   org_name: 'TestOrg',
   api_key: 'test-api-key',
@@ -63,7 +63,7 @@ const MOCK_GLOBAL_CONFIG: TeamindConfig = {
 // Case 2: Org exists, shows project list
 // ---------------------------------------------------------------------------
 
-describe('Case 2: org exists, no .teamind.json — project selection', () => {
+describe('Case 2: org exists, no .valis.json — project selection', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -74,7 +74,7 @@ describe('Case 2: org exists, no .teamind.json — project selection', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('selectOrCreateProject writes .teamind.json for selected project', async () => {
+  it('selectOrCreateProject writes .valis.json for selected project', async () => {
     // Simulate user selecting an existing project by writing the config directly
     // (The interactive prompt is tested via manual/integration testing.)
     const selectedProject: ProjectConfig = {
@@ -89,7 +89,7 @@ describe('Case 2: org exists, no .teamind.json — project selection', () => {
     expect(loaded.project_name).toBe(MOCK_PROJECT_A.project_name);
   });
 
-  it('creates new project and writes .teamind.json', async () => {
+  it('creates new project and writes .valis.json', async () => {
     // Simulate the flow: user types new project name, gets back project_id from EF
     const newProject: ProjectConfig = {
       project_id: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
@@ -104,17 +104,17 @@ describe('Case 2: org exists, no .teamind.json — project selection', () => {
     expect(loaded!.project_name).toBe('new-service');
   });
 
-  it('directory has no .teamind.json initially (Case 2 precondition)', async () => {
+  it('directory has no .valis.json initially (Case 2 precondition)', async () => {
     const result = await findProjectConfig(tmpDir);
     expect(result).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Case 3: --join writes .teamind.json
+// Case 3: --join writes .valis.json
 // ---------------------------------------------------------------------------
 
-describe('Case 3: --join writes .teamind.json', () => {
+describe('Case 3: --join writes .valis.json', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -125,7 +125,7 @@ describe('Case 3: --join writes .teamind.json', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('join-project response produces valid .teamind.json', async () => {
+  it('join-project response produces valid .valis.json', async () => {
     // Simulate the join-project EF response
     const joinResponse: JoinProjectResponse = {
       org_id: MOCK_GLOBAL_CONFIG.org_id,
@@ -152,13 +152,13 @@ describe('Case 3: --join writes .teamind.json', () => {
     expect(loaded!.project_name).toBe(MOCK_PROJECT_B.project_name);
   });
 
-  it('.teamind.json contains only project_id and project_name (no secrets)', async () => {
+  it('.valis.json contains only project_id and project_name (no secrets)', async () => {
     await writeProjectConfig(tmpDir, {
       project_id: MOCK_PROJECT_A.project_id,
       project_name: MOCK_PROJECT_A.project_name,
     });
 
-    const raw = await readFile(join(tmpDir, '.teamind.json'), 'utf-8');
+    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
     const parsed = JSON.parse(raw);
 
     // Should only have these two keys
@@ -172,7 +172,7 @@ describe('Case 3: --join writes .teamind.json', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fresh init creates project + writes .teamind.json
+// Fresh init creates project + writes .valis.json
 // ---------------------------------------------------------------------------
 
 describe('Fresh init: project creation flow', () => {
@@ -195,14 +195,14 @@ describe('Fresh init: project creation flow', () => {
       role: 'project_admin',
     };
 
-    // Write .teamind.json as init would
+    // Write .valis.json as init would
     const projectConfig: ProjectConfig = {
       project_id: createResponse.project_id,
       project_name: createResponse.project_name,
     };
     await writeProjectConfig(tmpDir, projectConfig);
 
-    // Verify .teamind.json exists and is valid
+    // Verify .valis.json exists and is valid
     const loaded = await findProjectConfig(tmpDir);
     expect(loaded).not.toBeNull();
     expect(loaded!.project_id).toBe(MOCK_PROJECT_A.project_id);
@@ -233,11 +233,11 @@ describe('Global config unchanged when switching projects', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('switching project only updates .teamind.json, not global config', async () => {
+  it('switching project only updates .valis.json, not global config', async () => {
     // Write initial project config
     await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
 
-    // Simulate switching to project B (only .teamind.json changes)
+    // Simulate switching to project B (only .valis.json changes)
     await writeProjectConfig(tmpDir, MOCK_PROJECT_B);
 
     // Verify project config changed
@@ -246,10 +246,10 @@ describe('Global config unchanged when switching projects', () => {
     expect(projectConfig!.project_id).toBe(MOCK_PROJECT_B.project_id);
     expect(projectConfig!.project_name).toBe(MOCK_PROJECT_B.project_name);
 
-    // The global config (TeamindConfig) is stored in ~/.teamind/config.json,
+    // The global config (ValisConfig) is stored in ~/.valis/config.json,
     // NOT in the project directory. Switching projects never touches it.
-    // We verify this by confirming .teamind.json has no global config fields.
-    const raw = await readFile(join(tmpDir, '.teamind.json'), 'utf-8');
+    // We verify this by confirming .valis.json has no global config fields.
+    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     expect(parsed.org_id).toBeUndefined();
     expect(parsed.api_key).toBeUndefined();
@@ -335,7 +335,7 @@ describe('T013: Community mode — unchanged behavior', () => {
   it('community config includes supabase_service_role_key', () => {
     // Community mode users provide their own credentials, including service_role_key.
     // The saved config must include supabase_service_role_key for community mode.
-    const communityConfig: TeamindConfig = {
+    const communityConfig: ValisConfig = {
       org_id: 'org-community-1234',
       org_name: 'CommunityOrg',
       api_key: 'community-api-key',
@@ -360,7 +360,7 @@ describe('T013: Community mode — unchanged behavior', () => {
   it('community config does NOT use registration API types', () => {
     // Community mode saves service_role_key directly — no member_api_key needed
     // for backend operations (community users have full admin access).
-    const communityConfig: TeamindConfig = {
+    const communityConfig: ValisConfig = {
       org_id: 'org-community-1234',
       org_name: 'CommunityOrg',
       api_key: 'community-api-key',
@@ -398,7 +398,7 @@ describe('T013: Community mode — unchanged behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T016: Static assertion — no HOSTED_CREDENTIALS / loadHostedEnv / .hosted-env / TEAMIND_HOSTED_
+// T016: Static assertion — no HOSTED_CREDENTIALS / loadHostedEnv / .hosted-env / VALIS_HOSTED_
 // ---------------------------------------------------------------------------
 
 describe('T016: Verify removal of hosted-env legacy code from init.ts', () => {
@@ -421,8 +421,8 @@ describe('T016: Verify removal of hosted-env legacy code from init.ts', () => {
     expect(initTsContent).not.toMatch(/\.hosted-env/);
   });
 
-  it('does not reference TEAMIND_HOSTED_ environment variables', () => {
-    expect(initTsContent).not.toMatch(/TEAMIND_HOSTED_/);
+  it('does not reference VALIS_HOSTED_ environment variables', () => {
+    expect(initTsContent).not.toMatch(/VALIS_HOSTED_/);
   });
 
   it('does not import readFileSync or existsSync (no longer needed)', () => {
@@ -437,8 +437,8 @@ describe('T016: Verify removal of hosted-env legacy code from init.ts', () => {
   it('hosted path in resolveCredentials does not assign service_role from env', () => {
     // The hosted branch should not resolve serviceRoleKey from env vars or files.
     // It should either be empty (placeholder) or come from registration API.
-    expect(initTsContent).not.toMatch(/TEAMIND_HOSTED_SUPABASE_KEY/);
-    expect(initTsContent).not.toMatch(/TEAMIND_HOSTED_QDRANT_KEY/);
+    expect(initTsContent).not.toMatch(/VALIS_HOSTED_SUPABASE_KEY/);
+    expect(initTsContent).not.toMatch(/VALIS_HOSTED_QDRANT_KEY/);
   });
 
   it('init.ts imports register from registration module', () => {
@@ -475,7 +475,7 @@ describe('T017: E2E hosted registration flow', () => {
     };
 
     // Simulate what init hosted mode does: build config from registration response
-    const config: TeamindConfig = {
+    const config: ValisConfig = {
       org_id: registrationResponse.org_id,
       org_name: registrationResponse.org_name,
       api_key: '', // hosted mode: no org-level key on client
@@ -511,7 +511,7 @@ describe('T017: E2E hosted registration flow', () => {
     expect(config.invite_code).toBe('ABCD-1234');
   });
 
-  it('registration response produces valid .teamind.json', async () => {
+  it('registration response produces valid .valis.json', async () => {
     const registrationResponse: RegistrationResponse = {
       member_api_key: 'tmm_abc123def456abc123def456abc123de',
       supabase_url: 'https://hosted.supabase.co',
@@ -524,21 +524,21 @@ describe('T017: E2E hosted registration flow', () => {
       member_id: 'reg-member-1111-2222-3333-444444444444',
     };
 
-    // Write .teamind.json as init hosted mode would
+    // Write .valis.json as init hosted mode would
     const projectConfig: ProjectConfig = {
       project_id: registrationResponse.project_id,
       project_name: registrationResponse.project_name,
     };
     await writeProjectConfig(tmpDir, projectConfig);
 
-    // Verify .teamind.json
+    // Verify .valis.json
     const loaded = await findProjectConfig(tmpDir);
     expect(loaded).not.toBeNull();
     expect(loaded!.project_id).toBe(registrationResponse.project_id);
     expect(loaded!.project_name).toBe('my-app');
 
-    // Verify .teamind.json contains no secrets
-    const raw = await readFile(join(tmpDir, '.teamind.json'), 'utf-8');
+    // Verify .valis.json contains no secrets
+    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     expect(parsed.member_api_key).toBeUndefined();
     expect(parsed.supabase_url).toBeUndefined();
@@ -546,7 +546,7 @@ describe('T017: E2E hosted registration flow', () => {
   });
 
   it('hosted config can be saved and loaded without service_role_key', async () => {
-    const hostedConfig: TeamindConfig = {
+    const hostedConfig: ValisConfig = {
       org_id: 'hosted-org-id',
       org_name: 'HostedOrg',
       api_key: '',
@@ -603,7 +603,7 @@ describe('T018: E2E join flow via public endpoint', () => {
     };
 
     // Build config as init --join hosted mode would
-    const config: TeamindConfig = {
+    const config: ValisConfig = {
       org_id: joinResponse.org_id,
       org_name: joinResponse.org_name,
       api_key: '', // hosted mode: no org-level key on client
@@ -634,7 +634,7 @@ describe('T018: E2E join flow via public endpoint', () => {
     expect(config.member_id).toBe('joined-member-id');
   });
 
-  it('joinPublic response produces valid .teamind.json', async () => {
+  it('joinPublic response produces valid .valis.json', async () => {
     const joinResponse: JoinPublicResponse = {
       org_id: 'join-org-1111-2222-3333-444444444444',
       org_name: 'Existing Org',
@@ -649,14 +649,14 @@ describe('T018: E2E join flow via public endpoint', () => {
       role: 'project_member',
     };
 
-    // Write .teamind.json as init --join would
+    // Write .valis.json as init --join would
     const projectConfig: ProjectConfig = {
       project_id: joinResponse.project_id,
       project_name: joinResponse.project_name,
     };
     await writeProjectConfig(tmpDir, projectConfig);
 
-    // Verify .teamind.json
+    // Verify .valis.json
     const loaded = await findProjectConfig(tmpDir);
     expect(loaded).not.toBeNull();
     expect(loaded!.project_id).toBe(joinResponse.project_id);
@@ -664,7 +664,7 @@ describe('T018: E2E join flow via public endpoint', () => {
   });
 
   it('join config is distinct from community config (no service_role_key)', () => {
-    const hostedJoinConfig: TeamindConfig = {
+    const hostedJoinConfig: ValisConfig = {
       org_id: 'org-id',
       org_name: 'Org',
       api_key: '',
@@ -680,7 +680,7 @@ describe('T018: E2E join flow via public endpoint', () => {
       member_id: 'member-id',
     };
 
-    const communityConfig: TeamindConfig = {
+    const communityConfig: ValisConfig = {
       ...MOCK_GLOBAL_CONFIG,
       supabase_service_role_key: 'sb_secret_key',
       qdrant_api_key: 'qdrant_secret_key',

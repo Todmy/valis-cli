@@ -20,7 +20,7 @@ import {
 import type { ProjectInfo } from '../cloud/supabase.js';
 import { getQdrantClient, ensureCollection, countLegacyPoints } from '../cloud/qdrant.js';
 import { upsertDecision, hybridSearch } from '../cloud/qdrant.js';
-import type { TeamindConfig, ProjectConfig } from '../types.js';
+import type { ValisConfig, ProjectConfig } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
 import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 import { register, joinPublic } from '../cloud/registration.js';
@@ -111,7 +111,7 @@ async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: stri
 
 /**
  * Prompt for project name and create the project via Edge Function.
- * Returns the ProjectConfig to write to .teamind.json.
+ * Returns the ProjectConfig to write to .valis.json.
  */
 async function promptAndCreateProject(
   supabaseUrl: string,
@@ -136,7 +136,7 @@ async function promptAndCreateProject(
 
 /**
  * List member's projects and let them select an existing one or create new.
- * Returns the ProjectConfig to write to .teamind.json.
+ * Returns the ProjectConfig to write to .valis.json.
  */
 async function selectOrCreateProject(
   supabaseUrl: string,
@@ -188,7 +188,7 @@ async function selectOrCreateProject(
 // IDE + Qdrant + Seed helpers (extracted from old monolithic flow)
 // ---------------------------------------------------------------------------
 
-async function setupIDEs(config: TeamindConfig): Promise<string[]> {
+async function setupIDEs(config: ValisConfig): Promise<string[]> {
   console.log(pc.cyan('\nDetecting IDEs...'));
   const ides = await detectIDEs();
   const detectedNames: string[] = [];
@@ -232,7 +232,7 @@ async function setupQdrant(qdrantUrl: string, qdrantApiKey: string) {
 }
 
 async function seedAndVerify(
-  config: TeamindConfig,
+  config: ValisConfig,
   projectConfig: ProjectConfig,
   qdrant: ReturnType<typeof getQdrantClient>,
 ) {
@@ -260,14 +260,14 @@ async function seedAndVerify(
       supabase,
       config.org_id,
       {
-        text: 'Teamind initialized successfully — this is a verification decision',
+        text: 'Valis initialized successfully — this is a verification decision',
         project_id: projectConfig.project_id,
       },
       config.author_name,
       'seed',
     );
     await upsertDecision(qdrant, config.org_id, testDecision.id, {
-      text: 'Teamind initialized successfully — this is a verification decision',
+      text: 'Valis initialized successfully — this is a verification decision',
       project_id: projectConfig.project_id,
     }, config.author_name);
 
@@ -282,7 +282,7 @@ async function seedAndVerify(
   }
 }
 
-function printSummary(config: TeamindConfig, projectConfig: ProjectConfig, isJoin: boolean) {
+function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin: boolean) {
   console.log(pc.bold('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
   console.log(pc.bold('  Setup Complete!'));
   console.log(pc.bold('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
@@ -291,10 +291,10 @@ function printSummary(config: TeamindConfig, projectConfig: ProjectConfig, isJoi
   console.log(`  Author: ${config.author_name}`);
   if (!isJoin) {
     console.log(`\n  ${pc.bold('Invite code:')} ${pc.green(config.invite_code)}`);
-    console.log(`  Share with teammates: ${pc.dim('teamind init --join ' + config.invite_code)}`);
+    console.log(`  Share with teammates: ${pc.dim('valis init --join ' + config.invite_code)}`);
   }
-  console.log(`\n  Next: Start your IDE — Teamind MCP server will run automatically.`);
-  console.log(`  Or run: ${pc.dim('teamind serve')} to test manually.\n`);
+  console.log(`\n  Next: Start your IDE — Valis MCP server will run automatically.`);
+  console.log(`  Or run: ${pc.dim('valis serve')} to test manually.\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ function printSummary(config: TeamindConfig, projectConfig: ProjectConfig, isJoi
 // ---------------------------------------------------------------------------
 
 export async function initCommand(options: { join?: string }): Promise<void> {
-  console.log(pc.bold('\n🧠 Teamind Setup\n'));
+  console.log(pc.bold('\n🧠 Valis Setup\n'));
 
   const existing = await loadConfig();
   const existingProject = await findProjectConfig(process.cwd());
@@ -323,7 +323,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     const authorName = await prompt('Your name: ');
 
     let projectConfig: ProjectConfig | undefined;
-    let config: TeamindConfig;
+    let config: ValisConfig;
 
     // Hosted: no existing config, or existing config has no service_role_key.
     const useHostedJoin = !existing || !existing.supabase_service_role_key;
@@ -411,7 +411,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       }
     }
 
-    // Write .teamind.json
+    // Write .valis.json
     if (projectConfig) {
       const configPath = await writeProjectConfig(process.cwd(), projectConfig);
       console.log(pc.green(`✓ Project config saved to ${configPath}`));
@@ -431,10 +431,10 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   }
 
   // -----------------------------------------------------------------------
-  // Case 4: Reconfigure — both global config and .teamind.json exist
+  // Case 4: Reconfigure — both global config and .valis.json exist
   // -----------------------------------------------------------------------
   if (existing && existingProject) {
-    console.log(pc.yellow('Teamind is already configured for this directory.'));
+    console.log(pc.yellow('Valis is already configured for this directory.'));
     console.log(`  Org: ${existing.org_name}`);
     console.log(`  Project: ${existingProject.project_name}`);
     console.log(`  Author: ${existing.author_name}`);
@@ -466,12 +466,12 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   }
 
   // -----------------------------------------------------------------------
-  // Case 2: Org exists, no .teamind.json — legacy config migration path
+  // Case 2: Org exists, no .valis.json — legacy config migration path
   //
   // T038 (US6): When an upgraded CLI detects global config but no
-  // .teamind.json, this is a legacy installation that was configured
+  // .valis.json, this is a legacy installation that was configured
   // before multi-project support. We try to find the default project
-  // and write .teamind.json automatically, or fall through to the
+  // and write .valis.json automatically, or fall through to the
   // standard project selection flow.
   // -----------------------------------------------------------------------
   if (existing && !existingProject) {
@@ -523,7 +523,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       const legacyCount = await countLegacyPoints(qdrant, existing.org_id);
       if (legacyCount > 0) {
         console.log(pc.yellow(`\n  ${legacyCount} search index entries need project_id backfill.`));
-        console.log(pc.dim('  Run `teamind admin migrate-qdrant` to update the search index.'));
+        console.log(pc.dim('  Run `valis admin migrate-qdrant` to update the search index.'));
         console.log(pc.dim('  Search still works during migration (legacy points included in results).'));
       }
     } catch {
@@ -537,8 +537,8 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     console.log(`\n  Org: ${pc.cyan(existing.org_name)}`);
     console.log(`  Project: ${pc.cyan(projectConfig.project_name)}`);
     console.log(`  Author: ${existing.author_name}`);
-    console.log(`\n  Next: Start your IDE — Teamind MCP server will run automatically.`);
-    console.log(`  Or run: ${pc.dim('teamind serve')} to test manually.\n`);
+    console.log(`\n  Next: Start your IDE — Valis MCP server will run automatically.`);
+    console.log(`  Or run: ${pc.dim('valis serve')} to test manually.\n`);
     return;
   }
 
@@ -553,7 +553,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   const modeAnswer = await prompt('Your choice (1/2): ');
   const setupMode: SetupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
 
-  let config: TeamindConfig;
+  let config: ValisConfig;
   let projectConfig: ProjectConfig;
 
   if (setupMode === 'hosted') {
@@ -564,7 +564,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     const projectName = await prompt(`Project name (${basename(process.cwd())}): `) || basename(process.cwd());
     const authorName = await prompt('Your name: ');
 
-    console.log(pc.cyan('\nRegistering with Teamind Cloud...'));
+    console.log(pc.cyan('\nRegistering with Valis Cloud...'));
 
     try {
       const regResult = await register(orgName, projectName, authorName, HOSTED_SUPABASE_URL);
@@ -647,7 +647,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   await trackFile({ type: 'config_dir', path: getConfigDir() });
   console.log(pc.green('✓ Config saved'));
 
-  // Write .teamind.json
+  // Write .valis.json
   const projectConfigPath = await writeProjectConfig(process.cwd(), projectConfig);
   console.log(pc.green(`✓ Project config saved to ${projectConfigPath}`));
 

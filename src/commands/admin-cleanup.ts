@@ -1,10 +1,10 @@
 /**
- * `teamind admin cleanup` command — T025 (US3)
+ * `valis admin cleanup` command — T025 (US3)
  *
  * Runs the dedup + orphan detection pipeline and formats a report.
  *
  * Usage:
- *   teamind admin cleanup [--dry-run | --apply] [--org <org_id>]
+ *   valis admin cleanup [--dry-run | --apply] [--org <org_id>]
  *
  * --dry-run (default): Report what would be cleaned. No mutations.
  * --apply:             Execute cleanup actions. Creates audit entries.
@@ -111,7 +111,7 @@ export async function adminCleanupCommand(
 
   if (!orgId) {
     console.error(
-      'Error: org ID required. Use --org <org_id> or run `teamind init`.',
+      'Error: org ID required. Use --org <org_id> or run `valis init`.',
     );
     process.exit(1);
   }
@@ -124,14 +124,14 @@ export async function adminCleanupCommand(
 
   if (!supabaseUrl || !serviceRoleKey) {
     console.error(
-      'Error: Supabase credentials required. Set env vars or run `teamind init`.',
+      'Error: Supabase credentials required. Set env vars or run `valis init`.',
     );
     process.exit(1);
   }
 
   if (!qdrantUrl || !qdrantApiKey) {
     console.error(
-      'Error: Qdrant credentials required. Set env vars or run `teamind init`.',
+      'Error: Qdrant credentials required. Set env vars or run `valis init`.',
     );
     process.exit(1);
   }

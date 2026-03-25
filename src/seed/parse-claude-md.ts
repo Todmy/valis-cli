@@ -44,9 +44,9 @@ export async function parseClaudeMd(filePath: string): Promise<RawDecision[]> {
     return [];
   }
 
-  // Skip teamind markers
+  // Skip valis markers
   content = content.replace(
-    /<!-- teamind:start -->[\s\S]*?<!-- teamind:end -->/g,
+    /<!-- valis:start -->[\s\S]*?<!-- valis:end -->/g,
     '',
   );
 

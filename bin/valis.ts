@@ -22,7 +22,7 @@ import { switchCommand } from '../src/commands/switch.js';
 const program = new Command();
 
 program
-  .name('teamind')
+  .name('valis')
   .description('Shared decision intelligence for AI-augmented engineering teams')
   .version('0.1.0');
 
@@ -140,7 +140,7 @@ configCmd
 
 program
   .command('uninstall')
-  .description('Remove all local Teamind configuration')
+  .description('Remove all local Valis configuration')
   .option('--yes', 'Skip confirmation prompt')
   .action(async (options) => {
     try {

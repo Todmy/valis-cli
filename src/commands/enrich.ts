@@ -1,5 +1,5 @@
 /**
- * T057 + T033: `teamind enrich` command.
+ * T057 + T033: `valis enrich` command.
  *
  * Hosted mode (auth_mode=jwt): calls /api/enrich on the server, which uses
  * the server-side ANTHROPIC_API_KEY. No local LLM key required.
@@ -55,7 +55,7 @@ interface HostedEnrichResponse {
 export async function enrichCommand(options: EnrichCommandOptions): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 
@@ -76,12 +76,12 @@ export async function enrichCommand(options: EnrichCommandOptions): Promise<void
 // ---------------------------------------------------------------------------
 
 async function runHostedEnrichment(
-  config: import('../types.js').TeamindConfig,
+  config: import('../types.js').ValisConfig,
   dryRun: boolean,
 ): Promise<void> {
   console.log(
     pc.bold(
-      `\nTeamind Enrichment — ${dryRun ? pc.yellow('DRY RUN') : pc.cyan('HOSTED')}\n`,
+      `\nValis Enrichment — ${dryRun ? pc.yellow('DRY RUN') : pc.cyan('HOSTED')}\n`,
     ),
   );
   console.log(`  Org: ${config.org_id}`);
@@ -105,7 +105,7 @@ async function runHostedEnrichment(
 
   if (!tokenCache) {
     console.error(
-      'Error: Could not obtain auth token. Run `teamind init` to re-authenticate.',
+      'Error: Could not obtain auth token. Run `valis init` to re-authenticate.',
     );
     process.exit(1);
   }
@@ -171,7 +171,7 @@ async function runHostedEnrichment(
     }
 
     if (res.status === 401) {
-      console.error('Error: Authentication failed. Run `teamind init` to re-authenticate.');
+      console.error('Error: Authentication failed. Run `valis init` to re-authenticate.');
     } else if (res.status === 403) {
       console.error(
         'Error: Hosted enrichment not available for your account. ' +
@@ -235,7 +235,7 @@ async function runHostedEnrichment(
 // ---------------------------------------------------------------------------
 
 async function runCommunityEnrichment(
-  config: import('../types.js').TeamindConfig,
+  config: import('../types.js').ValisConfig,
   options: EnrichCommandOptions,
 ): Promise<void> {
   const orgId = config.org_id;
@@ -275,7 +275,7 @@ async function runCommunityEnrichment(
 
   console.log(
     pc.bold(
-      `\nTeamind Enrichment — ${dryRun ? pc.yellow('DRY RUN') : pc.cyan('ENRICH')}\n`,
+      `\nValis Enrichment — ${dryRun ? pc.yellow('DRY RUN') : pc.cyan('ENRICH')}\n`,
     ),
   );
   console.log(`  Org: ${orgId}`);

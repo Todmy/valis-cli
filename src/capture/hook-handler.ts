@@ -37,8 +37,8 @@ export function startHookHandler(onHook: HookCallback): Promise<number> {
       const port = typeof address === 'object' && address ? address.port : 0;
 
       // Save port for Claude Code stop hook
-      const portFile = join(homedir(), '.teamind', 'hook-port');
-      await mkdir(join(homedir(), '.teamind'), { recursive: true, mode: 0o700 });
+      const portFile = join(homedir(), '.valis', 'hook-port');
+      await mkdir(join(homedir(), '.valis'), { recursive: true, mode: 0o700 });
       await writeFile(portFile, String(port));
 
       console.error(`Hook handler listening on 127.0.0.1:${port}`);

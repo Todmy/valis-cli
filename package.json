@@ -1,10 +1,10 @@
 {
-  "name": "teamind",
+  "name": "valis",
   "version": "0.1.0",
   "description": "Shared decision intelligence for AI-augmented engineering teams",
   "type": "module",
   "bin": {
-    "teamind": "./dist/bin/teamind.js"
+    "valis": "./dist/bin/valis.js"
   },
   "scripts": {
     "build": "tsc",
@@ -17,7 +17,7 @@
     "node": ">=20.0.0"
   },
   "license": "Apache-2.0",
-  "keywords": ["teamind", "decisions", "mcp", "ai", "team-knowledge"],
+  "keywords": ["valis", "decisions", "mcp", "ai", "team-knowledge"],
   "files": ["dist/"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

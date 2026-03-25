@@ -19,7 +19,7 @@ import { HOSTED_SUPABASE_URL } from '../../types.js';
 export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleResponse> {
   const config = await loadConfig();
   if (!config) {
-    throw new Error('Not configured. Run `teamind init` first.');
+    throw new Error('Not configured. Run `valis init` first.');
   }
 
   const supabase = config.auth_mode === 'jwt'

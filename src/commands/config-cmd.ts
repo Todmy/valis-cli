@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, updateConfig } from '../config/store.js';
-import type { TeamindConfig } from '../types.js';
+import type { ValisConfig } from '../types.js';
 
 const WRITABLE_KEYS = ['api-key', 'author-name'] as const;
 const READ_ONLY_KEYS = ['org-id'] as const;
@@ -8,7 +8,7 @@ const ALL_KEYS = [...WRITABLE_KEYS, ...READ_ONLY_KEYS] as const;
 
 type ConfigKey = (typeof ALL_KEYS)[number];
 
-const KEY_TO_FIELD: Record<string, keyof TeamindConfig> = {
+const KEY_TO_FIELD: Record<string, keyof ValisConfig> = {
   'api-key': 'api_key',
   'author-name': 'author_name',
   'org-id': 'org_id',
@@ -17,7 +17,7 @@ const KEY_TO_FIELD: Record<string, keyof TeamindConfig> = {
 export async function configGetCommand(key: string): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 
@@ -39,7 +39,7 @@ export async function configGetCommand(key: string): Promise<void> {
 export async function configSetCommand(key: string, value: string): Promise<void> {
   if (!WRITABLE_KEYS.includes(key as (typeof WRITABLE_KEYS)[number])) {
     if (READ_ONLY_KEYS.includes(key as (typeof READ_ONLY_KEYS)[number])) {
-      console.error(`${key} is read-only. Use \`teamind init\` to change it.`);
+      console.error(`${key} is read-only. Use \`valis init\` to change it.`);
     } else {
       console.error(`Unknown key: ${key}. Writable keys: ${WRITABLE_KEYS.join(', ')}`);
     }
@@ -47,7 +47,7 @@ export async function configSetCommand(key: string, value: string): Promise<void
   }
 
   const field = KEY_TO_FIELD[key];
-  const update: Partial<TeamindConfig> = { [field]: value };
+  const update: Partial<ValisConfig> = { [field]: value };
   await updateConfig(update);
   console.log(pc.green(`\u2713 ${key} updated`));
 }

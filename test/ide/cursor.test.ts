@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // Mock homedir and trackFile before importing modules under test
-const fakeHome = join(tmpdir(), `teamind-cursor-test-${Date.now()}`);
+const fakeHome = join(tmpdir(), `valis-cursor-test-${Date.now()}`);
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return { ...actual, homedir: () => fakeHome };
@@ -58,18 +58,18 @@ describe('Cursor IDE integration', () => {
   // -------------------------------------------------------------------------
 
   describe('configureCursorMCP', () => {
-    it('creates mcp.json with teamind server entry', async () => {
+    it('creates mcp.json with valis server entry', async () => {
       await configureCursorMCP();
 
       const configPath = join(fakeHome, '.cursor', 'mcp.json');
       const data = JSON.parse(await readFile(configPath, 'utf-8'));
-      expect(data.mcpServers.teamind).toEqual({
-        command: 'teamind',
+      expect(data.mcpServers.valis).toEqual({
+        command: 'valis',
         args: ['serve'],
       });
     });
 
-    it('preserves existing servers when adding teamind', async () => {
+    it('preserves existing servers when adding valis', async () => {
       const configPath = join(fakeHome, '.cursor', 'mcp.json');
       await writeFile(configPath, JSON.stringify({
         mcpServers: { other: { command: 'other', args: [] } },
@@ -79,7 +79,7 @@ describe('Cursor IDE integration', () => {
 
       const data = JSON.parse(await readFile(configPath, 'utf-8'));
       expect(data.mcpServers.other).toBeDefined();
-      expect(data.mcpServers.teamind).toBeDefined();
+      expect(data.mcpServers.valis).toBeDefined();
     });
 
     it('is idempotent — no duplicate entries on re-run', async () => {
@@ -89,8 +89,8 @@ describe('Cursor IDE integration', () => {
       const configPath = join(fakeHome, '.cursor', 'mcp.json');
       const data = JSON.parse(await readFile(configPath, 'utf-8'));
       const serverKeys = Object.keys(data.mcpServers);
-      const teamindCount = serverKeys.filter((k) => k === 'teamind').length;
-      expect(teamindCount).toBe(1);
+      const valisCount = serverKeys.filter((k) => k === 'valis').length;
+      expect(valisCount).toBe(1);
     });
 
     it('tracks the mcp config file in manifest', async () => {
@@ -106,15 +106,15 @@ describe('Cursor IDE integration', () => {
   // -------------------------------------------------------------------------
 
   describe('injectCursorrules', () => {
-    it('creates .cursorrules with teamind markers when file absent', async () => {
+    it('creates .cursorrules with valis markers when file absent', async () => {
       await injectCursorrules(projectDir);
 
       const content = await readFile(join(projectDir, '.cursorrules'), 'utf-8');
-      expect(content).toContain('<!-- teamind:start -->');
-      expect(content).toContain('<!-- teamind:end -->');
-      expect(content).toContain('teamind_search');
-      expect(content).toContain('teamind_store');
-      expect(content).toContain('teamind_context');
+      expect(content).toContain('<!-- valis:start -->');
+      expect(content).toContain('<!-- valis:end -->');
+      expect(content).toContain('valis_search');
+      expect(content).toContain('valis_store');
+      expect(content).toContain('valis_context');
     });
 
     it('appends markers to existing .cursorrules', async () => {
@@ -125,7 +125,7 @@ describe('Cursor IDE integration', () => {
 
       const content = await readFile(join(projectDir, '.cursorrules'), 'utf-8');
       expect(content).toContain('# My Project Rules');
-      expect(content).toContain('<!-- teamind:start -->');
+      expect(content).toContain('<!-- valis:start -->');
     });
 
     it('is idempotent — replaces existing markers without duplication', async () => {
@@ -133,7 +133,7 @@ describe('Cursor IDE integration', () => {
       await injectCursorrules(projectDir);
 
       const content = await readFile(join(projectDir, '.cursorrules'), 'utf-8');
-      const starts = content.match(/<!-- teamind:start -->/g);
+      const starts = content.match(/<!-- valis:start -->/g);
       expect(starts).toHaveLength(1);
     });
 
@@ -158,11 +158,11 @@ describe('Cursor IDE integration', () => {
 
       // Verify markers present
       let content = await readFile(join(projectDir, '.cursorrules'), 'utf-8');
-      expect(content).toContain('<!-- teamind:start -->');
+      expect(content).toContain('<!-- valis:start -->');
 
       // Simulate uninstall: remove markers (same logic as uninstall.ts)
-      const startMarker = '<!-- teamind:start -->';
-      const endMarker = '<!-- teamind:end -->';
+      const startMarker = '<!-- valis:start -->';
+      const endMarker = '<!-- valis:end -->';
       const regex = new RegExp(
         `\\n?${escapeRegex(startMarker)}[\\s\\S]*?${escapeRegex(endMarker)}\\n?`,
       );
@@ -171,7 +171,7 @@ describe('Cursor IDE integration', () => {
 
       // Verify markers removed
       content = await readFile(join(projectDir, '.cursorrules'), 'utf-8');
-      expect(content).not.toContain('<!-- teamind:start -->');
+      expect(content).not.toContain('<!-- valis:start -->');
       expect(content).toContain('# My Rules');
     });
 
@@ -180,17 +180,17 @@ describe('Cursor IDE integration', () => {
       await configureCursorMCP();
       const configPath = join(fakeHome, '.cursor', 'mcp.json');
 
-      // Verify teamind present
+      // Verify valis present
       let data = JSON.parse(await readFile(configPath, 'utf-8'));
-      expect(data.mcpServers.teamind).toBeDefined();
+      expect(data.mcpServers.valis).toBeDefined();
 
-      // Simulate uninstall: remove teamind entry (same logic as uninstall.ts)
-      delete data.mcpServers.teamind;
+      // Simulate uninstall: remove valis entry (same logic as uninstall.ts)
+      delete data.mcpServers.valis;
       await writeFile(configPath, JSON.stringify(data, null, 2));
 
       // Verify removed
       data = JSON.parse(await readFile(configPath, 'utf-8'));
-      expect(data.mcpServers.teamind).toBeUndefined();
+      expect(data.mcpServers.valis).toBeUndefined();
     });
   });
 });

@@ -3,16 +3,16 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { trackFile } from '../config/manifest.js';
 
-const AGENT_INSTRUCTIONS = `## Team Knowledge (Teamind)
+const AGENT_INSTRUCTIONS = `## Team Knowledge (Valis)
 
 ### Auto-search triggers
-Call \`teamind_search\` automatically when the user mentions:
+Call \`valis_search\` automatically when the user mentions:
 - "знайди", "пошукай", "згадай", "нагадай", "як ми вирішили", "що ми робили з"
 - "remember", "recall", "find", "what did we decide", "how did we handle"
 - Any question about architecture, conventions, past decisions, or existing patterns
 
 ### Auto-store triggers
-Call \`teamind_store\` when:
+Call \`valis_store\` when:
 - A technical choice is made between alternatives
 - The user says "запам'ятай", "збережи", "remember this", "store this"
 - A constraint is identified (client/regulatory/infra)
@@ -22,10 +22,10 @@ Call \`teamind_store\` when:
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of modules).
 
 ### Context loading
-Call \`teamind_context\` at the start of every new task or when switching to a different part of the codebase.
+Call \`valis_context\` at the start of every new task or when switching to a different part of the codebase.
 
 ### Channel reminders
-When you receive a \`<channel source="teamind" event="capture_reminder">\`, review your recent work and store any decisions made via \`teamind_store\`.`;
+When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;
 
 export async function configureClaudeCodeMCP(projectDir: string): Promise<void> {
   const settingsPath = join(homedir(), '.claude', 'settings.json');
@@ -40,8 +40,8 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
 
   // Add MCP server config
   const mcpServers = (settings.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['teamind'] = {
-    command: 'teamind',
+  mcpServers['valis'] = {
+    command: 'valis',
     args: ['serve'],
     env: {},
   };
@@ -50,7 +50,7 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
   // Set cleanupPeriodDays to prevent auto-cleanup
   settings.cleanupPeriodDays = 99999;
 
-  // Enable development channels for Teamind push notifications
+  // Enable development channels for Valis push notifications
   // Note: --dangerously-load-development-channels is a Claude Code CLI flag.
   // Users need to launch Claude Code with this flag for channel push to work:
   //   claude --dangerously-load-development-channels
@@ -65,8 +65,8 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
 
 export async function injectClaudeMdMarkers(projectDir: string): Promise<void> {
   const claudeMdPath = join(projectDir, 'CLAUDE.md');
-  const startMarker = '<!-- teamind:start -->';
-  const endMarker = '<!-- teamind:end -->';
+  const startMarker = '<!-- valis:start -->';
+  const endMarker = '<!-- valis:end -->';
 
   let content = '';
   try {

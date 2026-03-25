@@ -80,7 +80,7 @@ export async function trackUsage(
 
   if (error) {
     // Usage tracking failures are non-fatal — log and continue
-    console.warn(`[teamind] enrichment usage tracking failed: ${error.message}`);
+    console.warn(`[valis] enrichment usage tracking failed: ${error.message}`);
   }
 }
 

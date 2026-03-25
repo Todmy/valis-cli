@@ -1,4 +1,4 @@
-export interface TeamindError {
+export interface ValisError {
   code: string;
   what: string;
   why: string;
@@ -8,15 +8,15 @@ export interface TeamindError {
 export const ERRORS = {
   cloud_unreachable: {
     code: 'cloud_unreachable',
-    what: 'Cannot connect to Teamind cloud services',
+    what: 'Cannot connect to Valis cloud services',
     why: 'Supabase or Qdrant Cloud is unreachable. This may be a network issue or service outage.',
-    fix: 'Check your internet connection. Run `teamind status` to see which service is down. Decisions will be queued locally and synced when connection is restored.',
+    fix: 'Check your internet connection. Run `valis status` to see which service is down. Decisions will be queued locally and synced when connection is restored.',
   },
   org_not_found: {
     code: 'org_not_found',
     what: 'Organization not found',
     why: 'The configured organization ID does not exist or has been deleted.',
-    fix: 'Run `teamind init` to create a new organization or `teamind init --join <invite-code>` to join an existing one.',
+    fix: 'Run `valis init` to create a new organization or `valis init --join <invite-code>` to join an existing one.',
   },
   invite_invalid: {
     code: 'invite_invalid',
@@ -40,13 +40,13 @@ export const ERRORS = {
     code: 'qdrant_unreachable',
     what: 'Cannot connect to Qdrant Cloud',
     why: 'The Qdrant search service is unreachable. Search functionality is unavailable.',
-    fix: 'Check your QDRANT_URL and QDRANT_API_KEY in config. Run `teamind status` for diagnostics.',
+    fix: 'Check your QDRANT_URL and QDRANT_API_KEY in config. Run `valis status` for diagnostics.',
   },
   dual_write_partial: {
     code: 'dual_write_partial',
     what: 'Decision partially stored',
     why: 'The decision was written to one backend but failed on the other. Data will be eventually consistent.',
-    fix: 'The system will automatically retry the failed write. Run `teamind status` to check sync status.',
+    fix: 'The system will automatically retry the failed write. Run `valis status` to check sync status.',
   },
 
   // Phase 3: Search Intelligence, Data Quality & Growth
@@ -54,31 +54,31 @@ export const ERRORS = {
     code: 'plan_limit_reached',
     what: 'Plan limit reached',
     why: 'Your organization has exceeded the allowed usage for your current plan.',
-    fix: 'Run `teamind upgrade` to upgrade your plan, or wait for the next billing period.',
+    fix: 'Run `valis upgrade` to upgrade your plan, or wait for the next billing period.',
   },
   enrichment_disabled: {
     code: 'enrichment_disabled',
     what: 'LLM enrichment is not available',
     why: 'No LLM provider API key is configured. Enrichment requires an Anthropic or OpenAI API key.',
-    fix: 'Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment, then run `teamind enrich` again.',
+    fix: 'Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment, then run `valis enrich` again.',
   },
   enrichment_ceiling_reached: {
     code: 'enrichment_ceiling_reached',
     what: 'Daily enrichment cost ceiling reached',
     why: 'The configured daily cost ceiling for LLM enrichment has been reached. No further enrichments will run today.',
-    fix: 'Wait until tomorrow for the ceiling to reset, or increase the ceiling with `teamind enrich --ceiling <dollars>`.',
+    fix: 'Wait until tomorrow for the ceiling to reset, or increase the ceiling with `valis enrich --ceiling <dollars>`.',
   },
   enrichment_provider_error: {
     code: 'enrichment_provider_error',
     what: 'LLM provider returned an error',
     why: 'The LLM provider (Anthropic or OpenAI) returned an error during enrichment. The decision was not enriched.',
-    fix: 'Check your API key validity and provider status. Run `teamind enrich` again to retry failed decisions.',
+    fix: 'Check your API key validity and provider status. Run `valis enrich` again to retry failed decisions.',
   },
   subscription_past_due: {
     code: 'subscription_past_due',
     what: 'Subscription payment past due',
     why: 'Your subscription payment has failed. You have a 7-day grace period before downgrade to free tier limits.',
-    fix: 'Update your payment method at your Stripe billing portal, or run `teamind upgrade` to re-enter billing.',
+    fix: 'Update your payment method at your Stripe billing portal, or run `valis upgrade` to re-enter billing.',
   },
   search_rerank_failed: {
     code: 'search_rerank_failed',
@@ -102,26 +102,26 @@ export const ERRORS = {
   no_project_configured: {
     code: 'no_project_configured',
     what: 'No project configured for this directory',
-    why: 'This command requires a project context but no .teamind.json was found in this directory or any parent.',
-    fix: 'Run `teamind init` in your project directory to create or select a project, or `teamind init --join <invite-code>` to join one.',
+    why: 'This command requires a project context but no .valis.json was found in this directory or any parent.',
+    fix: 'Run `valis init` in your project directory to create or select a project, or `valis init --join <invite-code>` to join one.',
   },
   project_not_found: {
     code: 'project_not_found',
     what: 'Project not found',
     why: 'The specified project ID or name does not exist in your organization.',
-    fix: 'Run `teamind switch` to see available projects, or `teamind init` to create a new one.',
+    fix: 'Run `valis switch` to see available projects, or `valis init` to create a new one.',
   },
   no_project_access: {
     code: 'no_project_access',
     what: 'No access to this project',
     why: 'You are not a member of the requested project and do not have org admin privileges.',
-    fix: 'Ask a project admin to invite you using the project invite code, or run `teamind init --join <invite-code>`.',
+    fix: 'Ask a project admin to invite you using the project invite code, or run `valis init --join <invite-code>`.',
   },
   wrong_project: {
     code: 'wrong_project',
     what: 'Decision belongs to a different project',
     why: 'The target decision belongs to a project that does not match your current project context.',
-    fix: 'Switch to the correct project with `teamind switch --project <name>` or `cd` to the directory configured for that project.',
+    fix: 'Switch to the correct project with `valis switch --project <name>` or `cd` to the directory configured for that project.',
   },
   project_name_exists: {
     code: 'project_name_exists',
@@ -145,13 +145,13 @@ export const ERRORS = {
     code: 'already_project_member',
     what: 'Already a member of this project',
     why: 'You are already a member of the project associated with this invite code.',
-    fix: 'No action needed. Run `teamind status` to see your current project.',
+    fix: 'No action needed. Run `valis status` to see your current project.',
   },
   invalid_project_config: {
     code: 'invalid_project_config',
     what: 'Invalid project configuration',
-    why: 'The .teamind.json file in this directory is malformed or contains invalid data.',
-    fix: 'Delete the .teamind.json file and run `teamind init` to recreate it, or fix the JSON manually.',
+    why: 'The .valis.json file in this directory is malformed or contains invalid data.',
+    fix: 'Delete the .valis.json file and run `valis init` to recreate it, or fix the JSON manually.',
   },
 
   // Phase 5: Registration API
@@ -159,7 +159,7 @@ export const ERRORS = {
     code: 'registration_service_unavailable',
     what: 'Registration service is unavailable',
     why: 'The hosted registration endpoint is unreachable. This may be a network issue or service outage.',
-    fix: 'Check your internet connection and try again. If the problem persists, visit the Teamind status page.',
+    fix: 'Check your internet connection and try again. If the problem persists, visit the Valis status page.',
   },
   rate_limit_exceeded: {
     code: 'rate_limit_exceeded',
@@ -191,8 +191,8 @@ export const ERRORS = {
     why: 'The invite code does not match any active project. It may have expired or been entered incorrectly.',
     fix: 'Ask your team lead for the correct invite code. It should be in the format XXXX-XXXX.',
   },
-} as const satisfies Record<string, TeamindError>;
+} as const satisfies Record<string, ValisError>;
 
-export function formatError(error: TeamindError): string {
+export function formatError(error: ValisError): string {
   return `Error: ${error.what}\n\nWhy: ${error.why}\n\nFix: ${error.fix}`;
 }

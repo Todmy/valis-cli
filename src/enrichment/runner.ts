@@ -232,7 +232,7 @@ export async function runEnrichment(
         });
       } catch {
         // Qdrant update failures are non-fatal — Postgres is source of truth
-        console.warn(`[teamind] Qdrant payload update failed for ${decision.id}`);
+        console.warn(`[valis] Qdrant payload update failed for ${decision.id}`);
       }
 
       // Create audit entry
@@ -275,7 +275,7 @@ export async function runEnrichment(
       // Individual failures do not halt the batch
       failed++;
       console.warn(
-        `[teamind] enrichment failed for ${decision.id}: ${(err as Error).message}`,
+        `[valis] enrichment failed for ${decision.id}: ${(err as Error).message}`,
       );
     }
   }

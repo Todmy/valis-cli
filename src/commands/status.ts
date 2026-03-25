@@ -46,18 +46,18 @@ export async function statusCommand(): Promise<void> {
   // T036: Handle all four resolution states from contracts/config.md
   if (!config && !projectConfig) {
     // State: unconfigured
-    console.log(pc.bold('\nTeamind Status\n'));
+    console.log(pc.bold('\nValis Status\n'));
     console.log(`  ${pc.red('Unconfigured')}`);
-    console.log(pc.dim('\n  Run `teamind init` to get started.\n'));
+    console.log(pc.dim('\n  Run `valis init` to get started.\n'));
     process.exit(1);
   }
 
   if (!config && projectConfig) {
-    // State: no-org (.teamind.json exists but no global config)
-    console.log(pc.bold('\nTeamind Status\n'));
-    console.log(`  Project: ${pc.green(projectConfig.project_name)} (from .teamind.json)`);
+    // State: no-org (.valis.json exists but no global config)
+    console.log(pc.bold('\nValis Status\n'));
+    console.log(`  Project: ${pc.green(projectConfig.project_name)} (from .valis.json)`);
     console.log(`  Org: ${pc.red('(not configured)')}`);
-    console.log(pc.dim('\n  Run `teamind init` to configure credentials.\n'));
+    console.log(pc.dim('\n  Run `valis init` to configure credentials.\n'));
     process.exit(1);
   }
 
@@ -68,7 +68,7 @@ export async function statusCommand(): Promise<void> {
     return; // unreachable — helps TS narrow
   }
 
-  console.log(pc.bold('\nTeamind Status\n'));
+  console.log(pc.bold('\nValis Status\n'));
 
   // Org info (always show)
   console.log(`  Org:      ${config.org_name}`);
@@ -166,7 +166,7 @@ export async function statusCommand(): Promise<void> {
 
   // T036: No-project hint at the bottom
   if (!projectConfig) {
-    console.log(pc.dim('\n  Run `teamind init` in your project directory to select a project.'));
+    console.log(pc.dim('\n  Run `valis init` in your project directory to select a project.'));
   }
 
   console.log();

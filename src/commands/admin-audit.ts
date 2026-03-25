@@ -22,7 +22,7 @@ interface AuditQueryOptions {
 }
 
 /**
- * teamind admin audit — display the audit trail for an org.
+ * valis admin audit — display the audit trail for an org.
  *
  * Options:
  *   --org ORG_ID     Target org (defaults to local config org)
@@ -32,7 +32,7 @@ interface AuditQueryOptions {
 export async function adminAuditCommand(options: AuditQueryOptions): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 

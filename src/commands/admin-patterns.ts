@@ -1,5 +1,5 @@
 /**
- * T064: `teamind admin patterns` command.
+ * T064: `valis admin patterns` command.
  *
  * Detects decision clusters by area overlap, synthesizes pattern decisions,
  * and reports results. Supports --dry-run (default), --window, and --min-cluster.
@@ -69,7 +69,7 @@ export async function adminPatternsCommand(options: AdminPatternsOptions): Promi
 
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Not configured. Run `teamind init` first.');
+    console.error('Error: Not configured. Run `valis init` first.');
     process.exit(1);
   }
 

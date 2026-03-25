@@ -13,13 +13,13 @@ import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { HOSTED_API_URL, HOSTED_SUPABASE_URL } from '../../src/types.js';
 import { resolveApiUrl, resolveApiPath, isHostedMode } from '../../src/cloud/api-url.js';
-import type { TeamindConfig } from '../../src/types.js';
+import type { ValisConfig } from '../../src/types.js';
 
 // ---------------------------------------------------------------------------
 // Community mode config fixture
 // ---------------------------------------------------------------------------
 
-const COMMUNITY_CONFIG: TeamindConfig = {
+const COMMUNITY_CONFIG: ValisConfig = {
   org_id: 'org-comm-1234-5678-abcdef123456',
   org_name: 'CommunityOrg',
   api_key: 'tm_abc123',

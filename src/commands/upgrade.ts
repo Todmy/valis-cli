@@ -1,5 +1,5 @@
 /**
- * `teamind upgrade` command — opens Stripe Checkout for plan upgrade.
+ * `valis upgrade` command — opens Stripe Checkout for plan upgrade.
  *
  * Creates a Stripe Checkout Session via the `create-checkout` Edge Function
  * and opens the resulting URL in the user's default browser.
@@ -57,7 +57,7 @@ async function openUrl(url: string): Promise<void> {
 export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Not configured. Run `teamind init` first.');
+    console.error('Not configured. Run `valis init` first.');
     process.exit(1);
   }
 
@@ -89,7 +89,7 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
   const jwt = tokenCache?.jwt.token;
 
   if (!jwt) {
-    console.error('Unable to authenticate. Try `teamind init` to re-authenticate.');
+    console.error('Unable to authenticate. Try `valis init` to re-authenticate.');
     process.exit(1);
   }
 
@@ -108,8 +108,8 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
         org_id: config.org_id,
         plan: targetPlan,
         billing_cycle: billingCycle,
-        success_url: 'https://dashboard.teamind.dev/billing/success',
-        cancel_url: 'https://dashboard.teamind.dev/billing/cancel',
+        success_url: 'https://dashboard.valis.dev/billing/success',
+        cancel_url: 'https://dashboard.valis.dev/billing/cancel',
       }),
     });
 

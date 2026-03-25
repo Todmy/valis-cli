@@ -448,7 +448,7 @@ export interface QdrantMigrationReport {
  * `project_id` from Postgres. The caller provides this to avoid coupling
  * the Qdrant module directly to the Supabase client.
  *
- * This can be run as a one-time CLI command (`teamind admin migrate-qdrant`)
+ * This can be run as a one-time CLI command (`valis admin migrate-qdrant`)
  * or called programmatically during upgrade.
  */
 export async function migrateQdrantProjectIds(

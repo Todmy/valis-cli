@@ -13,11 +13,11 @@ import { setRealtimeStatus, type RealtimeStatus } from './status.js';
 export async function serveCommand(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.error('Error: Teamind not configured. Run `teamind init` first.');
+    console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
   }
 
-  // T030: Resolve project config from .teamind.json for project-scoped Realtime
+  // T030: Resolve project config from .valis.json for project-scoped Realtime
   const projectConfig = await findProjectConfig(process.cwd());
   const projectId = projectConfig?.project_id;
   const projectName = projectConfig?.project_name;
@@ -77,7 +77,7 @@ export async function serveCommand(): Promise<void> {
           mcpServer.server
             .sendLoggingMessage({
               level: 'info',
-              logger: 'teamind-realtime',
+              logger: 'valis-realtime',
               data: event,
             })
             .catch(() => {
@@ -143,5 +143,5 @@ export async function serveCommand(): Promise<void> {
   // 8. Start MCP server (blocks on stdio)
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
-  console.error('Teamind MCP server running (stdio)');
+  console.error('Valis MCP server running (stdio)');
 }

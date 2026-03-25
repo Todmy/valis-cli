@@ -11,7 +11,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { HOSTED_API_URL, HOSTED_SUPABASE_URL } from '../../src/types.js';
 import { resolveApiUrl, resolveApiPath, isHostedMode } from '../../src/cloud/api-url.js';
-import type { TeamindConfig } from '../../src/types.js';
+import type { ValisConfig } from '../../src/types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,7 +37,7 @@ const CLI_SRC_DIR = resolve(__dirname, '../../src');
 // ---------------------------------------------------------------------------
 
 describe('T042: Hosted flow routes through /api/ paths', () => {
-  const hostedConfig: TeamindConfig = {
+  const hostedConfig: ValisConfig = {
     org_id: 'org-hosted-1234',
     org_name: 'HostedOrg',
     api_key: '',
@@ -154,7 +154,7 @@ describe('T044: Static analysis — /functions/v1/ usage audit', () => {
   it('HOSTED_API_URL constant is defined in types.ts', () => {
     const typesPath = resolve(CLI_SRC_DIR, 'types.ts');
     const content = readFileSync(typesPath, 'utf8');
-    expect(content).toContain("export const HOSTED_API_URL = 'https://teamind.krukit.co'");
+    expect(content).toContain("export const HOSTED_API_URL = 'https://valis.krukit.co'");
   });
 
   it('no /functions/v1/ URLs in files that should use resolveApiPath', () => {

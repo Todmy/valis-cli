@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { parseClaudeMd } from '../../src/seed/parse-claude-md.js';
 
 describe('parseClaudeMd', () => {
-  const testDir = join(tmpdir(), 'teamind-test-seed-' + Date.now());
+  const testDir = join(tmpdir(), 'valis-test-seed-' + Date.now());
 
   it('returns empty array for non-existent file', async () => {
     const result = await parseClaudeMd('/non/existent/CLAUDE.md');
@@ -30,17 +30,17 @@ describe('parseClaudeMd', () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it('skips teamind markers', async () => {
+  it('skips valis markers', async () => {
     await mkdir(testDir, { recursive: true });
     const filePath = join(testDir, 'CLAUDE.md');
     await writeFile(filePath, `# Rules
 
 - Use ESLint for code quality checks always
 
-<!-- teamind:start -->
-## Team Knowledge (Teamind)
+<!-- valis:start -->
+## Team Knowledge (Valis)
 - This should be skipped entirely from parsing
-<!-- teamind:end -->
+<!-- valis:end -->
 
 - Always run tests before committing code changes
 `);

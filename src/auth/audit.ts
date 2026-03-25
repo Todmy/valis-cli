@@ -46,7 +46,7 @@ export async function createAuditEntry(
     .single();
 
   if (error) {
-    console.warn(`[teamind] audit write failed: ${error.message}`);
+    console.warn(`[valis] audit write failed: ${error.message}`);
     // Return a synthetic entry so callers always get a value back.
     return {
       id: 'unknown',

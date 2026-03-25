@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import type { QueueEntry, RawDecision, DecisionSource } from '../types.js';
 import { randomUUID } from 'node:crypto';
 
-const QUEUE_DIR = join(homedir(), '.teamind');
+const QUEUE_DIR = join(homedir(), '.valis');
 const QUEUE_FILE = join(QUEUE_DIR, 'pending.jsonl');
 
 export async function appendToQueue(

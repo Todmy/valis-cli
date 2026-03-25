@@ -11,7 +11,7 @@
 import {
   HOSTED_API_URL,
   HOSTED_SUPABASE_URL,
-  type TeamindConfig,
+  type ValisConfig,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ export function resolveApiPath(apiUrl: string, functionName: string): string {
  * 1. `supabase_url` matches {@link HOSTED_SUPABASE_URL}, AND
  * 2. No `supabase_service_role_key` is present (hosted users never have one)
  */
-export function isHostedMode(config: TeamindConfig): boolean {
+export function isHostedMode(config: ValisConfig): boolean {
   return (
     config.supabase_url === HOSTED_SUPABASE_URL &&
     (!config.supabase_service_role_key || config.supabase_service_role_key === '')

@@ -69,7 +69,7 @@ function buildReplacedByMap(
 export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
   const config = await loadConfig();
   if (!config) {
-    return { results: [], note: 'Not configured. Run `teamind init` first.' };
+    return { results: [], note: 'Not configured. Run `valis init` first.' };
   }
 
   // T021: Resolve project from per-directory config

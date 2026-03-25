@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const STATE_FILE = join(homedir(), '.teamind', 'watcher-state.json');
+const STATE_FILE = join(homedir(), '.valis', 'watcher-state.json');
 const WATCH_PATTERN = join(homedir(), '.claude', 'projects', '**', '*.jsonl');
 const ACTIVITY_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -26,7 +26,7 @@ async function loadState(): Promise<void> {
 }
 
 export async function saveState(): Promise<void> {
-  const dir = join(homedir(), '.teamind');
+  const dir = join(homedir(), '.valis');
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeFile(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
 }

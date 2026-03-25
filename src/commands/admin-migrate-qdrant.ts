@@ -9,7 +9,7 @@ import {
 } from '../cloud/qdrant.js';
 
 /**
- * `teamind admin migrate-qdrant`
+ * `valis admin migrate-qdrant`
  *
  * One-time migration command that backfills `project_id` into Qdrant points
  * that are missing it. Reads the canonical project_id from each Postgres
@@ -23,7 +23,7 @@ export async function adminMigrateQdrantCommand(options: {
 }): Promise<void> {
   const config = await loadConfig();
   if (!config) {
-    console.log(pc.red('No configuration found. Run `teamind init` first.'));
+    console.log(pc.red('No configuration found. Run `valis init` first.'));
     return;
   }
 

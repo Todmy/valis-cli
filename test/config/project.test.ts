@@ -18,7 +18,7 @@ import {
 let tempRoot: string;
 
 async function createTempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'teamind-test-'));
+  return mkdtemp(join(tmpdir(), 'valis-test-'));
 }
 
 async function writeJson(dir: string, filename: string, data: unknown): Promise<void> {
@@ -87,23 +87,23 @@ describe('findProjectConfig — walk-up', () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('finds .teamind.json in the start directory', async () => {
+  it('finds .valis.json in the start directory', async () => {
     const config = {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'test-project',
     };
-    await writeJson(tempRoot, '.teamind.json', config);
+    await writeJson(tempRoot, '.valis.json', config);
 
     const result = await findProjectConfig(tempRoot);
     expect(result).toEqual(config);
   });
 
-  it('finds .teamind.json in a parent directory', async () => {
+  it('finds .valis.json in a parent directory', async () => {
     const config = {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'parent-project',
     };
-    await writeJson(tempRoot, '.teamind.json', config);
+    await writeJson(tempRoot, '.valis.json', config);
 
     const childDir = join(tempRoot, 'src', 'components');
     await mkdir(childDir, { recursive: true });
@@ -112,7 +112,7 @@ describe('findProjectConfig — walk-up', () => {
     expect(result).toEqual(config);
   });
 
-  it('closest .teamind.json wins in nested directories', async () => {
+  it('closest .valis.json wins in nested directories', async () => {
     const parentConfig = {
       project_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       project_name: 'parent',
@@ -122,11 +122,11 @@ describe('findProjectConfig — walk-up', () => {
       project_name: 'child',
     };
 
-    await writeJson(tempRoot, '.teamind.json', parentConfig);
+    await writeJson(tempRoot, '.valis.json', parentConfig);
 
     const childDir = join(tempRoot, 'packages', 'child');
     await mkdir(childDir, { recursive: true });
-    await writeJson(childDir, '.teamind.json', childConfig);
+    await writeJson(childDir, '.valis.json', childConfig);
 
     const result = await findProjectConfig(childDir);
     expect(result).toEqual(childConfig);
@@ -136,7 +136,7 @@ describe('findProjectConfig — walk-up', () => {
     expect(parentResult).toEqual(parentConfig);
   });
 
-  it('returns null when no .teamind.json found (stops at root)', async () => {
+  it('returns null when no .valis.json found (stops at root)', async () => {
     const emptyDir = join(tempRoot, 'empty');
     await mkdir(emptyDir, { recursive: true });
 
@@ -154,15 +154,15 @@ describe('findProjectConfigPath', () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('returns the path to the found .teamind.json', async () => {
+  it('returns the path to the found .valis.json', async () => {
     const config = {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'test-project',
     };
-    await writeJson(tempRoot, '.teamind.json', config);
+    await writeJson(tempRoot, '.valis.json', config);
 
     const result = await findProjectConfigPath(tempRoot);
-    expect(result).toBe(join(tempRoot, '.teamind.json'));
+    expect(result).toBe(join(tempRoot, '.valis.json'));
   });
 
   it('returns null when not found', async () => {
@@ -185,7 +185,7 @@ describe('loadProjectConfig', () => {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'my-project',
     };
-    const filePath = join(tempRoot, '.teamind.json');
+    const filePath = join(tempRoot, '.valis.json');
     await writeFile(filePath, JSON.stringify(config), 'utf-8');
 
     const result = await loadProjectConfig(filePath);
@@ -193,28 +193,28 @@ describe('loadProjectConfig', () => {
   });
 
   it('throws on invalid JSON', async () => {
-    const filePath = join(tempRoot, '.teamind.json');
+    const filePath = join(tempRoot, '.valis.json');
     await writeFile(filePath, '{ not valid json }', 'utf-8');
 
-    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .teamind.json');
+    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .valis.json');
   });
 
   it('throws on missing required fields', async () => {
-    const filePath = join(tempRoot, '.teamind.json');
+    const filePath = join(tempRoot, '.valis.json');
     await writeFile(filePath, JSON.stringify({ project_name: 'test' }), 'utf-8');
 
-    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .teamind.json');
+    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .valis.json');
   });
 
   it('throws on invalid UUID', async () => {
-    const filePath = join(tempRoot, '.teamind.json');
+    const filePath = join(tempRoot, '.valis.json');
     await writeFile(
       filePath,
       JSON.stringify({ project_id: 'bad-uuid', project_name: 'test' }),
       'utf-8',
     );
 
-    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .teamind.json');
+    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .valis.json');
   });
 });
 
@@ -234,7 +234,7 @@ describe('writeProjectConfig', () => {
     };
 
     const writtenPath = await writeProjectConfig(tempRoot, config);
-    expect(writtenPath).toBe(join(tempRoot, '.teamind.json'));
+    expect(writtenPath).toBe(join(tempRoot, '.valis.json'));
 
     const content = await readFile(writtenPath, 'utf-8');
     const parsed = JSON.parse(content);
@@ -263,18 +263,18 @@ describe('resolveConfig', () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('returns project: null when no .teamind.json exists', async () => {
+  it('returns project: null when no .valis.json exists', async () => {
     const result = await resolveConfig(tempRoot);
     expect(result.project).toBeNull();
     // global may or may not be null depending on host machine config
   });
 
-  it('returns project config when .teamind.json exists', async () => {
+  it('returns project config when .valis.json exists', async () => {
     const config = {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'resolved-project',
     };
-    await writeJson(tempRoot, '.teamind.json', config);
+    await writeJson(tempRoot, '.valis.json', config);
 
     const result = await resolveConfig(tempRoot);
     expect(result.project).toEqual(config);
@@ -285,7 +285,7 @@ describe('resolveConfig', () => {
       project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       project_name: 'walk-up-project',
     };
-    await writeJson(tempRoot, '.teamind.json', config);
+    await writeJson(tempRoot, '.valis.json', config);
 
     const deepChild = join(tempRoot, 'a', 'b', 'c');
     await mkdir(deepChild, { recursive: true });

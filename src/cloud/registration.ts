@@ -15,7 +15,7 @@ import { resolveApiUrl, resolveApiPath } from './api-url.js';
 function resolveBaseUrl(supabaseUrl?: string): string {
   if (supabaseUrl) return supabaseUrl.replace(/\/$/, '');
   // Fallback: use environment variable if present
-  return (process.env.TEAMIND_REGISTRATION_URL ?? '').replace(/\/$/, '');
+  return (process.env.VALIS_REGISTRATION_URL ?? '').replace(/\/$/, '');
 }
 
 // ---------------------------------------------------------------------------

@@ -128,7 +128,7 @@ describe('enrichCommand', () => {
   it('exits with error when no config exists', async () => {
     mockLoadConfig.mockResolvedValue(null);
 
-    await expect(enrichCommand({})).rejects.toThrow('process.exit called');
+    await expect(enrichCommand({})).rejects.toThrow('process.exit');
     expect(mockConsoleError).toHaveBeenCalledWith(
       expect.stringContaining('not configured'),
     );
@@ -324,7 +324,7 @@ describe('enrichCommand', () => {
     mockLoadConfig.mockResolvedValue(HOSTED_CONFIG);
     mockGetToken.mockResolvedValue(null);
 
-    await expect(enrichCommand({})).rejects.toThrow('process.exit called');
+    await expect(enrichCommand({})).rejects.toThrow('process.exit');
     expect(mockConsoleError).toHaveBeenCalledWith(
       expect.stringContaining('Could not obtain auth token'),
     );

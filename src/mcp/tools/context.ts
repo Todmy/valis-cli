@@ -56,7 +56,7 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
       try {
         if (config.member_id) {
           const supabase = config.auth_mode === 'jwt'
-            ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+            ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
             : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);

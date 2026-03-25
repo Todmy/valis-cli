@@ -21,7 +21,7 @@ export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleRes
   }
 
   const supabase = config.auth_mode === 'jwt'
-    ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+    ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
     : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
   if (args.action === 'history') {

@@ -37,12 +37,27 @@ async function supersedeDecision(
   serviceRoleKey: string,
   decisionId: string,
   changedBy: string,
+  memberApiKey?: string | null,
 ): Promise<{ old_status: DecisionStatus; new_status: 'superseded' }> {
+  // Prefer JWT token (works in hosted mode where serviceRoleKey is empty).
+  // Fall back to serviceRoleKey for community/self-hosted mode.
+  let bearer = serviceRoleKey;
+  if (memberApiKey) {
+    try {
+      const tokenCache = await getToken(supabaseUrl, memberApiKey);
+      if (tokenCache) {
+        bearer = tokenCache.jwt.token;
+      }
+    } catch {
+      // Token exchange failed — fall back to serviceRoleKey
+    }
+  }
+
   const url = `${supabaseUrl}/functions/v1/change-status`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${serviceRoleKey}`,
+      Authorization: `Bearer ${bearer}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -158,7 +173,7 @@ export async function handleStore(
   // 3. Try dual write
   try {
     const supabase = config.auth_mode === 'jwt'
-      ? getSupabaseJwtClient(config.supabase_url, config.supabase_url, config.supabase_url, config.member_api_key || config.api_key)
+      ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
       : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
     // -----------------------------------------------------------------------
@@ -257,6 +272,7 @@ export async function handleStore(
           config.supabase_service_role_key,
           replacesTarget.id,
           config.author_name,
+          config.member_api_key,
         );
         superseded = {
           decision_id: replacesTarget.id,

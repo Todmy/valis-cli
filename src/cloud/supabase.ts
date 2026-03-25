@@ -46,13 +46,14 @@ let jwtClient: SupabaseClient | null = null;
  */
 export function getSupabaseJwtClient(
   url: string,
-  anonKey: string,
-  supabaseUrl: string,
   apiKey: string,
 ): SupabaseClient {
   if (!jwtClient) {
-    jwtClient = createClient(url, anonKey, {
-      accessToken: getAccessTokenFn(supabaseUrl, apiKey),
+    // The anonKey parameter is unused when accessToken callback is set —
+    // every request gets its auth from the JWT returned by exchange-token.
+    // Pass the URL as a placeholder anonKey to satisfy the createClient signature.
+    jwtClient = createClient(url, url, {
+      accessToken: getAccessTokenFn(url, apiKey),
       auth: { persistSession: false, autoRefreshToken: false },
     });
   }

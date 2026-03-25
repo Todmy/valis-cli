@@ -51,6 +51,9 @@ export async function switchOrgCommand(options: { join: string }): Promise<void>
     org_id: string;
     org_name: string;
     api_key: string;
+    member_api_key?: string;
+    member_key?: string;
+    member_id?: string;
     member_count: number;
     decision_count: number;
     role: string;
@@ -61,9 +64,12 @@ export async function switchOrgCommand(options: { join: string }): Promise<void>
     ...existing,
     org_id: result.org_id,
     org_name: result.org_name,
-    api_key: result.api_key,
+    api_key: result.api_key || '',
     invite_code: inviteCode,
     author_name: authorName,
+    member_id: result.member_id || null,
+    member_api_key: result.member_api_key || result.member_key || null,
+    auth_mode: result.member_api_key ? 'jwt' as const : existing.auth_mode,
   });
 
   console.log(pc.green(`\n✓ Switched to "${result.org_name}" (${result.member_count} members)`));

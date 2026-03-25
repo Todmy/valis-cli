@@ -27,6 +27,8 @@ import type {
   StoreContradictionWarning,
   DecisionStatus,
 } from '../../types.js';
+import { HOSTED_SUPABASE_URL } from '../../types.js';
+import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
 
 // ---------------------------------------------------------------------------
 // Supersede helper — POST to change-status edge function
@@ -59,7 +61,9 @@ async function supersedeDecision(
     throw new Error('No valid auth token available for supersede operation');
   }
 
-  const url = `${supabaseUrl}/functions/v1/change-status`;
+  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+  const url = resolveApiPath(apiBase, 'change-status');
   const res = await fetch(url, {
     method: 'POST',
     headers: {

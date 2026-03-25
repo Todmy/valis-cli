@@ -22,6 +22,7 @@ import { getQdrantClient, ensureCollection, countLegacyPoints } from '../cloud/q
 import { upsertDecision, hybridSearch } from '../cloud/qdrant.js';
 import type { TeamindConfig, ProjectConfig } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
+import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 import { register, joinPublic } from '../cloud/registration.js';
 
 type SetupMode = 'hosted' | 'community';
@@ -37,10 +38,13 @@ async function prompt(question: string): Promise<string> {
 }
 
 async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: string, authorName: string) {
-  // Try Edge Function first (works with Supabase Cloud)
+  // Try Edge Function / API route first (works with Supabase Cloud / Vercel)
   // Fall back to direct SQL (works with local Postgres / community mode)
+  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+  const createOrgUrl = resolveApiPath(apiBase, 'create-org');
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/create-org`, {
+    const response = await fetch(createOrgUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, author_name: authorName }),
@@ -594,7 +598,11 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     }
   } else {
     // -----------------------------------------------------------------
-    // Community mode: user provides own credentials (unchanged)
+    // T036: Community mode: user provides own credentials (unchanged)
+    // Verified: prompts for 4 credentials (Supabase URL, Service Role Key,
+    // Qdrant URL, Qdrant API Key). Config saves supabase_service_role_key.
+    // createOrg() falls through to direct SQL for non-EF cases.
+    // No hosted-API-URL references in community code paths.
     // -----------------------------------------------------------------
     console.log(pc.cyan('\nCommunity setup — provide your own infrastructure:\n'));
     const supabaseUrl = process.env.SUPABASE_URL || await prompt('Supabase URL: ');
@@ -660,7 +668,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     // Community mode: direct Supabase + Qdrant writes
     await seedAndVerify(config, projectConfig, qdrant);
   } else {
-    // Hosted mode: parse locally, send to server-side /functions/v1/seed
+    // Hosted mode: parse locally, send to server-side seed endpoint via resolveApiPath
     console.log(pc.cyan('\nSeeding team brain (via hosted API)...'));
     try {
       const seedResult = await runHostedSeed(

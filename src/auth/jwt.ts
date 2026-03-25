@@ -17,6 +17,8 @@ import type {
   TeamindConfig,
   TokenCache,
 } from '../types.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
+import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 import { getCount as getPendingCount } from '../offline/queue.js';
 
 // ---------------------------------------------------------------------------
@@ -89,7 +91,9 @@ export async function exchangeToken(
   apiKey: string,
   projectId?: string,
 ): Promise<ExchangeTokenResponse | null> {
-  const url = `${supabaseUrl}/functions/v1/exchange-token`;
+  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+  const url = resolveApiPath(apiBase, 'exchange-token');
 
   const body: Record<string, unknown> = {};
   if (projectId) {

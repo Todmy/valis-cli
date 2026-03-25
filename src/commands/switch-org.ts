@@ -9,6 +9,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import pc from 'picocolors';
 import { loadConfig, saveConfig } from '../config/store.js';
+import { isHostedMode, resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 
 async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: stdin, output: stdout });
@@ -36,7 +37,10 @@ export async function switchOrgCommand(options: { join: string }): Promise<void>
 
   console.log(pc.cyan(`\nJoining org with invite code: ${inviteCode}`));
 
-  const response = await fetch(`${existing.supabase_url}/functions/v1/join-org`, {
+  const hosted = isHostedMode(existing);
+  const apiBase = resolveApiUrl(existing.supabase_url, hosted);
+  const joinOrgUrl = resolveApiPath(apiBase, 'join-org');
+  const response = await fetch(joinOrgUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ invite_code: inviteCode, author_name: authorName }),

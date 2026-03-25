@@ -1,5 +1,7 @@
 import { ERRORS, formatError } from '../errors.js';
 import type { JoinPublicResponse, RegistrationResponse } from '../types.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
+import { resolveApiUrl, resolveApiPath } from './api-url.js';
 
 // ---------------------------------------------------------------------------
 // Public registration API base URL
@@ -35,9 +37,13 @@ export async function register(
     throw new Error(formatError(ERRORS.registration_service_unavailable));
   }
 
+  const isHosted = base === HOSTED_SUPABASE_URL.replace(/\/$/, '');
+  const apiBase = resolveApiUrl(base, isHosted);
+  const registerUrl = resolveApiPath(apiBase, 'register');
+
   let response: Response;
   try {
-    response = await fetch(`${base}/functions/v1/register`, {
+    response = await fetch(registerUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -105,9 +111,13 @@ export async function joinPublic(
     throw new Error(formatError(ERRORS.registration_service_unavailable));
   }
 
+  const isHosted = base === HOSTED_SUPABASE_URL.replace(/\/$/, '');
+  const apiBase = resolveApiUrl(base, isHosted);
+  const joinUrl = resolveApiPath(apiBase, 'join-project');
+
   let response: Response;
   try {
-    response = await fetch(`${base}/functions/v1/join-project`, {
+    response = await fetch(joinUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -14,6 +14,8 @@ import {
   getSupabaseClient,
   getSupabaseJwtClient,
 } from '../cloud/supabase.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
+import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,7 +77,9 @@ export async function checkUsageOrProceed(
       return { allowed: true };
     }
 
-    const url = `${supabaseUrl}/functions/v1/check-usage`;
+    const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+    const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+    const url = resolveApiPath(apiBase, 'check-usage');
 
     const response = await fetch(url, {
       method: 'POST',

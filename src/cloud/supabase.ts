@@ -10,8 +10,10 @@ import type {
   DashboardStats,
   DependencyWarning,
 } from '../types.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
 import { contentHash } from '../capture/dedup.js';
 import { getAccessTokenFn } from '../auth/jwt.js';
+import { resolveApiUrl, resolveApiPath } from './api-url.js';
 
 let client: SupabaseClient | null = null;
 
@@ -660,9 +662,12 @@ export async function createProject(
   projectName: string,
   serviceRoleKey?: string,
 ): Promise<CreateProjectResponse> {
-  // Try Edge Function first (Supabase Cloud)
+  // Try Edge Function / API route first (Supabase Cloud / Vercel)
+  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+  const createProjectUrl = resolveApiPath(apiBase, 'create-project');
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/create-project`, {
+    const response = await fetch(createProjectUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -731,7 +736,10 @@ export async function joinProject(
   inviteCode: string,
   authorName: string,
 ): Promise<JoinProjectResponse> {
-  const response = await fetch(`${supabaseUrl}/functions/v1/join-project`, {
+  const isHostedJoin = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHostedJoin);
+  const joinProjectUrl = resolveApiPath(apiBase, 'join-project');
+  const response = await fetch(joinProjectUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ invite_code: inviteCode, author_name: authorName }),

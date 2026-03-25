@@ -3,11 +3,13 @@ import { parseClaudeMd } from './parse-claude-md.js';
 import { parseAgentsMd } from './parse-agents-md.js';
 import { parseGitLog } from './parse-git-log.js';
 import type { RawDecision, DecisionSource } from '../types.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import { storeDecision } from '../cloud/supabase.js';
 import { upsertDecision } from '../cloud/qdrant.js';
 import { contentHash } from '../capture/dedup.js';
+import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 
 export interface SeedResult {
   total: number;
@@ -60,8 +62,11 @@ export async function runHostedSeed(
   }
 
   // Send to server-side seed endpoint
+  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
+  const seedUrl = resolveApiPath(apiBase, 'seed');
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/seed`, {
+    const response = await fetch(seedUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

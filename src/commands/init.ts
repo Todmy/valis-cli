@@ -340,7 +340,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
           config = {
             org_id: result.org_id,
             org_name: result.org_name,
-            api_key: result.api_key,
+            api_key: result.api_key || '',
             invite_code: options.join,
             author_name: authorName,
             supabase_url: result.supabase_url || existing.supabase_url,

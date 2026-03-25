@@ -681,7 +681,7 @@ export interface JoinProjectResponse {
   org_name: string;
   project_id: string;
   project_name: string;
-  api_key: string;
+  api_key?: string;
   member_api_key?: string;
   member_id?: string;
   supabase_url?: string;

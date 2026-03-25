@@ -99,28 +99,34 @@ const HOSTED_CONFIG = {
   project_name: 'My Project',
 };
 
-// Prevent process.exit from actually exiting
-const mockExit = vi.spyOn(process, 'exit').mockImplementation((() => {
-  throw new Error('process.exit called');
-}) as never);
-
-const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
-const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('enrichCommand', () => {
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let mockConsoleLog: ReturnType<typeof vi.spyOn>;
+  let mockConsoleError: ReturnType<typeof vi.spyOn>;
+  let mockConsoleWarn: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSupabaseClient.mockReturnValue({});
     mockGetQdrantClient.mockReturnValue({});
+
+    mockExit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+    mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    mockExit.mockRestore();
+    mockConsoleLog.mockRestore();
+    mockConsoleError.mockRestore();
+    mockConsoleWarn.mockRestore();
   });
 
   // ---- No config ----

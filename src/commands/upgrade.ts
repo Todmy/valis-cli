@@ -11,8 +11,7 @@ import { loadConfig } from '../config/store.js';
 import { getToken } from '../auth/jwt.js';
 import { PLAN_LIMITS, PLAN_PRICES } from '../billing/limits.js';
 import type { PlanTier } from '../types.js';
-import { isHostedMode } from '../cloud/api-url.js';
-import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
+import { isHostedMode, resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 
 // ---------------------------------------------------------------------------
 // Types

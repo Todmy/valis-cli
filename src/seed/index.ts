@@ -62,7 +62,7 @@ export async function runHostedSeed(
   }
 
   // Send to server-side seed endpoint
-  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHosted);
   const seedUrl = resolveApiPath(apiBase, 'seed');
   try {

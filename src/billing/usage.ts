@@ -77,7 +77,7 @@ export async function checkUsageOrProceed(
       return { allowed: true };
     }
 
-    const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+    const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
     const apiBase = resolveApiUrl(supabaseUrl, isHosted);
     const url = resolveApiPath(apiBase, 'check-usage');
 

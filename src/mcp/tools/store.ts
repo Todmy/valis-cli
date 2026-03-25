@@ -61,7 +61,7 @@ async function supersedeDecision(
     throw new Error('No valid auth token available for supersede operation');
   }
 
-  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHosted);
   const url = resolveApiPath(apiBase, 'change-status');
   const res = await fetch(url, {

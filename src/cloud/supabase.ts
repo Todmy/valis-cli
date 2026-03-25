@@ -663,7 +663,7 @@ export async function createProject(
   serviceRoleKey?: string,
 ): Promise<CreateProjectResponse> {
   // Try Edge Function / API route first (Supabase Cloud / Vercel)
-  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHosted);
   const createProjectUrl = resolveApiPath(apiBase, 'create-project');
   try {
@@ -736,7 +736,7 @@ export async function joinProject(
   inviteCode: string,
   authorName: string,
 ): Promise<JoinProjectResponse> {
-  const isHostedJoin = supabaseUrl === HOSTED_SUPABASE_URL;
+  const isHostedJoin = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHostedJoin);
   const joinProjectUrl = resolveApiPath(apiBase, 'join-project');
   const response = await fetch(joinProjectUrl, {

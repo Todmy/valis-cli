@@ -1,9 +1,11 @@
 /**
- * T008: URL resolution helpers for hosted vs community mode.
+ * URL resolution helpers for Vercel API migration (006).
  *
- * Hosted mode routes API calls through the Vercel deployment at
- * HOSTED_API_URL (/api/<name>). Community mode keeps using the
- * Supabase Edge Functions URL (/functions/v1/<name>).
+ * In hosted mode, CLI calls route through the Vercel deployment at
+ * HOSTED_API_URL (`/api/<name>`). In community / self-hosted mode,
+ * calls continue to use Supabase Edge Functions (`/functions/v1/<name>`).
+ *
+ * @module cloud/api-url
  */
 
 import {
@@ -12,32 +14,41 @@ import {
   type TeamindConfig,
 } from '../types.js';
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Return the base API URL for the given Supabase URL.
- * - Hosted mode (supabaseUrl matches HOSTED_SUPABASE_URL): returns HOSTED_API_URL.
- * - Community mode: returns the supabaseUrl as-is (EFs are co-located).
+ * Resolve the base API URL for Edge Function / API route calls.
+ *
+ * - **Hosted mode** (`isHosted === true`): returns {@link HOSTED_API_URL}
+ * - **Community mode**: returns the given `supabaseUrl` unchanged
  */
 export function resolveApiUrl(supabaseUrl: string, isHosted: boolean): string {
-  if (isHosted) return HOSTED_API_URL;
-  return supabaseUrl.replace(/\/$/, '');
+  return isHosted ? HOSTED_API_URL : supabaseUrl.replace(/\/$/, '');
 }
 
 /**
  * Build the full path for an API function call.
- * - Hosted (apiUrl === HOSTED_API_URL): `<apiUrl>/api/<functionName>`
- * - Community: `<apiUrl>/functions/v1/<functionName>`
+ *
+ * - When `apiUrl` equals {@link HOSTED_API_URL} the path is `/api/<name>`
+ *   (Vercel API route).
+ * - Otherwise the path is `/functions/v1/<name>` (Supabase Edge Function).
  */
 export function resolveApiPath(apiUrl: string, functionName: string): string {
-  if (apiUrl === HOSTED_API_URL) {
-    return `${apiUrl}/api/${functionName}`;
+  const base = apiUrl.replace(/\/$/, '');
+  if (base === HOSTED_API_URL) {
+    return `${base}/api/${functionName}`;
   }
-  return `${apiUrl}/functions/v1/${functionName}`;
+  return `${base}/functions/v1/${functionName}`;
 }
 
 /**
- * Detect whether a config represents a hosted deployment.
- * Hosted mode: supabase_url matches HOSTED_SUPABASE_URL and
- * no service-role key is configured (hosted users never have one).
+ * Detect whether the given config represents a hosted-mode installation.
+ *
+ * Hosted mode is true when:
+ * 1. `supabase_url` matches {@link HOSTED_SUPABASE_URL}, AND
+ * 2. No `supabase_service_role_key` is present (hosted users never have one)
  */
 export function isHostedMode(config: TeamindConfig): boolean {
   return (
@@ -45,3 +56,5 @@ export function isHostedMode(config: TeamindConfig): boolean {
     (!config.supabase_service_role_key || config.supabase_service_role_key === '')
   );
 }
+
+export { HOSTED_API_URL };

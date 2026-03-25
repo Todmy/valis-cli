@@ -40,7 +40,7 @@ async function prompt(question: string): Promise<string> {
 async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: string, authorName: string) {
   // Try Edge Function / API route first (works with Supabase Cloud / Vercel)
   // Fall back to direct SQL (works with local Postgres / community mode)
-  const isHosted = supabaseUrl === HOSTED_SUPABASE_URL;
+  const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHosted);
   const createOrgUrl = resolveApiPath(apiBase, 'create-org');
   try {

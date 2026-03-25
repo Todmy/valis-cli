@@ -108,6 +108,6 @@ describe('T037: Community mode init verification', () => {
     );
 
     // resolveApiPath should return /functions/v1/ when apiUrl is NOT HOSTED_API_URL
-    expect(apiUrlSrc).toContain("return `${apiUrl}/functions/v1/${functionName}`");
+    expect(apiUrlSrc).toContain("/functions/v1/${functionName}");
   });
 });

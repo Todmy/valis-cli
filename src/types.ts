@@ -601,14 +601,14 @@ export interface PatternCandidate {
 // Registration API (Phase 5 — 005-registration-api)
 // ---------------------------------------------------------------------------
 
-/** Public Supabase URL for hosted mode (not a secret). */
-export const HOSTED_SUPABASE_URL = 'https://rmawxpdaudinbansjfpd.supabase.co';
+/** Public Supabase URL for hosted mode. Override with VALIS_SUPABASE_URL env var. */
+export const HOSTED_SUPABASE_URL = process.env.VALIS_SUPABASE_URL ?? 'https://rmawxpdaudinbansjfpd.supabase.co';
 
-/** Public Qdrant URL for hosted mode (not a secret). */
-export const HOSTED_QDRANT_URL = 'https://c424cb8c-c7b6-4afc-963a-dfb86f82dd2c.eu-central-1-0.aws.cloud.qdrant.io';
+/** Public Qdrant URL for hosted mode. Override with VALIS_QDRANT_URL env var. */
+export const HOSTED_QDRANT_URL = process.env.VALIS_QDRANT_URL ?? 'https://c424cb8c-c7b6-4afc-963a-dfb86f82dd2c.eu-central-1-0.aws.cloud.qdrant.io';
 
-/** Public Vercel API URL for hosted mode (not a secret). */
-export const HOSTED_API_URL = 'https://valis.krukit.co';
+/** Public Vercel API URL for hosted mode. Override with VALIS_API_URL env var. */
+export const HOSTED_API_URL = process.env.VALIS_API_URL ?? 'https://valis.krukit.co';
 
 /** Response from the public `/functions/v1/register` endpoint. */
 export interface RegistrationResponse {

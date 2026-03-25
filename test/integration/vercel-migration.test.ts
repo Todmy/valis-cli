@@ -154,7 +154,8 @@ describe('T044: Static analysis — /functions/v1/ usage audit', () => {
   it('HOSTED_API_URL constant is defined in types.ts', () => {
     const typesPath = resolve(CLI_SRC_DIR, 'types.ts');
     const content = readFileSync(typesPath, 'utf8');
-    expect(content).toContain("export const HOSTED_API_URL = 'https://valis.krukit.co'");
+    expect(content).toContain('export const HOSTED_API_URL');
+    expect(content).toContain('valis.krukit.co');
   });
 
   it('no /functions/v1/ URLs in files that should use resolveApiPath', () => {

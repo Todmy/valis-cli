@@ -9,7 +9,7 @@ import { detectIDEs } from '../ide/detect.js';
 import { configureClaudeCodeMCP, injectClaudeMdMarkers } from '../ide/claude-code.js';
 import { configureCodexMCP, injectAgentsMdMarkers } from '../ide/codex.js';
 import { configureCursorMCP, injectCursorrules } from '../ide/cursor.js';
-import { runSeed } from '../seed/index.js';
+import { runSeed, runHostedSeed } from '../seed/index.js';
 import {
   getSupabaseClient,
   storeDecision,
@@ -613,15 +613,30 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   // exists and is healthy using server-side credentials.
   const qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
 
-  // Seed brain (community mode has service_role_key; hosted mode will skip gracefully)
+  // Seed brain
   if (config.supabase_service_role_key) {
+    // Community mode: direct Supabase + Qdrant writes
     await seedAndVerify(config, projectConfig, qdrant);
   } else {
-    // TODO: implement server-side seed endpoint for hosted mode
-    // Hosted mode cannot seed because seedAndVerify requires service_role_key
-    // for direct Supabase writes. A future server-side `/functions/v1/seed`
-    // endpoint should accept JWT auth and perform the seed on behalf of the user.
-    console.log(pc.dim('\n  Seed skipped — hosted mode uses exchange-token flow for subsequent operations.'));
+    // Hosted mode: parse locally, send to server-side /functions/v1/seed
+    console.log(pc.cyan('\nSeeding team brain (via hosted API)...'));
+    try {
+      const seedResult = await runHostedSeed(
+        process.cwd(),
+        config.supabase_url,
+        config.member_api_key || config.api_key,
+        projectConfig.project_id,
+      );
+      if (seedResult.stored > 0) {
+        console.log(pc.green(`✓ Seeded ${seedResult.stored} decisions from ${Object.keys(seedResult.sources).join(', ') || 'sources'}`));
+      } else if (seedResult.total === 0) {
+        console.log(pc.dim('  No decisions found to seed (empty CLAUDE.md/AGENTS.md/git history).'));
+      } else {
+        console.log(pc.yellow(`⚠ Seed: ${seedResult.skipped} decisions skipped (duplicates or errors).`));
+      }
+    } catch (err) {
+      console.log(pc.yellow(`⚠ Seed skipped: ${(err as Error).message}`));
+    }
   }
 
   // Print final summary

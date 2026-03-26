@@ -657,10 +657,8 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   await saveConfig(config);
 
   // Ensure Qdrant collection (community mode has qdrant_api_key; hosted skips gracefully)
-  // TODO: implement server-side Qdrant verification for hosted mode
-  // In hosted mode, qdrant_api_key is empty so ensureCollection will fail silently.
-  // A future `/functions/v1/verify-qdrant` endpoint should verify the collection
-  // exists and is healthy using server-side credentials.
+  // Hosted mode uses API proxy for search/enrich — no direct Qdrant access needed.
+  // qdrant_api_key may be empty in hosted mode; ensureCollection skips gracefully.
   const qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
 
   // Seed brain

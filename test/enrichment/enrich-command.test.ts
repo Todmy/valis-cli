@@ -248,7 +248,7 @@ describe('enrichCommand', () => {
 
   // ---- Hosted mode delegates to /api/enrich ----
 
-  it('delegates to hosted /api/enrich for hosted config (auth_mode=jwt)', async () => {
+  it('delegates to hosted /api/enrich with auto-discovery for hosted config (auth_mode=jwt)', async () => {
     mockLoadConfig.mockResolvedValue(HOSTED_CONFIG);
 
     // Mock getToken to return a JWT
@@ -260,29 +260,7 @@ describe('enrichCommand', () => {
       author_name: 'Bob',
     });
 
-    // Mock supabase query for pending decisions
-    mockGetSupabaseClient.mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            eq: vi.fn().mockReturnValue({
-              is: vi.fn().mockReturnValue({
-                order: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    eq: vi.fn().mockResolvedValue({
-                      data: [{ id: 'dec-1' }, { id: 'dec-2' }],
-                      error: null,
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          }),
-        }),
-      }),
-    });
-
-    // Mock the fetch call to /api/enrich
+    // Mock the fetch call to /api/enrich (auto-discovery on server)
     const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -297,9 +275,10 @@ describe('enrichCommand', () => {
               cost_cents: 1,
             },
           ],
-          skipped: ['dec-2'],
+          skipped: [],
           total_cost_cents: 1,
           daily_budget_remaining_cents: 99,
+          auto_discovered: true,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
@@ -316,9 +295,13 @@ describe('enrichCommand', () => {
       'Content-Type': 'application/json',
     });
 
-    // Verify body contains decision IDs
+    // Verify body sends auto: true (no decision_ids needed)
     const fetchBody = JSON.parse((fetchOptions as RequestInit).body as string);
-    expect(fetchBody.decision_ids).toEqual(['dec-1', 'dec-2']);
+    expect(fetchBody.auto).toBe(true);
+    expect(fetchBody.decision_ids).toBeUndefined();
+
+    // Verify no local Supabase client was used for decision queries
+    expect(mockGetSupabaseClient).not.toHaveBeenCalled();
 
     // Verify local runEnrichment was NOT called
     expect(mockRunEnrichment).not.toHaveBeenCalled();

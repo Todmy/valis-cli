@@ -22,6 +22,7 @@ import { getQdrantClient } from '../cloud/qdrant.js';
 import { runEnrichment, type EnrichmentReport } from '../enrichment/runner.js';
 import { isHostedMode, resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 import { getToken } from '../auth/jwt.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
 
 export interface EnrichCommandOptions {
   dryRun?: boolean;
@@ -46,6 +47,7 @@ interface HostedEnrichResponse {
   skipped: string[];
   total_cost_cents: number;
   daily_budget_remaining_cents: number;
+  auto_discovered?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +100,7 @@ async function runHostedEnrichment(
     return;
   }
 
-  // Get JWT token
+  // Get JWT token via exchangeToken
   const apiKey = config.member_api_key ?? config.api_key;
   const projectId = config.project_id ?? undefined;
   const tokenCache = await getToken(config.supabase_url, apiKey, projectId);
@@ -110,39 +112,11 @@ async function runHostedEnrichment(
     process.exit(1);
   }
 
-  // Fetch pending decision IDs from Postgres so we know what to send
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  console.log('  Auto-discovering unenriched decisions on server...\n');
 
-  let query = supabase
-    .from('decisions')
-    .select('id')
-    .eq('org_id', config.org_id)
-    .eq('type', 'pending')
-    .is('enriched_by', null)
-    .order('created_at', { ascending: true })
-    .limit(20);
-
-  if (projectId) {
-    query = query.eq('project_id', projectId);
-  }
-
-  const { data: pendingDecisions, error: fetchError } = await query;
-
-  if (fetchError) {
-    console.error(`Error fetching pending decisions: ${fetchError.message}`);
-    process.exit(1);
-  }
-
-  if (!pendingDecisions || pendingDecisions.length === 0) {
-    console.log(pc.green('  No pending decisions to enrich.\n'));
-    return;
-  }
-
-  const decisionIds = pendingDecisions.map((d) => d.id as string);
-  console.log(`  Found ${decisionIds.length} pending decision(s). Enriching...\n`);
-
-  // Call hosted /api/enrich
-  const apiUrl = resolveApiUrl(config.supabase_url, true);
+  // Call hosted /api/enrich with auto-discovery (server finds pending decisions)
+  const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
+  const apiUrl = resolveApiUrl(config.supabase_url, isHosted);
   const enrichUrl = resolveApiPath(apiUrl, 'enrich');
 
   let res: Response;
@@ -153,7 +127,7 @@ async function runHostedEnrichment(
         Authorization: `Bearer ${tokenCache.jwt.token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ decision_ids: decisionIds }),
+      body: JSON.stringify({ auto: true }),
     });
   } catch (err) {
     console.error(
@@ -193,6 +167,12 @@ async function runHostedEnrichment(
   } catch (err) {
     console.error(`Error: Could not parse enrichment response: ${(err as Error).message}`);
     process.exit(1);
+  }
+
+  // No decisions found
+  if (result.enriched.length === 0 && result.skipped.length === 0) {
+    console.log(pc.green('  No pending decisions to enrich.\n'));
+    return;
   }
 
   // Print results

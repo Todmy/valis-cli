@@ -4,6 +4,7 @@ import {
   importanceScore,
   graphConnectivity,
   normalizeBm25,
+  clusterBoost,
 } from '../../src/search/signals.js';
 
 // ---------------------------------------------------------------------------
@@ -187,5 +188,32 @@ describe('normalizeBm25', () => {
     expect(result[2]).toBe(0.0); // 0  = min
     expect(result[1]).toBeCloseTo(0.5, 5);
     expect(result[3]).toBeCloseTo(0.75, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clusterBoost (Q5 — Knowledge Compression)
+// ---------------------------------------------------------------------------
+
+describe('clusterBoost', () => {
+  it('returns 0.0 when cluster has fewer than 5 members', () => {
+    expect(clusterBoost(0)).toBe(0.0);
+    expect(clusterBoost(1)).toBe(0.0);
+    expect(clusterBoost(4)).toBe(0.0);
+  });
+
+  it('returns 1.0 when cluster has 5+ members', () => {
+    expect(clusterBoost(5)).toBe(1.0);
+    expect(clusterBoost(10)).toBe(1.0);
+    expect(clusterBoost(100)).toBe(1.0);
+  });
+
+  it('respects custom minMembers threshold', () => {
+    expect(clusterBoost(3, 3)).toBe(1.0);
+    expect(clusterBoost(2, 3)).toBe(0.0);
+  });
+
+  it('returns 0.0 for no cluster (0 members)', () => {
+    expect(clusterBoost(0)).toBe(0.0);
   });
 });

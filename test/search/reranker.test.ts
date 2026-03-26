@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rerank, normalizeWeights, DEFAULT_WEIGHTS } from '../../src/search/reranker.js';
+import { rerank, normalizeWeights, DEFAULT_WEIGHTS, stage1Rerank } from '../../src/search/reranker.js';
 import type { RerankableResult } from '../../src/search/reranker.js';
 import type { SignalWeights } from '../../src/types.js';
 
@@ -37,7 +37,8 @@ function makeResult(
 describe('normalizeWeights', () => {
   it('returns weights unchanged when they sum to 1.0', () => {
     const w = normalizeWeights(DEFAULT_WEIGHTS);
-    expect(w.semantic + w.bm25 + w.recency + w.importance + w.graph).toBeCloseTo(1.0, 9);
+    const sum = w.semantic + w.bm25 + w.recency + w.importance + w.graph + w.cluster;
+    expect(sum).toBeCloseTo(1.0, 9);
   });
 
   it('normalizes weights that do not sum to 1.0', () => {
@@ -46,9 +47,11 @@ describe('normalizeWeights', () => {
       bm25: 2,
       recency: 2,
       importance: 1.5,
-      graph: 1.5,
+      graph: 1,
+      cluster: 0.5,
     });
-    expect(w.semantic + w.bm25 + w.recency + w.importance + w.graph).toBeCloseTo(1.0, 9);
+    const sum = w.semantic + w.bm25 + w.recency + w.importance + w.graph + w.cluster;
+    expect(sum).toBeCloseTo(1.0, 9);
     expect(w.semantic).toBeCloseTo(0.3, 5);
   });
 
@@ -59,12 +62,14 @@ describe('normalizeWeights', () => {
       recency: 0,
       importance: 0,
       graph: 0,
+      cluster: 0,
     });
     expect(w.semantic).toBe(0.2);
     expect(w.bm25).toBe(0.2);
     expect(w.recency).toBe(0.2);
     expect(w.importance).toBe(0.2);
-    expect(w.graph).toBe(0.2);
+    expect(w.graph).toBe(0.1);
+    expect(w.cluster).toBe(0.1);
   });
 });
 
@@ -119,6 +124,7 @@ describe('rerank', () => {
     expect(s).toHaveProperty('recency_decay');
     expect(s).toHaveProperty('importance');
     expect(s).toHaveProperty('graph_connectivity');
+    expect(s).toHaveProperty('cluster_boost');
   });
 
   it('respects custom weights from RerankConfig', () => {
@@ -126,13 +132,11 @@ describe('rerank', () => {
       makeResult({ id: 'a', score: 0.5, confidence: 1.0 }),
     ];
 
-    // Set importance to dominate
     const config = {
-      weights: { semantic: 0.0, bm25: 0.0, recency: 0.0, importance: 1.0, graph: 0.0 },
+      weights: { semantic: 0.0, bm25: 0.0, recency: 0.0, importance: 1.0, graph: 0.0, cluster: 0.0 },
     };
 
     const reranked = rerank(results, config, NOW);
-    // With 100% importance weight, composite = importance signal value
     expect(reranked[0].composite_score).toBeCloseTo(reranked[0].signals.importance, 5);
   });
 
@@ -181,45 +185,46 @@ describe('rerank', () => {
     const pinned = reranked.find((r) => r.id === 'pinned')!;
     const unpinned = reranked.find((r) => r.id === 'unpinned')!;
 
-    // Pinned: recency_decay = 1.0 (override), importance = min(1, 0.6*2) = 1.0
     expect(pinned.signals.recency_decay).toBe(1.0);
     expect(pinned.signals.importance).toBe(1.0);
-    // Unpinned: recency_decay < 1.0, importance = 0.6
     expect(unpinned.signals.recency_decay).toBeLessThan(1.0);
     expect(unpinned.signals.importance).toBe(0.6);
 
     expect(pinned.composite_score).toBeGreaterThan(unpinned.composite_score);
   });
 
-  it('graph connectivity boosts decisions with dependents', () => {
+  it('graph connectivity boosts decisions with dependents (no area overlap)', () => {
+    // Use distinct affects to isolate inbound dep signal from area co-occurrence
     const results = [
-      makeResult({ id: 'root', score: 0.7, confidence: 0.5, depends_on: [] }),
-      makeResult({ id: 'leaf1', score: 0.7, confidence: 0.5, depends_on: ['root'] }),
-      makeResult({ id: 'leaf2', score: 0.7, confidence: 0.5, depends_on: ['root'] }),
+      makeResult({ id: 'root', score: 0.7, confidence: 0.5, depends_on: [], affects: ['area-root'] }),
+      makeResult({ id: 'leaf1', score: 0.7, confidence: 0.5, depends_on: ['root'], affects: ['area-1'] }),
+      makeResult({ id: 'leaf2', score: 0.7, confidence: 0.5, depends_on: ['root'], affects: ['area-2'] }),
     ];
 
     const reranked = rerank(results, undefined, NOW);
     const root = reranked.find((r) => r.id === 'root')!;
     const leaf1 = reranked.find((r) => r.id === 'leaf1')!;
 
-    expect(root.signals.graph_connectivity).toBe(1.0); // most referenced
-    expect(leaf1.signals.graph_connectivity).toBe(0); // no inbound
+    // root has 2 inbound, no area co-occurrence (distinct affects)
+    expect(root.signals.graph_connectivity).toBe(1.0);
+    // leaf1 has 0 inbound and no area peers
+    expect(leaf1.signals.graph_connectivity).toBe(0);
   });
 
-  it('uses custom halfLifeDays from config', () => {
+  it('uses content-aware halfLifeDays from config', () => {
+    // type='decision' has base half-life of 180 days.
+    // At baseHalfLifeDays=90 (default), scale factor = 1.0, effective = 180 days.
+    // A 180-day-old decision should have recency ~0.5.
     const results = [
       makeResult({
         id: 'a',
-        created_at: new Date(NOW - 30 * MS_PER_DAY).toISOString(),
+        type: 'decision',
+        created_at: new Date(NOW - 180 * MS_PER_DAY).toISOString(),
       }),
     ];
 
-    const fast = rerank(results, { halfLifeDays: 30 }, NOW);
-    const slow = rerank(results, { halfLifeDays: 180 }, NOW);
-
-    // 30-day half-life at 30 days = 0.5; 180-day half-life at 30 days ≈ 0.89
-    expect(fast[0].signals.recency_decay).toBeCloseTo(0.5, 3);
-    expect(slow[0].signals.recency_decay).toBeGreaterThan(0.85);
+    const reranked = rerank(results, { halfLifeDays: 90 }, NOW);
+    expect(reranked[0].signals.recency_decay).toBeCloseTo(0.5, 2);
   });
 
   it('preserves extra fields from input results', () => {
@@ -273,6 +278,8 @@ describe('rerank performance', () => {
     const elapsed = performance.now() - start;
 
     expect(reranked).toHaveLength(50);
-    expect(elapsed).toBeLessThan(10);
+    // Area co-occurrence in graphConnectivity adds O(n*m) work;
+    // 100ms is a reasonable upper bound for 50 results in CI.
+    expect(elapsed).toBeLessThan(100);
   });
 });

@@ -83,6 +83,50 @@ export interface UpsertExtras {
   project_id?: string;
 }
 
+/**
+ * Build a contextual text string that prepends type and affects metadata
+ * to the raw decision text (Q4-C). This gives the embedding model richer
+ * context about the decision's domain, improving vector search recall.
+ *
+ * Format: `[{type}] [{affects joined}] {text}`
+ * Example: `[decision] [authentication, security] Use JWT with RS256 for API auth`
+ */
+export function buildContextualText(
+  text: string,
+  type: string | undefined,
+  affects: string[] | undefined,
+): string {
+  const typePart = `[${type || 'pending'}]`;
+  const affectsPart = affects && affects.length > 0 ? ` [${affects.join(', ')}]` : '';
+  return `${typePart}${affectsPart} ${text}`;
+}
+
+/**
+ * Generate a hypothetical question that a decision answers (HyPE — Hypothetical
+ * Passage Embedding, from Q4-A). Stored in payload for better retrieval at
+ * search time.
+ *
+ * Uses template-based generation (no LLM required):
+ * - If `affects` areas exist: "What is the team's decision about {affects}?"
+ * - If summary exists: "What did the team decide regarding {summary}?"
+ * - Fallback: uses the first 80 chars of the decision text.
+ */
+export function generateHypotheticalQuery(raw: RawDecision): string {
+  const affects = raw.affects ?? [];
+
+  if (affects.length > 0) {
+    return `What is the team's decision about ${affects.join(', ')}?`;
+  }
+
+  if (raw.summary) {
+    return `What did the team decide regarding ${raw.summary}?`;
+  }
+
+  // Fallback: use truncated text
+  const truncated = raw.text.slice(0, 80).replace(/\s+/g, ' ').trim();
+  return `What did the team decide regarding ${truncated}?`;
+}
+
 export async function upsertDecision(
   qdrant: QdrantClient,
   orgId: string,
@@ -94,6 +138,12 @@ export async function upsertDecision(
   // Resolve project_id from extras or raw decision
   const projectId = extras?.project_id ?? raw.project_id ?? undefined;
 
+  // Build contextual text for richer embeddings (Q4-C)
+  const contextualText = buildContextualText(raw.text, raw.type, raw.affects);
+
+  // Generate HyPE hypothetical query for better retrieval (Q4-A)
+  const hypotheticalQuery = generateHypotheticalQuery(raw);
+
   // Use Qdrant's server-side embedding by sending the text as document
   // Qdrant Cloud with FastEmbed generates embeddings server-side
   const payload: Record<string, unknown> = {
@@ -101,6 +151,8 @@ export async function upsertDecision(
     type: raw.type || 'pending',
     summary: raw.summary || null,
     detail: raw.text,
+    contextual_text: contextualText,
+    hypothetical_query: hypotheticalQuery,
     author,
     affects: raw.affects || [],
     confidence: raw.confidence || null,
@@ -233,6 +285,96 @@ export function buildAllProjectsFilter(
   return { must: mustClauses };
 }
 
+// ---------------------------------------------------------------------------
+// Query expansion — synonym/expansion map for common engineering terms (Q4-A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bidirectional synonym groups for engineering terms.
+ * Each group is an array of related terms. When any term from a group appears
+ * in the query, the other terms are added as expansion candidates.
+ */
+export const SYNONYM_GROUPS: string[][] = [
+  ['auth', 'authentication', 'authorization', 'login', 'jwt', 'oauth', 'sso'],
+  ['db', 'database', 'postgres', 'mysql', 'sqlite', 'sql'],
+  ['api', 'rest', 'endpoint', 'route', 'graphql'],
+  ['ci', 'cd', 'pipeline', 'deployment', 'deploy'],
+  ['test', 'testing', 'unit test', 'integration test', 'e2e'],
+  ['cache', 'caching', 'redis', 'memcached'],
+  ['queue', 'message queue', 'rabbitmq', 'kafka', 'pubsub'],
+  ['container', 'docker', 'kubernetes', 'k8s'],
+  ['log', 'logging', 'observability', 'monitoring'],
+  ['error', 'exception', 'error handling', 'retry'],
+  ['config', 'configuration', 'env', 'environment variable'],
+  ['security', 'encryption', 'tls', 'ssl', 'https'],
+  ['migration', 'schema migration', 'database migration'],
+  ['type', 'typescript', 'typing', 'type safety'],
+  ['perf', 'performance', 'optimization', 'latency'],
+  ['infra', 'infrastructure', 'cloud', 'aws', 'gcp', 'azure'],
+];
+
+/** Pre-built lookup: lowercase term -> set of expansion terms. */
+const _expansionIndex = new Map<string, Set<string>>();
+
+function _buildExpansionIndex(): void {
+  if (_expansionIndex.size > 0) return;
+  for (const group of SYNONYM_GROUPS) {
+    for (const term of group) {
+      const lower = term.toLowerCase();
+      const expansions = new Set<string>();
+      for (const other of group) {
+        if (other.toLowerCase() !== lower) {
+          expansions.add(other.toLowerCase());
+        }
+      }
+      // Merge with existing expansions (a term might appear in multiple groups)
+      const existing = _expansionIndex.get(lower);
+      if (existing) {
+        for (const e of expansions) existing.add(e);
+      } else {
+        _expansionIndex.set(lower, expansions);
+      }
+    }
+  }
+}
+
+/**
+ * Expand a search query with synonyms from the engineering term map (Q4-A).
+ *
+ * Returns the original query plus any expanded terms found. Expanded terms
+ * are appended to help BM25/sparse matching without changing the primary
+ * dense vector search (which uses only the original query).
+ *
+ * @param query  The original search query.
+ * @returns Object with `original` query and `expanded` query (with synonyms appended).
+ */
+export function expandQuery(query: string): { original: string; expanded: string; expansions: string[] } {
+  _buildExpansionIndex();
+
+  const lowerQuery = query.toLowerCase();
+  const words = lowerQuery.split(/\s+/).filter(Boolean);
+  const expansions = new Set<string>();
+
+  for (const word of words) {
+    const synonyms = _expansionIndex.get(word);
+    if (synonyms) {
+      for (const syn of synonyms) {
+        // Don't add if the synonym is already in the query
+        if (!lowerQuery.includes(syn)) {
+          expansions.add(syn);
+        }
+      }
+    }
+  }
+
+  const expansionList = [...expansions];
+  const expanded = expansionList.length > 0
+    ? `${query} ${expansionList.join(' ')}`
+    : query;
+
+  return { original: query, expanded, expansions: expansionList };
+}
+
 export async function hybridSearch(
   qdrant: QdrantClient,
   orgId: string,
@@ -243,10 +385,14 @@ export async function hybridSearch(
 
   const filter = buildProjectFilter(orgId, projectId, { type, legacyFallback });
 
+  // Expand query with synonyms for better recall (Q4-A)
+  const { expanded } = expandQuery(query);
+
   try {
     // Try query-based search (requires server-side embeddings)
+    // Use expanded query for broader matching
     const results = await qdrant.query(COLLECTION_NAME, {
-      query,
+      query: expanded,
       filter,
       limit,
       with_payload: true,

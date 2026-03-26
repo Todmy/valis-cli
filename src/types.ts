@@ -122,6 +122,7 @@ export type AuditAction =
   | 'decision_enriched'
   | 'decision_auto_deduped'
   | 'pattern_synthesized'
+  | 'decision_consolidated'
   | 'project_created'
   | 'project_member_added'
   | 'project_member_removed'
@@ -363,6 +364,12 @@ export interface SearchResult {
   project_name?: string;
   /** Project UUID from Qdrant payload (Phase 4 — US3). */
   project_id?: string;
+  /** Human-readable explanation of why this result matched the query (Q4-B). */
+  matchReason?: string;
+  /** Chain of decision IDs this one superseded, oldest first (Q4-C). */
+  supersedes?: string[];
+  /** Graph hop distance: 0 = direct search hit, 1 = 1-hop neighbor (Q4-C). */
+  graph_hop?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +382,7 @@ export interface SignalWeights {
   recency: number;
   importance: number;
   graph: number;
+  cluster: number;
 }
 
 export interface SignalValues {
@@ -383,6 +391,7 @@ export interface SignalValues {
   recency_decay: number;
   importance: number;
   graph_connectivity: number;
+  cluster_boost: number;
 }
 
 export interface RerankedResult extends SearchResult {

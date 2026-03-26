@@ -27,8 +27,8 @@ export const ERRORS = {
   free_tier_limit: {
     code: 'free_tier_limit',
     what: 'Free tier limit reached',
-    why: 'Your organization has reached the maximum number of members (3) or decisions (500) on the free plan.',
-    fix: 'Upgrade to the Pro plan for up to 50 members and 10,000 decisions, or remove unused members.',
+    why: 'Your organization has reached the maximum number of members (2) or decisions (100) on the free plan.',
+    fix: 'Upgrade to the Team plan for up to 25 members and 5,000 decisions, or remove unused members.',
   },
   secret_detected: {
     code: 'secret_detected',

@@ -111,7 +111,7 @@ describe('checkUsageOrProceed', () => {
         json: () => Promise.resolve({
           allowed: false,
           plan: 'free',
-          reason: 'Free tier limit reached (500/500 decisions).',
+          reason: 'Free tier limit reached (100/100 decisions).',
           upgrade: {
             message: 'Upgrade to Team ($29/mo) for 5,000 decisions.',
             checkout_url: 'https://checkout.stripe.com/test',

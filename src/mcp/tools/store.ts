@@ -12,6 +12,7 @@ import {
 } from '../../cloud/supabase.js';
 import type { StoreExtras } from '../../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../../cloud/qdrant.js';
+import { ClusterRegistry } from '../../synthesis/cluster-registry.js';
 import { appendToQueue } from '../../offline/queue.js';
 import { buildNewDecisionEvent, buildProposedDecisionEvent, buildContradictionEvent } from '../../channel/push.js';
 import { canSupersede } from '../../auth/rbac.js';
@@ -281,6 +282,17 @@ export async function handleStore(
     }
 
     markAsSeen(args.text, args.session_id);
+
+    // -----------------------------------------------------------------------
+    // Q5: Incremental cluster assignment (best-effort)
+    // -----------------------------------------------------------------------
+    try {
+      const qdrantForClustering = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+      const registry = new ClusterRegistry(qdrantForClustering, config.org_id);
+      await registry.assignCluster(decision.id, args.text, args.affects ?? []);
+    } catch {
+      // Clustering is best-effort — never block the store
+    }
 
     // -----------------------------------------------------------------------
     // Increment usage counter (best-effort — never block the store)

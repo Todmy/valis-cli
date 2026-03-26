@@ -14,6 +14,8 @@ import { adminAuditCommand } from '../src/commands/admin-audit.js';
 import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
 import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
 import { adminMigrateQdrantCommand } from '../src/commands/admin-migrate-qdrant.js';
+import { adminClustersCommand } from '../src/commands/admin-clusters.js';
+import { adminConsolidateCommand } from '../src/commands/admin-consolidate.js';
 import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
@@ -249,6 +251,36 @@ adminCmd
   .action(async (options) => {
     try {
       await adminMigrateQdrantCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('clusters')
+  .description('View and manage decision clusters')
+  .option('--detail', 'Show member decisions for each cluster')
+  .option('--merge <ids...>', 'Merge cluster B into cluster A (provide two IDs)')
+  .action(async (options) => {
+    try {
+      await adminClustersCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('consolidate')
+  .description('Review and merge semantically similar decisions')
+  .option('--dry-run', 'Show groups without making changes (default)')
+  .option('--auto-merge', 'Execute merge for high-similarity groups (>0.9)')
+  .option('--threshold <n>', 'Cosine similarity threshold for grouping (default 0.7)')
+  .option('--org <org-id>', 'Target org ID (defaults to local config)')
+  .action(async (options) => {
+    try {
+      await adminConsolidateCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

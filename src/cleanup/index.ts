@@ -19,3 +19,11 @@ export {
   AUDIT_ACTION_AUTO_DEDUPED,
   AUDIT_ACTION_ORPHAN_FLAGGED,
 } from './runner.js';
+
+export {
+  findSemanticGroups,
+  pickRepresentative,
+  suggestAction,
+  type SemanticGroup,
+  type SemanticGroupOptions,
+} from './semantic-groups.js';

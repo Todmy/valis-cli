@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { parseClaudeMd } from './parse-claude-md.js';
 import { parseAgentsMd } from './parse-agents-md.js';
+import { parseDesignMd } from './parse-design-md.js';
 import { parseGitLog } from './parse-git-log.js';
 import type { RawDecision, DecisionSource } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
@@ -32,15 +33,17 @@ export async function runHostedSeed(
 ): Promise<SeedResult> {
   const result: SeedResult = { total: 0, stored: 0, skipped: 0, sources: {} };
 
-  const [claudeMdDecisions, agentsMdDecisions, gitLogDecisions] = await Promise.all([
+  const [claudeMdDecisions, agentsMdDecisions, designMdDecisions, gitLogDecisions] = await Promise.all([
     parseClaudeMd(join(projectDir, 'CLAUDE.md')),
     parseAgentsMd(join(projectDir, 'AGENTS.md')),
+    parseDesignMd(join(projectDir, 'DESIGN.md')),
     parseGitLog(projectDir),
   ]);
 
   const allDecisions: Array<{ raw: RawDecision; sourceName: string }> = [
     ...claudeMdDecisions.map((d) => ({ raw: d, sourceName: 'CLAUDE.md' })),
     ...agentsMdDecisions.map((d) => ({ raw: d, sourceName: 'AGENTS.md' })),
+    ...designMdDecisions.map((d) => ({ raw: d, sourceName: 'DESIGN.md' })),
     ...gitLogDecisions.map((d) => ({ raw: d, sourceName: 'git-log' })),
   ];
 
@@ -116,15 +119,17 @@ export async function runSeed(
   };
 
   // Collect from all parsers
-  const [claudeMdDecisions, agentsMdDecisions, gitLogDecisions] = await Promise.all([
+  const [claudeMdDecisions, agentsMdDecisions, designMdDecisions, gitLogDecisions] = await Promise.all([
     parseClaudeMd(join(projectDir, 'CLAUDE.md')),
     parseAgentsMd(join(projectDir, 'AGENTS.md')),
+    parseDesignMd(join(projectDir, 'DESIGN.md')),
     parseGitLog(projectDir),
   ]);
 
   const allDecisions: Array<{ raw: RawDecision; sourceName: string }> = [
     ...claudeMdDecisions.map((d) => ({ raw: d, sourceName: 'CLAUDE.md' })),
     ...agentsMdDecisions.map((d) => ({ raw: d, sourceName: 'AGENTS.md' })),
+    ...designMdDecisions.map((d) => ({ raw: d, sourceName: 'DESIGN.md' })),
     ...gitLogDecisions.map((d) => ({ raw: d, sourceName: 'git-log' })),
   ];
 

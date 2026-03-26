@@ -92,6 +92,8 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
           projectIds = projects.map((p) => p.id);
         }
       } catch {
+      // Security: fail closed
+      projectListFailed = true;
         // If listing projects fails, fall back to org-wide search
       }
 

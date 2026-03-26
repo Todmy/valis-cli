@@ -142,6 +142,18 @@ export async function handleStore(
     };
   }
 
+  // Also check summary field for secrets
+  if (args.summary) {
+    const summarySecret = detectSecrets(args.summary);
+    if (summarySecret) {
+      return {
+        error: 'secret_detected',
+        pattern: summarySecret.pattern,
+        action: 'blocked' as const,
+      };
+    }
+  }
+
   // 2. Dedup check
   if (isDuplicate(args.text, args.session_id)) {
     return {

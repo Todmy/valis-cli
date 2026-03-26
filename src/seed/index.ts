@@ -6,6 +6,7 @@ import type { RawDecision, DecisionSource } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
+import { detectSecrets } from '../security/secrets.js';
 import { storeDecision } from '../cloud/supabase.js';
 import { upsertDecision } from '../cloud/qdrant.js';
 import { contentHash } from '../capture/dedup.js';
@@ -128,6 +129,23 @@ export async function runSeed(
   ];
 
   result.total = allDecisions.length;
+
+  // Filter out decisions containing secrets
+  const safeDecisions = allDecisions.filter(d => {
+    const secret = detectSecrets(d.raw.text);
+    if (secret) {
+      console.warn('[valis] Blocked seeding decision with ' + secret.pattern + ' — skipped');
+      return false;
+    }
+    if (d.raw.summary) {
+      const summarySecret = detectSecrets(d.raw.summary);
+      if (summarySecret) {
+        console.warn('[valis] Blocked seeding decision with ' + summarySecret.pattern + ' in summary — skipped');
+        return false;
+      }
+    }
+    return true;
+  });
 
   // Deduplicate by content hash
   const seenHashes = new Set<string>();

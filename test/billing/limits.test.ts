@@ -20,10 +20,10 @@ describe('PLAN_LIMITS', () => {
     ]);
   });
 
-  it('free tier has 500 decisions, 5 members, 100 searches, no overage', () => {
+  it('free tier has 100 decisions, 2 members, 100 searches, no overage', () => {
     expect(PLAN_LIMITS.free).toEqual({
-      decisions: 500,
-      members: 5,
+      decisions: 100,
+      members: 2,
       searches: 100,
       overage: false,
     });
@@ -79,22 +79,22 @@ describe('checkLimit', () => {
   // Free tier
   describe('free tier', () => {
     it('allows store when under limit', () => {
-      const result = checkLimit('free', 'decisions', 499);
+      const result = checkLimit('free', 'decisions', 99);
       expect(result.allowed).toBe(true);
       expect(result.overage).toBe(false);
       expect(result.plan).toBe('free');
-      expect(result.current).toBe(499);
-      expect(result.limit).toBe(500);
+      expect(result.current).toBe(99);
+      expect(result.limit).toBe(100);
     });
 
-    it('blocks store at limit (500/500)', () => {
-      const result = checkLimit('free', 'decisions', 500);
+    it('blocks store at limit (100/100)', () => {
+      const result = checkLimit('free', 'decisions', 100);
       expect(result.allowed).toBe(false);
       expect(result.overage).toBe(false);
     });
 
     it('blocks store above limit', () => {
-      const result = checkLimit('free', 'decisions', 501);
+      const result = checkLimit('free', 'decisions', 101);
       expect(result.allowed).toBe(false);
     });
 
@@ -109,12 +109,12 @@ describe('checkLimit', () => {
     });
 
     it('allows members when under limit', () => {
-      const result = checkLimit('free', 'members', 4);
+      const result = checkLimit('free', 'members', 1);
       expect(result.allowed).toBe(true);
     });
 
     it('blocks members at limit', () => {
-      const result = checkLimit('free', 'members', 5);
+      const result = checkLimit('free', 'members', 2);
       expect(result.allowed).toBe(false);
     });
   });
@@ -295,7 +295,7 @@ describe('checkUsageOrProceed (fail-open guarantee)', () => {
         Promise.resolve({
           allowed: false,
           plan: 'free',
-          reason: 'Free tier limit reached (500/500 decisions).',
+          reason: 'Free tier limit reached (100/100 decisions).',
           upgrade: {
             message: 'Upgrade to Team ($29/mo) for 5,000 decisions.',
             checkout_url: null,

@@ -9,7 +9,7 @@ import type { PlanLimits, PlanTier } from '../types.js';
  * These are enforced at the application level (check-usage Edge Function).
  */
 export const PLAN_LIMITS: Readonly<Record<PlanTier, PlanLimits>> = {
-  free:       { decisions: 500,      members: 5,        searches: 100,      overage: false },
+  free:       { decisions: 100,      members: 2,        searches: 100,      overage: false },
   team:       { decisions: 5_000,    members: 25,       searches: 1_000,    overage: true  },
   business:   { decisions: 25_000,   members: 50,       searches: 5_000,    overage: true  },
   enterprise: { decisions: Infinity, members: Infinity,  searches: Infinity, overage: false },

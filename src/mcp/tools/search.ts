@@ -2,6 +2,8 @@ import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
 import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
+import { proxySearch } from '../../cloud/search-proxy.js';
+import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { incrementUsage } from '../../billing/usage.js';
@@ -76,6 +78,33 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
   const resolved = await resolveConfig();
   const projectId = resolved.project?.project_id;
 
+  // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
+  if (config.auth_mode === 'jwt' && isHostedMode(config)) {
+    try {
+      const proxyResults = await proxySearch(config, args.query, {
+        type: args.type,
+        limit: 50,
+        project_id: projectId ?? undefined,
+        all_projects: args.all_projects,
+        member_id: config.member_id ?? undefined,
+      });
+
+      // Apply reranking + suppression to proxy results
+      const reranked: RerankedResult[] = rerank(proxyResults);
+      const { visible, suppressed_count } = suppressResults(reranked, 1.5, false);
+      const finalLimit = args.limit || 10;
+      const finalResults = visible.slice(0, finalLimit);
+
+      return { results: finalResults, suppressed_count };
+    } catch {
+      return {
+        results: [],
+        offline: true,
+        note: 'Cloud unavailable. Search offline.',
+      };
+    }
+  }
+
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     let rawResults: SearchResult[];
@@ -83,6 +112,7 @@ export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
     if (args.all_projects) {
       // T021: Cross-project search — get member's project list, search all accessible
       let projectIds: string[] = [];
+    let projectListFailed = false;
       try {
         if (config.member_id) {
           const supabase = config.auth_mode === 'jwt'

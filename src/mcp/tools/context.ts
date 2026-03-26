@@ -2,6 +2,8 @@ import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
 import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
+import { proxySearch } from '../../cloud/search-proxy.js';
+import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import type { ContextResponse, RerankedResult, DecisionStatus } from '../../types.js';
@@ -45,6 +47,70 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
   // T022: Resolve project from per-directory config
   const resolved = await resolveConfig();
   const projectId = resolved.project?.project_id;
+
+  // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
+  if (config.auth_mode === 'jwt' && isHostedMode(config)) {
+    try {
+      const proxyResults = await proxySearch(config, query, {
+        limit: 50,
+        project_id: projectId ?? undefined,
+        all_projects: args.all_projects,
+        member_id: config.member_id ?? undefined,
+      });
+
+      // Apply reranking + suppression
+      const reranked: RerankedResult[] = rerank(proxyResults);
+      const { visible, suppressed_count } = suppressResults(reranked, 1.5, false);
+
+      // Separate active/proposed from deprecated/superseded
+      const active: RerankedResult[] = [];
+      const historical: RerankedResult[] = [];
+      for (const r of visible) {
+        const status: DecisionStatus = r.status || 'active';
+        if (HISTORICAL_STATUSES.has(status)) {
+          historical.push(r);
+        } else {
+          active.push(r);
+        }
+      }
+
+      // Group active results by type
+      const grouped: Record<string, RerankedResult[]> = {
+        decision: [], constraint: [], pattern: [], lesson: [],
+      };
+      for (const r of active) {
+        const type = r.type === 'pending' ? 'decision' : r.type;
+        if (grouped[type]) grouped[type].push(r);
+      }
+
+      const totalInBrain = reranked.length;
+      let note: string | undefined;
+      if (firstCall) {
+        const historicalNote = historical.length > 0
+          ? ` (${historical.length} historical/superseded items also available)` : '';
+        const suppressedNote = suppressed_count > 0
+          ? ` (${suppressed_count} similar results suppressed)` : '';
+        note = `${totalInBrain} relevant decisions found in team brain${historicalNote}${suppressedNote}. Use valis_search for specific queries.`;
+        firstCall = false;
+      }
+
+      return {
+        decisions: grouped.decision.slice(0, 20),
+        constraints: grouped.constraint.slice(0, 20),
+        patterns: grouped.pattern.slice(0, 20),
+        lessons: grouped.lesson.slice(0, 20),
+        historical,
+        total_in_brain: totalInBrain,
+        suppressed_count,
+        note,
+      };
+    } catch {
+      return {
+        decisions: [], constraints: [], patterns: [], lessons: [],
+        historical: [], total_in_brain: 0, suppressed_count: 0, offline: true,
+      };
+    }
+  }
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);

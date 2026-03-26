@@ -11,6 +11,8 @@ import {
   listMemberProjects,
   type ProjectInfo,
 } from '../cloud/supabase.js';
+import { proxySearch } from '../cloud/search-proxy.js';
+import { isHostedMode } from '../cloud/api-url.js';
 import { rerank } from '../search/reranker.js';
 import { suppressResults } from '../search/suppression.js';
 import type { RerankedResult } from '../types.js';
@@ -28,6 +30,75 @@ export async function searchCommand(
   // T025: Resolve project from per-directory config
   const resolved = await resolveConfig();
   const projectId = resolved.project?.project_id;
+
+  // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
+  if (config.auth_mode === 'jwt' && isHostedMode(config)) {
+    try {
+      const proxyResults = await proxySearch(config, query, {
+        type: options.type,
+        limit: 50,
+        project_id: projectId ?? undefined,
+        all_projects: options.allProjects,
+        member_id: config.member_id ?? undefined,
+      });
+
+      if (proxyResults.length === 0) {
+        console.log(pc.yellow('No results found.'));
+        return;
+      }
+
+      const reranked = rerank(proxyResults);
+      const { visible, suppressed_count } = suppressResults(
+        reranked,
+        1.5,
+        options.all ?? false,
+      );
+
+      const limit = options.limit ? parseInt(options.limit, 10) : 10;
+      const finalResults = visible.slice(0, limit);
+
+      console.log(pc.bold(`\nFound ${proxyResults.length} result(s), showing ${finalResults.length}:`));
+      if (suppressed_count > 0 && !options.all) {
+        console.log(pc.dim(`  (${suppressed_count} similar result(s) suppressed — use --all to show)`));
+      }
+      console.log();
+
+      for (const r of finalResults) {
+        const rr = r as RerankedResult;
+        const typeColor =
+          r.type === 'decision'
+            ? pc.blue
+            : r.type === 'constraint'
+              ? pc.red
+              : r.type === 'pattern'
+                ? pc.green
+                : pc.yellow;
+
+        let projectLabel = '';
+        if (options.allProjects && r.project_id) {
+          const pName = r.project_name || r.project_id.slice(0, 8);
+          projectLabel = pc.magenta(`[${pName}] `);
+        }
+
+        const scoreStr = pc.dim(` (score: ${rr.composite_score.toFixed(3)})`);
+        const suppressedLabel = rr.suppressed ? pc.dim(pc.yellow(' [suppressed]')) : '';
+        console.log(`  ${projectLabel}${typeColor(`[${r.type}]`)}${scoreStr}${suppressedLabel} ${r.summary || r.detail.substring(0, 80)}`);
+        console.log(`    ${pc.dim(`by ${r.author} • ${r.created_at}`)}`);
+        if (r.affects.length > 0) {
+          console.log(`    ${pc.dim(`affects: ${r.affects.join(', ')}`)}`);
+        }
+
+        const s = rr.signals;
+        console.log(`    ${pc.dim(`signals: sem=${s.semantic_score.toFixed(2)} bm25=${s.bm25_score.toFixed(2)} rec=${s.recency_decay.toFixed(2)} imp=${s.importance.toFixed(2)} graph=${s.graph_connectivity.toFixed(2)}`)}`);
+        console.log();
+      }
+
+      return;
+    } catch (err) {
+      console.error(`Search error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);

@@ -54,7 +54,7 @@ export async function runHostedSeed(
   const seenHashes = new Set<string>();
   const unique: RawDecision[] = [];
 
-  for (const { raw, sourceName } of allDecisions) {
+  for (const { raw, sourceName } of safeDecisions) {
     const hash = contentHash(raw.text);
     if (seenHashes.has(hash)) {
       result.skipped++;
@@ -155,7 +155,7 @@ export async function runSeed(
   // Deduplicate by content hash
   const seenHashes = new Set<string>();
 
-  for (const { raw, sourceName } of allDecisions) {
+  for (const { raw, sourceName } of safeDecisions) {
     const hash = contentHash(raw.text);
     if (seenHashes.has(hash)) {
       result.skipped++;

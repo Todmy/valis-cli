@@ -160,39 +160,13 @@ export async function incrementUsage(
 
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-  if (operation === 'store') {
-    // Upsert: insert new row or increment store_count
-    const { error } = await supabase
-      .from('rate_limits')
-      .upsert(
-        {
-          org_id: orgId,
-          day: today,
-          store_count: 1,
-          search_count: 0,
-        },
-        { onConflict: 'org_id,day' },
-      );
+  const { error } = await supabase.rpc('increment_rate_limit', {
+    p_org_id: orgId,
+    p_day: today,
+    p_operation: operation,
+  });
 
-    if (error) {
-      throw new Error(`incrementUsage(store) upsert failed: ${error.message}`);
-    }
-  } else {
-    // Upsert: insert new row or increment search_count
-    const { error } = await supabase
-      .from('rate_limits')
-      .upsert(
-        {
-          org_id: orgId,
-          day: today,
-          store_count: 0,
-          search_count: 1,
-        },
-        { onConflict: 'org_id,day' },
-      );
-
-    if (error) {
-      throw new Error(`incrementUsage(search) upsert failed: ${error.message}`);
-    }
+  if (error) {
+    throw new Error(`incrementUsage(${operation}) rpc failed: ${error.message}`);
   }
 }

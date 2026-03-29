@@ -559,9 +559,10 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     // -----------------------------------------------------------------
     // Hosted mode: public registration API — no credentials needed
     // -----------------------------------------------------------------
-    const orgName = await prompt('Organization name: ');
-    const projectName = await prompt(`Project name (${basename(process.cwd())}): `) || basename(process.cwd());
-    const authorName = await prompt('Your name: ');
+    const defaultOrg = basename(process.cwd());
+    const orgName = await input({ message: 'Organization name:', default: defaultOrg });
+    const projectName = await input({ message: 'Project name:', default: basename(process.cwd()) });
+    const authorName = await input({ message: 'Your name:' });
 
     console.log(pc.cyan('\nRegistering with Valis Cloud...'));
 
@@ -609,8 +610,8 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     const qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
     const qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
 
-    const orgName = await prompt('Organization name: ');
-    const authorName = await prompt('Your name: ');
+    const orgName = await input({ message: 'Organization name:', default: basename(process.cwd()) });
+    const authorName = await input({ message: 'Your name:' });
 
     console.log(pc.cyan('\nCreating organization...'));
     const result = await createOrg(supabaseUrl, serviceRoleKey, orgName, authorName);

@@ -140,12 +140,11 @@ async function loginWithDevice(): Promise<void> {
         return;
       }
     } catch {
-      // Network error — continue polling
-      process.stdout.write('x');
+      // Transient network error — keep polling silently
     }
   }
 
-  console.log(pc.red('\nLogin timed out. Run `valis login` again.'));
+  console.log(pc.red('\nLogin request expired (15 min). Run `valis login` again.'));
 }
 
 /** API key login (fallback, --api-key flag) */

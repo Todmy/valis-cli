@@ -7,6 +7,14 @@ import { platform } from 'node:os';
  * Never throws — failures are silent.
  */
 export async function openBrowser(url: string): Promise<boolean> {
+  // Validate URL scheme
+  try {
+    const parsed = new URL(url);
+    if (!['https:', 'http:'].includes(parsed.protocol)) return false;
+  } catch {
+    return false;
+  }
+
   // Skip in headless environments
   if (
     process.env.BROWSER === 'none' ||

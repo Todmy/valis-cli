@@ -503,7 +503,7 @@ describe('CLI --join hosted path: config shape', () => {
     expect(config.member_id).toBe(MOCK_JOIN_RESPONSE.member_id);
   });
 
-  it('joinPublic response writes valid .valis.json', async () => {
+  it('joinPublic response writes valid .valis/config.json', async () => {
     const result = MOCK_JOIN_RESPONSE;
     const projectConfig: ProjectConfig = {
       project_id: result.project_id,
@@ -517,8 +517,8 @@ describe('CLI --join hosted path: config shape', () => {
     expect(loaded!.project_id).toBe(MOCK_JOIN_RESPONSE.project_id);
     expect(loaded!.project_name).toBe(MOCK_JOIN_RESPONSE.project_name);
 
-    // Verify .valis.json has no secrets
-    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
+    // Verify .valis/config.json has no secrets
+    const raw = await readFile(join(tmpDir, '.valis/config.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     expect(Object.keys(parsed)).toContain('project_id');
     expect(Object.keys(parsed)).toContain('project_name');

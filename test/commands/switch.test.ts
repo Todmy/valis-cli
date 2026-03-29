@@ -2,12 +2,12 @@
  * T036: Tests for the `valis switch` command and project-aware `status`.
  *
  * Tests cover:
- * - Switch by name updates .valis.json
- * - Switch by UUID updates .valis.json
+ * - Switch by name updates .valis/config.json
+ * - Switch by UUID updates .valis/config.json
  * - Interactive mode (project list)
  * - Invalid project name produces error
  * - Status shows correct project per directory
- * - Config walk-up finds .valis.json in parent
+ * - Config walk-up finds .valis/config.json in parent
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -57,9 +57,9 @@ describe('writeProjectConfig', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('writes .valis.json with correct content', async () => {
+  it('writes .valis/config.json with correct content', async () => {
     const configPath = await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
-    expect(configPath).toBe(join(tmpDir, '.valis.json'));
+    expect(configPath).toBe(join(tmpDir, '.valis/config.json'));
 
     const raw = await readFile(configPath, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -67,11 +67,11 @@ describe('writeProjectConfig', () => {
     expect(parsed.project_name).toBe(MOCK_PROJECT_A.project_name);
   });
 
-  it('overwrites existing .valis.json on switch', async () => {
+  it('overwrites existing .valis/config.json on switch', async () => {
     await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
     await writeProjectConfig(tmpDir, MOCK_PROJECT_B);
 
-    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
+    const raw = await readFile(join(tmpDir, '.valis/config.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     expect(parsed.project_id).toBe(MOCK_PROJECT_B.project_id);
     expect(parsed.project_name).toBe(MOCK_PROJECT_B.project_name);
@@ -93,8 +93,9 @@ describe('loadProjectConfig', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('loads valid .valis.json', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+  it('loads valid .valis/config.json', async () => {
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(configPath, JSON.stringify(MOCK_PROJECT_A, null, 2), 'utf-8');
 
     const loaded = await loadProjectConfig(configPath);
@@ -103,21 +104,24 @@ describe('loadProjectConfig', () => {
   });
 
   it('throws on invalid JSON', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(configPath, '{ broken json', 'utf-8');
 
     await expect(loadProjectConfig(configPath)).rejects.toThrow();
   });
 
   it('throws on missing project_id', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(configPath, JSON.stringify({ project_name: 'test' }), 'utf-8');
 
     await expect(loadProjectConfig(configPath)).rejects.toThrow(/project_id/);
   });
 
   it('throws on invalid UUID for project_id', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(
       configPath,
       JSON.stringify({ project_id: 'not-a-uuid', project_name: 'test' }),
@@ -128,7 +132,8 @@ describe('loadProjectConfig', () => {
   });
 
   it('throws on empty project_name', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(
       configPath,
       JSON.stringify({
@@ -142,7 +147,8 @@ describe('loadProjectConfig', () => {
   });
 
   it('throws on project_name exceeding 100 chars', async () => {
-    const configPath = join(tmpDir, '.valis.json');
+    const configPath = join(tmpDir, '.valis/config.json');
+    await mkdir(join(tmpDir, ".valis"), { recursive: true });
     await writeFile(
       configPath,
       JSON.stringify({
@@ -171,14 +177,14 @@ describe('findProjectConfig (walk-up)', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('finds .valis.json in the start directory', async () => {
+  it('finds .valis/config.json in the start directory', async () => {
     await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
     const result = await findProjectConfig(tmpDir);
     expect(result).not.toBeNull();
     expect(result!.project_id).toBe(MOCK_PROJECT_A.project_id);
   });
 
-  it('finds .valis.json in parent directory', async () => {
+  it('finds .valis/config.json in parent directory', async () => {
     await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
     const childDir = join(tmpDir, 'src', 'components');
     await mkdir(childDir, { recursive: true });
@@ -188,7 +194,7 @@ describe('findProjectConfig (walk-up)', () => {
     expect(result!.project_id).toBe(MOCK_PROJECT_A.project_id);
   });
 
-  it('closest .valis.json wins in nested directories', async () => {
+  it('closest .valis/config.json wins in nested directories', async () => {
     // Parent has project A
     await writeProjectConfig(tmpDir, MOCK_PROJECT_A);
     // Child has project B
@@ -202,7 +208,7 @@ describe('findProjectConfig (walk-up)', () => {
     expect(result!.project_name).toBe(MOCK_PROJECT_B.project_name);
   });
 
-  it('returns null when no .valis.json exists', async () => {
+  it('returns null when no .valis/config.json exists', async () => {
     const emptyDir = join(tmpDir, 'empty');
     await mkdir(emptyDir, { recursive: true });
 

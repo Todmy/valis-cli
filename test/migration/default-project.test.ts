@@ -4,7 +4,7 @@
  * Verifies:
  * - Qdrant project_id backfill migration (migrateQdrantProjectIds)
  * - Legacy filter includes points without project_id
- * - Legacy config detection (global config without .valis.json)
+ * - Legacy config detection (global config without .valis/config.json)
  * - Search still works after migration
  * - Init detects legacy config and offers migration
  */
@@ -252,7 +252,7 @@ describe('detectConfigState', () => {
   // They don't hit the filesystem because we test with a temp directory
   // that won't have a real ~/.valis/config.json.
 
-  it('returns unconfigured when no global config and no .valis.json', async () => {
+  it('returns unconfigured when no global config and no .valis/config.json', async () => {
     // /tmp/some-random-dir has neither global nor project config
     const state = await detectConfigState('/tmp/valis-nonexistent-' + Date.now());
     // Since there's no global config on a clean machine, this should be 'unconfigured'

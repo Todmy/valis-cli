@@ -10,7 +10,7 @@
  * @module config/project
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, parse, dirname } from 'node:path';
 import { z } from 'zod';
 import type { ProjectConfig, ResolvedConfig } from '../types.js';
@@ -30,7 +30,8 @@ export const projectConfigSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * Walk up from `startDir` to the filesystem root looking for `.valis.json`.
+ * Walk up from `startDir` to the filesystem root looking for `.valis/config.json`.
+ * Also checks legacy `.valis.json` for backwards compatibility.
  * Returns the path to the first match, or null if none found.
  */
 export async function findProjectConfigPath(startDir: string): Promise<string | null> {
@@ -38,12 +39,22 @@ export async function findProjectConfigPath(startDir: string): Promise<string | 
   const root = parse(dir).root; // '/' on Unix, 'C:\' on Windows
 
   while (true) {
-    const configPath = join(dir, '.valis.json');
+    // New location: .valis/config.json
+    const newPath = join(dir, '.valis', 'config.json');
     try {
-      await readFile(configPath, 'utf-8');
-      return configPath;
+      await readFile(newPath, 'utf-8');
+      return newPath;
     } catch {
-      // File not found — walk up
+      // Not found — try legacy
+    }
+
+    // Legacy: .valis.json (backwards compatibility)
+    const legacyPath = join(dir, '.valis.json');
+    try {
+      await readFile(legacyPath, 'utf-8');
+      return legacyPath;
+    } catch {
+      // Not found — walk up
     }
 
     const parent = dirname(dir);
@@ -76,7 +87,7 @@ export async function loadProjectConfig(configPath: string): Promise<ProjectConf
     parsed = JSON.parse(data);
   } catch {
     throw new Error(
-      `Invalid .valis.json — file is not valid JSON.\n` +
+      `Invalid .valis/config.json — file is not valid JSON.\n` +
         `  Fix the file at ${configPath} or run \`valis init\` to reconfigure.`,
     );
   }
@@ -85,7 +96,7 @@ export async function loadProjectConfig(configPath: string): Promise<ProjectConf
   if (!result.success) {
     const firstIssue = result.error.issues[0];
     throw new Error(
-      `Invalid .valis.json — ${firstIssue?.path.join('.')}: ${firstIssue?.message}.\n` +
+      `Invalid .valis/config.json — ${firstIssue?.path.join('.')}: ${firstIssue?.message}.\n` +
         `  Fix the file at ${configPath} or run \`valis init\` to reconfigure.`,
     );
   }
@@ -93,13 +104,15 @@ export async function loadProjectConfig(configPath: string): Promise<ProjectConf
 }
 
 /**
- * Write a `.valis.json` file to the given directory.
+ * Write project config to `.valis/config.json` in the given directory.
  */
 export async function writeProjectConfig(
   targetDir: string,
   config: ProjectConfig,
 ): Promise<string> {
-  const configPath = join(targetDir, '.valis.json');
+  const valisDir = join(targetDir, '.valis');
+  await mkdir(valisDir, { recursive: true });
+  const configPath = join(valisDir, 'config.json');
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
   return configPath;
 }

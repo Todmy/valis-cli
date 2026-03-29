@@ -5,7 +5,7 @@
  * - Calls /api/register to create org + project + member
  * - Response contains member_api_key, org_id, project_id, invite_code
  * - Config can be saved to ~/.valis/config.json
- * - .valis.json is created with project_id/project_name
+ * - .valis/config.json is created with project_id/project_name
  *
  * Requires: VALIS_E2E_API_URL, VALIS_E2E_SUPABASE_URL
  */
@@ -96,13 +96,13 @@ describeE2E('e2e: valis init (hosted mode)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // .valis.json project config
+  // .valis/config.json project config
   // -------------------------------------------------------------------------
 
-  it('writes .valis.json with project_id and project_name only', async () => {
+  it('writes .valis/config.json with project_id and project_name only', async () => {
     await writeTestProjectConfig(tmpDir, reg.projectConfig);
 
-    const raw = await readFile(join(tmpDir, '.valis.json'), 'utf-8');
+    const raw = await readFile(join(tmpDir, '.valis/config.json'), 'utf-8');
     const parsed = JSON.parse(raw);
     const keys = Object.keys(parsed);
 

@@ -160,7 +160,7 @@ export async function writeTestProjectConfig(
   dir: string,
   config: ProjectConfig,
 ): Promise<void> {
-  await writeFile(join(dir, '.valis.json'), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  await writeFile(join(dir, '.valis/config.json'), JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
 // ---------------------------------------------------------------------------

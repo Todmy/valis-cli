@@ -93,20 +93,45 @@ export async function statusCommand(): Promise<void> {
   }
 
   // Cloud connectivity
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
-  const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+  const isHostedMode = !config.supabase_service_role_key;
+  let pgOk = false;
+  let qOk = false;
 
-  const [pgOk, qOk] = await Promise.all([
-    supabaseHealth(supabase),
-    qdrantHealth(qdrant),
-  ]);
-
-  if (pgOk && qOk) {
-    console.log(`  Cloud:    ${pc.green('OK')} (Supabase + Qdrant)`);
-  } else if (pgOk || qOk) {
-    console.log(`  Cloud:    ${pc.yellow('Degraded')} (${!pgOk ? 'Supabase' : 'Qdrant'} down)`);
+  if (isHostedMode) {
+    // Hosted mode: check API proxy instead of direct connections
+    try {
+      const apiUrl = (await import('../types.js')).HOSTED_API_URL;
+      const res = await fetch(`${apiUrl}/api/check-usage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.member_api_key || config.api_key}` },
+        body: JSON.stringify({ org_id: config.org_id }),
+      });
+      pgOk = res.status !== 500;
+      qOk = pgOk; // Qdrant proxied through API
+    } catch {
+      // offline
+    }
+    if (pgOk) {
+      console.log(`  Cloud:    ${pc.green('OK')} (hosted mode)`);
+    } else {
+      console.log(`  Cloud:    ${pc.red('Offline')} (cannot reach valis.krukit.co)`);
+    }
   } else {
-    console.log(`  Cloud:    ${pc.red('Offline')}`);
+    const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+
+    [pgOk, qOk] = await Promise.all([
+      supabaseHealth(supabase),
+      qdrantHealth(qdrant),
+    ]);
+
+    if (pgOk && qOk) {
+      console.log(`  Cloud:    ${pc.green('OK')} (Supabase + Qdrant)`);
+    } else if (pgOk || qOk) {
+      console.log(`  Cloud:    ${pc.yellow('Degraded')} (${!pgOk ? 'Supabase' : 'Qdrant'} down)`);
+    } else {
+      console.log(`  Cloud:    ${pc.red('Offline')}`);
+    }
   }
 
   // Realtime connection status — T035: include project name when connected
@@ -130,22 +155,30 @@ export async function statusCommand(): Promise<void> {
   }
 
   // Brain: project-scoped decision count (T034)
-  if (pgOk && projectConfig) {
+  if (pgOk && projectConfig && !isHostedMode) {
     try {
-      const count = await getProjectDecisionCount(supabase, config.org_id, projectConfig.project_id);
+      const sb = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+      const count = await getProjectDecisionCount(sb, config.org_id, projectConfig.project_id);
       console.log(`  Brain:    ${count} decisions in this project`);
     } catch {
-      // Fall back to org-level count
-      const info = await getOrgInfo(supabase, config.org_id);
+      try {
+        const sb = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+        const info = await getOrgInfo(sb, config.org_id);
+        if (info) {
+          console.log(`  Brain:    ${info.decision_count} decisions (org-wide)`);
+        }
+      } catch { /* skip */ }
+    }
+  } else if (pgOk && isHostedMode) {
+    console.log(`  Brain:    ${pc.dim('Use valis search to query decisions')}`);
+  } else if (pgOk && !isHostedMode) {
+    try {
+      const sb = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+      const info = await getOrgInfo(sb, config.org_id);
       if (info) {
-        console.log(`  Brain:    ${info.decision_count} decisions (org-wide)`);
+        console.log(`  Brain:    ${info.decision_count} decisions`);
       }
-    }
-  } else if (pgOk) {
-    const info = await getOrgInfo(supabase, config.org_id);
-    if (info) {
-      console.log(`  Brain:    ${info.decision_count} decisions`);
-    }
+    } catch { /* skip */ }
   }
 
   // Queue

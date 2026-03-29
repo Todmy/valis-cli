@@ -306,10 +306,11 @@ program
 
 program
   .command('login')
-  .description('Authenticate with Valis Cloud using your member API key')
-  .action(async () => {
+  .description('Authenticate with Valis Cloud')
+  .option('--api-key', 'Login with API key instead of browser')
+  .action(async (options: { apiKey?: boolean }) => {
     try {
-      await loginCommand();
+      await loginCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

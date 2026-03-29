@@ -802,13 +802,14 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     // Hosted mode: public registration API — no credentials needed
     // -----------------------------------------------------------------
     const authorName = await input({ message: 'Your name:' });
+    const email = await input({ message: 'Your email:' });
     const orgName = authorName; // personal org = author name (like GitHub)
     const projectName = await input({ message: 'Project name:', default: basename(process.cwd()) });
 
     console.log(pc.cyan('\nRegistering with Valis Cloud...'));
 
     try {
-      const regResult = await register(orgName, projectName, authorName, HOSTED_SUPABASE_URL);
+      const regResult = await register(orgName, projectName, authorName, HOSTED_SUPABASE_URL, email);
       console.log(pc.green(`✓ Organization "${regResult.org_name}" created`));
       console.log(pc.green(`✓ Project "${regResult.project_name}" created`));
 

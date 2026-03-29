@@ -31,6 +31,7 @@ export async function register(
   projectName: string,
   authorName: string,
   supabaseUrl?: string,
+  email?: string,
 ): Promise<RegistrationResponse> {
   const base = resolveBaseUrl(supabaseUrl);
   if (!base) {
@@ -43,14 +44,17 @@ export async function register(
 
   let response: Response;
   try {
+    const body: Record<string, string> = {
+      org_name: orgName,
+      project_name: projectName,
+      author_name: authorName,
+    };
+    if (email) body.email = email;
+
     response = await fetch(registerUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        org_name: orgName,
-        project_name: projectName,
-        author_name: authorName,
-      }),
+      body: JSON.stringify(body),
     });
   } catch {
     throw new Error(formatError(ERRORS.registration_service_unavailable));

@@ -34,10 +34,11 @@ describeE2E('e2e: multi-project isolation', () => {
   let jwtProjectB: string;
   let projectAId: string;
   let projectBId: string;
-  let storedInAId: string;
 
   const DECISION_IN_A =
     'Project A uses Redis for session caching with a 30-minute TTL and LRU eviction policy';
+  const DECISION_IN_B =
+    'Project B uses Memcached for API response caching with automatic key invalidation';
 
   beforeAll(async () => {
     // Register org with project A
@@ -74,7 +75,7 @@ describeE2E('e2e: multi-project isolation', () => {
   // -------------------------------------------------------------------------
 
   it('stores decision in project A', async () => {
-    const result = await apiStore(E2E_API_URL, jwtProjectA, {
+    const result = await apiStore(E2E_API_URL, reg.response.member_api_key, {
       text: DECISION_IN_A,
       type: 'decision',
       summary: 'Redis for session caching in Project A',
@@ -82,9 +83,7 @@ describeE2E('e2e: multi-project isolation', () => {
       project_id: projectAId,
     });
 
-    expect(result.id).toBeTruthy();
-    expect(result.status).toBe('stored');
-    storedInAId = result.id;
+    expect(result.stored).toBe(1);
   });
 
   // -------------------------------------------------------------------------
@@ -97,15 +96,18 @@ describeE2E('e2e: multi-project isolation', () => {
         const r = await apiSearch(E2E_API_URL, jwtProjectA, 'Redis session caching', {
           project_id: projectAId,
         });
-        const match = r.results.find((res) => res.id === storedInAId);
+        const match = r.results.find((res) =>
+          res.detail.toLowerCase().includes('redis'),
+        );
         return match ? r : null;
       },
       { timeout: 20_000, interval: 2_000, label: 'multi-search-A' },
     );
 
-    const match = result.results.find((r) => r.id === storedInAId);
+    const match = result.results.find((r) =>
+      r.detail.toLowerCase().includes('redis'),
+    );
     expect(match).toBeTruthy();
-    expect(match!.detail).toContain('Redis');
   });
 
   // -------------------------------------------------------------------------
@@ -119,19 +121,25 @@ describeE2E('e2e: multi-project isolation', () => {
         const r = await apiSearch(E2E_API_URL, jwtProjectA, 'Redis session caching', {
           project_id: projectAId,
         });
-        return r.results.find((res) => res.id === storedInAId) ? r : null;
+        const match = r.results.find((res) =>
+          res.detail.toLowerCase().includes('redis'),
+        );
+        return match ? r : null;
       },
       { timeout: 15_000, interval: 2_000, label: 'multi-wait-index' },
     );
 
-    // Now search in project B
+    // Now search in project B — should not find project A's Redis decision
     const result = await apiSearch(E2E_API_URL, jwtProjectB, 'Redis session caching', {
       project_id: projectBId,
     });
 
-    // Should NOT find the decision from project A
-    const match = result.results.find((r) => r.id === storedInAId);
-    expect(match).toBeUndefined();
+    // None of the results should be about Redis (project A's content)
+    const hasRedisFromA = result.results.some((r) =>
+      r.detail.toLowerCase().includes('redis') &&
+      r.detail.toLowerCase().includes('session caching'),
+    );
+    expect(hasRedisFromA).toBe(false);
   });
 
   // -------------------------------------------------------------------------
@@ -139,16 +147,15 @@ describeE2E('e2e: multi-project isolation', () => {
   // -------------------------------------------------------------------------
 
   it('stores decision in project B (separate content)', async () => {
-    const result = await apiStore(E2E_API_URL, jwtProjectB, {
-      text: 'Project B uses Memcached for API response caching with automatic key invalidation',
+    const result = await apiStore(E2E_API_URL, reg.response.member_api_key, {
+      text: DECISION_IN_B,
       type: 'decision',
       summary: 'Memcached for API caching in Project B',
       affects: ['caching', 'api'],
       project_id: projectBId,
     });
 
-    expect(result.id).toBeTruthy();
-    expect(result.status).toBe('stored');
+    expect(result.stored).toBe(1);
   });
 
   it('search in project B finds only project B content', async () => {
@@ -163,15 +170,10 @@ describeE2E('e2e: multi-project isolation', () => {
     );
 
     expect(result.results.length).toBeGreaterThan(0);
-    // Results should contain Memcached (project B), not Redis (project A)
     const hasMemcached = result.results.some((r) =>
       r.detail.toLowerCase().includes('memcached'),
     );
     expect(hasMemcached).toBe(true);
-
-    // Redis decision should not appear
-    const hasRedisFromA = result.results.some((r) => r.id === storedInAId);
-    expect(hasRedisFromA).toBe(false);
   });
 
   // -------------------------------------------------------------------------
@@ -185,8 +187,9 @@ describeE2E('e2e: multi-project isolation', () => {
           all_projects: true,
           limit: 20,
         });
-        // Need results from both projects
-        const hasA = r.results.some((res) => res.id === storedInAId);
+        const hasA = r.results.some((res) =>
+          res.detail.toLowerCase().includes('redis'),
+        );
         const hasB = r.results.some((res) =>
           res.detail.toLowerCase().includes('memcached'),
         );
@@ -195,8 +198,9 @@ describeE2E('e2e: multi-project isolation', () => {
       { timeout: 20_000, interval: 2_000, label: 'multi-cross-project' },
     );
 
-    // Should find both Redis (A) and Memcached (B)
-    const hasRedis = result.results.some((r) => r.id === storedInAId);
+    const hasRedis = result.results.some((r) =>
+      r.detail.toLowerCase().includes('redis'),
+    );
     const hasMemcached = result.results.some((r) =>
       r.detail.toLowerCase().includes('memcached'),
     );

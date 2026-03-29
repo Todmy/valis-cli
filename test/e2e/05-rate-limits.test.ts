@@ -83,8 +83,8 @@ describeE2E('e2e: rate limits', () => {
   it('check-usage still allows after a few store operations', async () => {
     // Store 3 decisions
     for (let i = 0; i < 3; i++) {
-      await apiStore(E2E_API_URL, jwt, {
-        text: `Rate limit test decision number ${i} about infrastructure scaling patterns`,
+      await apiStore(E2E_API_URL, reg.response.member_api_key, {
+        text: `Rate limit test decision number ${i} about infrastructure scaling patterns and deployment strategies`,
         type: 'decision',
         summary: `Rate limit test ${i}`,
         affects: ['infrastructure'],
@@ -117,26 +117,22 @@ describeE2E('e2e: rate limits', () => {
     );
 
     expect(typeof result.allowed).toBe('boolean');
-    // plan should be a string
     if (result.plan !== undefined) {
       expect(typeof result.plan).toBe('string');
     }
   });
 
   // -------------------------------------------------------------------------
-  // Registration rate limit (IP-based, 10/hour)
+  // Registration endpoint validation (not rate limit exhaustion)
   // -------------------------------------------------------------------------
 
-  it('registration rate limit response has correct shape on 429', async () => {
-    // We don't want to actually trigger the rate limit (10/hour),
-    // but we verify the endpoint rejects bad requests with proper error shapes.
+  it('registration rejects missing fields with 400', async () => {
     const res = await fetch(`${E2E_API_URL}/api/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}), // Missing required fields
+      body: JSON.stringify({}),
     });
 
-    // Should be 400 (validation) not 429 (rate limit)
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBeTruthy();

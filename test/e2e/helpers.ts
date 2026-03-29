@@ -123,12 +123,11 @@ export async function restoreGlobalConfig(): Promise<void> {
     await mkdir(VALIS_CONFIG_DIR, { recursive: true });
     await writeFile(VALIS_CONFIG_FILE, originalConfig, { mode: 0o600 });
   } else {
-    // Remove the config we created
+    // Remove the config we created during tests
     try {
-      const { rm: rmSync } = await import('node:fs/promises');
-      await rmSync(VALIS_CONFIG_FILE, { force: true });
+      await rm(VALIS_CONFIG_FILE, { force: true });
     } catch {
-      // ignore
+      // ignore — file may not exist
     }
   }
 }

@@ -6,8 +6,9 @@
  * - Search confirms it's active
  * - Deprecate it
  * - Search shows deprecated status
- * - Store a replacement (supersedes the deprecated one)
- * - Search shows superseded status on original
+ * - Store a replacement
+ * - Supersede the original
+ * - Search shows superseded status
  *
  * Requires: VALIS_E2E_API_URL, VALIS_E2E_SUPABASE_URL
  */
@@ -54,7 +55,7 @@ describeE2E('e2e: decision lifecycle', () => {
   // -------------------------------------------------------------------------
 
   it('stores initial decision as active', async () => {
-    const result = await apiStore(E2E_API_URL, jwt, {
+    const result = await apiStore(E2E_API_URL, reg.response.member_api_key, {
       text: ORIGINAL_TEXT,
       type: 'decision',
       summary: 'REST APIs for payment integrations',
@@ -62,13 +63,11 @@ describeE2E('e2e: decision lifecycle', () => {
       project_id: reg.response.project_id,
     });
 
-    expect(result.id).toBeTruthy();
-    expect(result.status).toBe('stored');
-    originalDecisionId = result.id;
+    expect(result.stored).toBe(1);
   });
 
   // -------------------------------------------------------------------------
-  // Step 2: Verify it appears in search as active
+  // Step 2: Find the decision and verify it's active
   // -------------------------------------------------------------------------
 
   it('search returns the decision as active', async () => {
@@ -77,15 +76,21 @@ describeE2E('e2e: decision lifecycle', () => {
         const r = await apiSearch(E2E_API_URL, jwt, 'REST payment processor', {
           project_id: reg.response.project_id,
         });
-        const match = r.results.find((res) => res.id === originalDecisionId);
+        const match = r.results.find((res) =>
+          res.detail.toLowerCase().includes('rest api'),
+        );
         return match ? r : null;
       },
       { timeout: 20_000, interval: 2_000, label: 'lifecycle-search-active' },
     );
 
-    const match = result.results.find((r) => r.id === originalDecisionId);
+    const match = result.results.find((r) =>
+      r.detail.toLowerCase().includes('rest api'),
+    );
     expect(match).toBeTruthy();
-    // Status should be active (may not be present in all responses — default is active)
+    originalDecisionId = match!.id;
+
+    // Status should be active
     if (match!.status) {
       expect(match!.status).toBe('active');
     }
@@ -114,7 +119,6 @@ describeE2E('e2e: decision lifecycle', () => {
   // -------------------------------------------------------------------------
 
   it('search returns the deprecated decision with status', async () => {
-    // Search should still find deprecated decisions
     const result = await retry(
       async () => {
         const r = await apiSearch(E2E_API_URL, jwt, 'REST payment processor', {
@@ -134,11 +138,11 @@ describeE2E('e2e: decision lifecycle', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Step 5: Store replacement that supersedes the original
+  // Step 5: Store replacement decision
   // -------------------------------------------------------------------------
 
   it('stores a replacement decision', async () => {
-    const result = await apiStore(E2E_API_URL, jwt, {
+    const result = await apiStore(E2E_API_URL, reg.response.member_api_key, {
       text: REPLACEMENT_TEXT,
       type: 'decision',
       summary: 'GraphQL for payment integrations',
@@ -146,8 +150,7 @@ describeE2E('e2e: decision lifecycle', () => {
       project_id: reg.response.project_id,
     });
 
-    expect(result.id).toBeTruthy();
-    expect(result.status).toBe('stored');
+    expect(result.stored).toBe(1);
   });
 
   // -------------------------------------------------------------------------
@@ -192,10 +195,10 @@ describeE2E('e2e: decision lifecycle', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Step 8: Replacement decision is findable
+  // Step 8: Replacement decision is findable and active
   // -------------------------------------------------------------------------
 
-  it('replacement decision appears in search', async () => {
+  it('replacement decision appears in search as active', async () => {
     const result = await retry(
       async () => {
         const r = await apiSearch(E2E_API_URL, jwt, 'GraphQL payment processor', {
@@ -211,9 +214,8 @@ describeE2E('e2e: decision lifecycle', () => {
       r.detail.toLowerCase().includes('graphql'),
     );
     expect(match).toBeTruthy();
-    // Replacement should be active
     if (match!.status) {
       expect(match!.status).toBe('active');
     }
   });
-}, 90_000); // 90s timeout — lifecycle involves multiple sequential operations
+}, 90_000);

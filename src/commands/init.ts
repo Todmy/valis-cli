@@ -682,43 +682,60 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   // standard project selection flow.
   // -----------------------------------------------------------------------
   if (existing && !existingProject) {
-    console.log(pc.yellow('Legacy config detected: org configured but no project selected.'));
+    console.log(pc.yellow('Config found but no project selected for this directory.'));
     console.log(pc.green(`  Org: ${existing.org_name}`));
-    console.log(pc.dim('  Upgrading to multi-project mode...\n'));
+    console.log(pc.green(`  Author: ${existing.author_name}\n`));
 
     let projectConfig: ProjectConfig | undefined;
 
-    // Try to find the default project created by migration 004
-    if (existing.member_id) {
+    const isHostedMode = !existing.supabase_service_role_key;
+
+    if (isHostedMode) {
+      // Hosted mode: use idempotent register endpoint to create/find project
+      const projectName = await input({ message: 'Project name:', default: basename(process.cwd()) });
       try {
-        const supabase = getSupabaseClient(
+        const regResult = await register(existing.org_name, projectName, existing.author_name, existing.supabase_url);
+        projectConfig = {
+          project_id: regResult.project_id,
+          project_name: regResult.project_name,
+        };
+        console.log(pc.green(`✓ Project "${regResult.project_name}" ready`));
+      } catch (err) {
+        console.log(pc.red(`Error: ${(err as Error).message}`));
+        return;
+      }
+    } else {
+      // Community mode: use direct Supabase access
+      if (existing.member_id) {
+        try {
+          const supabase = getSupabaseClient(
+            existing.supabase_url,
+            existing.supabase_service_role_key,
+          );
+          const projects = await listMemberProjects(supabase, existing.member_id);
+          const defaultProject = projects.find((p) => p.name === 'default');
+
+          if (defaultProject) {
+            console.log(pc.green(`✓ Found default project (${defaultProject.decision_count} decisions)`));
+            projectConfig = {
+              project_id: defaultProject.id,
+              project_name: defaultProject.name,
+            };
+          }
+        } catch {
+          // fall through to select/create
+        }
+      }
+
+      if (!projectConfig) {
+        projectConfig = await selectOrCreateProject(
           existing.supabase_url,
           existing.supabase_service_role_key,
+          existing.api_key,
+          existing.org_id,
+          existing.member_id || null,
         );
-        const projects = await listMemberProjects(supabase, existing.member_id);
-        const defaultProject = projects.find((p) => p.name === 'default');
-
-        if (defaultProject) {
-          console.log(pc.green(`✓ Found default project from migration (${defaultProject.decision_count} decisions)`));
-          projectConfig = {
-            project_id: defaultProject.id,
-            project_name: defaultProject.name,
-          };
-        }
-      } catch {
-        // list_member_projects not available — fall through to select/create
       }
-    }
-
-    // If no default project found, let user select or create one
-    if (!projectConfig) {
-      projectConfig = await selectOrCreateProject(
-        existing.supabase_url,
-        existing.supabase_service_role_key,
-        existing.api_key,
-        existing.org_id,
-        existing.member_id || null,
-      );
     }
 
     const configPath = await writeProjectConfig(process.cwd(), projectConfig);

@@ -1,6 +1,6 @@
-import { createInterface } from 'node:readline/promises';
-import { stdin, stdout } from 'node:process';
 import { basename } from 'node:path';
+import select from '@inquirer/select';
+import input from '@inquirer/input';
 import pc from 'picocolors';
 import { loadConfig, saveConfig, getConfigDir } from '../config/store.js';
 import { findProjectConfig, writeProjectConfig } from '../config/project.js';
@@ -28,13 +28,7 @@ import { register, joinPublic } from '../cloud/registration.js';
 type SetupMode = 'hosted' | 'community';
 
 async function prompt(question: string): Promise<string> {
-  const rl = createInterface({ input: stdin, output: stdout });
-  try {
-    const answer = await rl.question(question);
-    return answer.trim();
-  } finally {
-    rl.close();
-  }
+  return input({ message: question });
 }
 
 async function createOrg(supabaseUrl: string, serviceRoleKey: string, name: string, authorName: string) {
@@ -157,20 +151,21 @@ async function selectOrCreateProject(
   }
 
   if (projects.length > 0) {
-    console.log(pc.bold('\nYour projects:\n'));
-    for (let i = 0; i < projects.length; i++) {
-      const p = projects[i];
-      console.log(
-        `  ${pc.green(`${i + 1})`)} ${pc.bold(p.name)} ${pc.dim(`(${p.decision_count} decisions)`)}`,
-      );
-    }
-    console.log(`  ${pc.yellow(`${projects.length + 1})`)} Create new project\n`);
+    const choices = [
+      ...projects.map((p) => ({
+        name: `${p.name} (${p.decision_count} decisions)`,
+        value: p.id,
+      })),
+      { name: 'Create new project', value: '__new__' },
+    ];
 
-    const choice = await prompt(`Select (1-${projects.length + 1}): `);
-    const idx = parseInt(choice, 10) - 1;
+    const selectedId = await select({
+      message: 'Select a project:',
+      choices,
+    });
 
-    if (idx >= 0 && idx < projects.length) {
-      const selected = projects[idx];
+    if (selectedId !== '__new__') {
+      const selected = projects.find((p) => p.id === selectedId)!;
       console.log(pc.green(`✓ Selected project "${selected.name}"`));
       return {
         project_id: selected.id,
@@ -439,14 +434,16 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     console.log(`  Project: ${existingProject.project_name}`);
     console.log(`  Author: ${existing.author_name}`);
     console.log('');
-    console.log(`  ${pc.green('1)')} Switch project`);
-    console.log(`  ${pc.yellow('2)')} Reconfigure org (full reset)`);
-    console.log(`  ${pc.dim('3)')} Cancel\n`);
+    const answer = await select({
+      message: 'What would you like to do?',
+      choices: [
+        { name: 'Switch project', value: 'switch' },
+        { name: 'Reconfigure org (full reset)', value: 'reset' },
+        { name: 'Cancel', value: 'cancel' },
+      ],
+    });
 
-    const answer = await prompt('Your choice (1/2/3): ');
-
-    if (answer === '1') {
-      // Switch project only — global config unchanged
+    if (answer === 'switch') {
       const projectConfig = await selectOrCreateProject(
         existing.supabase_url,
         existing.supabase_service_role_key,
@@ -458,7 +455,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       console.log(pc.green(`✓ Project config updated: ${configPath}`));
       console.log(`  Project: ${pc.cyan(projectConfig.project_name)}`);
       return;
-    } else if (answer !== '2') {
+    } else if (answer === 'cancel') {
       console.log('Aborted.');
       return;
     }
@@ -547,11 +544,13 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   // -----------------------------------------------------------------------
 
   // Choose setup mode
-  console.log(pc.bold('Choose your setup:\n'));
-  console.log(`  ${pc.green('1)')} ${pc.bold('Hosted')} ${pc.dim('(recommended)')} — Free tier included, no setup needed`);
-  console.log(`  ${pc.yellow('2)')} ${pc.bold('Community')} — Self-hosted, bring your own Supabase + Qdrant\n`);
-  const modeAnswer = await prompt('Your choice (1/2): ');
-  const setupMode: SetupMode = modeAnswer.trim() === '2' ? 'community' : 'hosted';
+  const setupMode = await select<SetupMode>({
+    message: 'Choose your setup:',
+    choices: [
+      { name: 'Hosted (recommended) — Free tier, no setup needed', value: 'hosted' as const },
+      { name: 'Community — Self-hosted, bring your own Supabase + Qdrant', value: 'community' as const },
+    ],
+  });
 
   let config: ValisConfig;
   let projectConfig: ProjectConfig;

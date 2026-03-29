@@ -54,7 +54,7 @@ export async function runHostedSeed(
   const seenHashes = new Set<string>();
   const unique: RawDecision[] = [];
 
-  for (const { raw, sourceName } of safeDecisions) {
+  for (const { raw, sourceName } of allDecisions) {
     const hash = contentHash(raw.text);
     if (seenHashes.has(hash)) {
       result.skipped++;

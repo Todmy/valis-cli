@@ -440,7 +440,7 @@ export function stage2Rerank(
       : 0.5;
 
     // Adjust stage-2 weights based on query type
-    const s2w = { ...STAGE2_WEIGHTS };
+    const s2w: Record<string, number> = { ...STAGE2_WEIGHTS };
     if (analysis.type === 'negation') {
       // Boost negation weight, reduce stage1 slightly
       s2w.negation = 0.15;

@@ -656,15 +656,17 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   config.configured_ides = detectedNames;
   await saveConfig(config);
 
-  // Ensure Qdrant collection (community mode has qdrant_api_key; hosted skips gracefully)
+  // Ensure Qdrant collection — only in community mode (has qdrant_api_key).
   // Hosted mode uses API proxy for search/enrich — no direct Qdrant access needed.
-  // qdrant_api_key may be empty in hosted mode; ensureCollection skips gracefully.
-  const qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
+  let qdrant: ReturnType<typeof getQdrantClient> | null = null;
+  if (config.qdrant_api_key) {
+    qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
+  }
 
   // Seed brain
   if (config.supabase_service_role_key) {
     // Community mode: direct Supabase + Qdrant writes
-    await seedAndVerify(config, projectConfig, qdrant);
+    await seedAndVerify(config, projectConfig, qdrant!);
   } else {
     // Hosted mode: parse locally, send to server-side seed endpoint via resolveApiPath
     console.log(pc.cyan('\nSeeding team brain (via hosted API)...'));

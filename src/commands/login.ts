@@ -17,6 +17,20 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(json);
 }
 
+/**
+ * Core login logic. Returns true if login succeeded.
+ * Used by both `valis login` command and `valis init` (when not logged in).
+ */
+export async function runLogin(): Promise<boolean> {
+  try {
+    await loginCommand();
+    const creds = await loadCredentials();
+    return !!creds;
+  } catch {
+    return false;
+  }
+}
+
 export async function loginCommand(): Promise<void> {
   const existing = await loadCredentials();
   if (existing) {

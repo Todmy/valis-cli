@@ -753,14 +753,29 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   // Case 1: Fresh install — full org + project creation
   // -----------------------------------------------------------------------
 
-  // Choose setup mode
-  const setupMode = await select<SetupMode>({
-    message: 'Choose your setup:',
-    choices: [
-      { name: 'Hosted (recommended) — Free tier, no setup needed', value: 'hosted' as const },
-      { name: 'Community — Self-hosted, bring your own Supabase + Qdrant', value: 'community' as const },
-    ],
-  });
+  // Check if user wants to login first
+  let creds = await loadCredentials();
+  let setupMode: SetupMode = 'hosted';
+
+  if (!creds) {
+    const authChoice = await select({
+      message: 'How would you like to start?',
+      choices: [
+        { name: 'Log in (I already have an account)', value: 'login' as const },
+        { name: 'Create new account (hosted, free)', value: 'hosted' as const },
+        { name: 'Community — Self-hosted, bring your own infra', value: 'community' as const },
+      ],
+    });
+
+    if (authChoice === 'login') {
+      const { runLogin } = await import('./login.js');
+      const loginSuccess = await runLogin();
+      if (!loginSuccess) return;
+      creds = await loadCredentials();
+    }
+
+    setupMode = authChoice === 'community' ? 'community' : 'hosted';
+  }
 
   let config: ValisConfig;
   let projectConfig: ProjectConfig;

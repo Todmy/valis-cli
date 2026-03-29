@@ -24,6 +24,10 @@ import type { ValisConfig, ProjectConfig } from '../types.js';
 import { HOSTED_SUPABASE_URL } from '../types.js';
 import { resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
 import { register, joinPublic } from '../cloud/registration.js';
+import { loadCredentials, isLoggedIn } from '../config/credentials.js';
+import type { ValisCredentials } from '../config/credentials.js';
+import { HOSTED_API_URL } from '../types.js';
+import type { ExchangeTokenResponse, RegistrationResponse } from '../types.js';
 
 type SetupMode = 'hosted' | 'community';
 
@@ -277,6 +281,116 @@ async function seedAndVerify(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Logged-in project selection (uses credentials, no service_role_key)
+// ---------------------------------------------------------------------------
+
+/**
+ * Exchange the member API key for a JWT and list accessible projects.
+ * Falls through to project creation via the idempotent register endpoint.
+ */
+async function selectOrCreateProjectLoggedIn(
+  creds: ValisCredentials,
+): Promise<ProjectConfig> {
+  const supabaseUrl = creds.supabase_url || HOSTED_SUPABASE_URL;
+
+  // Exchange key for JWT so we can query projects
+  const exchangeUrl = `${HOSTED_API_URL}/api/exchange-token`;
+  let jwt: string | undefined;
+
+  try {
+    const res = await fetch(exchangeUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${creds.member_api_key}`,
+      },
+    });
+    if (res.ok) {
+      const body = (await res.json()) as ExchangeTokenResponse;
+      jwt = body.token;
+    }
+  } catch {
+    // JWT exchange failed — we can still create projects via register
+  }
+
+  // Try to list existing projects via JWT
+  let projects: Array<{ id: string; name: string; role: string }> = [];
+  if (jwt) {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, 'placeholder', {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: {
+          headers: { Authorization: `Bearer ${jwt}` },
+        },
+      });
+
+      const { data: memberships } = await supabase
+        .from('project_members')
+        .select('project_id, role, projects(id, name)')
+        .eq('member_id', creds.member_id);
+
+      if (memberships) {
+        for (const pm of memberships) {
+          const project = pm.projects as unknown as { id: string; name: string } | null;
+          if (project) {
+            projects.push({ id: project.id, name: project.name, role: pm.role as string });
+          }
+        }
+      }
+    } catch {
+      // Failed to list — fall through to create
+    }
+  }
+
+  if (projects.length > 0) {
+    const choices = [
+      ...projects.map((p) => ({
+        name: `${p.name} (${p.role})`,
+        value: p.id,
+      })),
+      { name: 'Create new project', value: '__new__' },
+    ];
+
+    const selectedId = await select({
+      message: 'Select a project:',
+      choices,
+    });
+
+    if (selectedId !== '__new__') {
+      const selected = projects.find((p) => p.id === selectedId)!;
+      console.log(pc.green(`✓ Selected project "${selected.name}"`));
+      return {
+        project_id: selected.id,
+        project_name: selected.name,
+      };
+    }
+  }
+
+  // Create new project via the idempotent register endpoint
+  const defaultName = basename(process.cwd());
+  const projectName = await input({
+    message: 'Project name:',
+    default: defaultName,
+  });
+
+  console.log(pc.cyan(`\nCreating project "${projectName}"...`));
+
+  const regResult = await register(
+    creds.org_name,
+    projectName,
+    creds.author_name,
+    supabaseUrl,
+  );
+
+  console.log(pc.green(`✓ Project "${regResult.project_name}" created`));
+  return {
+    project_id: regResult.project_id,
+    project_name: regResult.project_name,
+  };
+}
+
 function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin: boolean) {
   console.log(pc.bold('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
   console.log(pc.bold('  Setup Complete!'));
@@ -298,6 +412,102 @@ function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin:
 
 export async function initCommand(options: { join?: string }): Promise<void> {
   console.log(pc.bold('\n🧠 Valis Setup\n'));
+
+  // -----------------------------------------------------------------------
+  // Fast path: user is logged in via `valis login`
+  // Skip setup mode prompt and org/author prompts — use credentials.
+  // -----------------------------------------------------------------------
+  if (!options.join && await isLoggedIn()) {
+    const creds = (await loadCredentials())!;
+    console.log(pc.green(`Logged in as ${creds.author_name} (${creds.org_name})\n`));
+
+    const existingCfg = await loadConfig();
+    const existingProj = await findProjectConfig(process.cwd());
+
+    // If already configured for this directory, offer switch/reset
+    if (existingCfg && existingProj) {
+      console.log(pc.yellow('Valis is already configured for this directory.'));
+      console.log(`  Org: ${existingCfg.org_name}`);
+      console.log(`  Project: ${existingProj.project_name}`);
+      console.log('');
+      const answer = await select({
+        message: 'What would you like to do?',
+        choices: [
+          { name: 'Switch project', value: 'switch' },
+          { name: 'Reconfigure (full reset)', value: 'reset' },
+          { name: 'Cancel', value: 'cancel' },
+        ],
+      });
+
+      if (answer === 'switch') {
+        const projectConfig = await selectOrCreateProjectLoggedIn(creds);
+        const configPath = await writeProjectConfig(process.cwd(), projectConfig);
+        console.log(pc.green(`✓ Project config updated: ${configPath}`));
+        console.log(`  Project: ${pc.cyan(projectConfig.project_name)}`);
+        return;
+      } else if (answer === 'cancel') {
+        console.log('Aborted.');
+        return;
+      }
+      // 'reset' falls through to project selection below
+    }
+
+    // Select or create a project using credentials
+    const projectConfig = await selectOrCreateProjectLoggedIn(creds);
+
+    // Build a ValisConfig for the global config file
+    const config: ValisConfig = {
+      org_id: creds.org_id,
+      org_name: creds.org_name,
+      api_key: '',
+      invite_code: '',
+      author_name: creds.author_name,
+      supabase_url: creds.supabase_url || HOSTED_SUPABASE_URL,
+      supabase_service_role_key: '',
+      qdrant_url: creds.qdrant_url || '',
+      qdrant_api_key: '',
+      configured_ides: existingCfg?.configured_ides || [],
+      created_at: existingCfg?.created_at || new Date().toISOString(),
+      member_api_key: creds.member_api_key,
+      member_id: creds.member_id,
+      auth_mode: 'jwt' as const,
+    };
+
+    await saveConfig(config);
+    await trackFile({ type: 'config_dir', path: getConfigDir() });
+    console.log(pc.green('✓ Config saved'));
+
+    const projectConfigPath = await writeProjectConfig(process.cwd(), projectConfig);
+    console.log(pc.green(`✓ Project config saved to ${projectConfigPath}`));
+
+    // Configure IDEs
+    const detectedNames = await setupIDEs(config);
+    config.configured_ides = detectedNames;
+    await saveConfig(config);
+
+    // Seed via hosted API
+    console.log(pc.cyan('\nSeeding team brain (via hosted API)...'));
+    try {
+      const seedResult = await runHostedSeed(
+        process.cwd(),
+        config.supabase_url,
+        config.member_api_key || config.api_key,
+        projectConfig.project_id,
+      );
+      if (seedResult.stored > 0) {
+        console.log(pc.green(`✓ Seeded ${seedResult.stored} decisions from ${Object.keys(seedResult.sources).join(', ') || 'sources'}`));
+      } else if (seedResult.total === 0) {
+        console.log(pc.dim('  No decisions found to seed (empty CLAUDE.md/AGENTS.md/git history).'));
+      } else {
+        console.log(pc.yellow(`⚠ Seed: ${seedResult.skipped} decisions skipped (duplicates or errors).`));
+      }
+    } catch (err) {
+      console.log(pc.yellow(`⚠ Seed skipped: ${(err as Error).message}`));
+    }
+
+    printSummary(config, projectConfig, false);
+    return;
+  }
 
   const existing = await loadConfig();
   const existingProject = await findProjectConfig(process.cwd());

@@ -29,6 +29,7 @@
   ],
   "dependencies": {
     "@inquirer/input": "^5.0.10",
+    "@inquirer/password": "^5.0.10",
     "@inquirer/select": "^5.1.2",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@qdrant/js-client-rest": "^1.13.0",

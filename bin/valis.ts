@@ -20,6 +20,9 @@ import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
 import { switchCommand } from '../src/commands/switch.js';
+import { loginCommand } from '../src/commands/login.js';
+import { logoutCommand } from '../src/commands/logout.js';
+import { whoamiCommand } from '../src/commands/whoami.js';
 
 const program = new Command();
 
@@ -295,6 +298,42 @@ program
   .action(async (options) => {
     try {
       await upgradeCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('login')
+  .description('Authenticate with Valis Cloud using your member API key')
+  .action(async () => {
+    try {
+      await loginCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('logout')
+  .description('Remove stored credentials')
+  .action(async () => {
+    try {
+      await logoutCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('whoami')
+  .description('Show current authenticated identity')
+  .action(async () => {
+    try {
+      await whoamiCommand();
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

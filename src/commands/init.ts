@@ -385,10 +385,12 @@ async function selectOrCreateProjectLoggedIn(
   );
 
   console.log(pc.green(`✓ Project "${regResult.project_name}" created`));
-  return {
+  const result: ProjectConfig & { invite_code?: string } = {
     project_id: regResult.project_id,
     project_name: regResult.project_name,
   };
+  result.invite_code = regResult.invite_code;
+  return result as ProjectConfig;
 }
 
 function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin: boolean) {
@@ -460,7 +462,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       org_id: creds.org_id,
       org_name: creds.org_name,
       api_key: '',
-      invite_code: '',
+      invite_code: (projectConfig as unknown as Record<string, string>).invite_code || '',
       author_name: creds.author_name,
       supabase_url: creds.supabase_url || HOSTED_SUPABASE_URL,
       supabase_service_role_key: '',

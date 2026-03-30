@@ -12,6 +12,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, parse, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { ProjectConfig, ResolvedConfig } from '../types.js';
 import { loadConfig } from './store.js';
@@ -37,8 +38,12 @@ export const projectConfigSchema = z.object({
 export async function findProjectConfigPath(startDir: string): Promise<string | null> {
   let dir = startDir;
   const root = parse(dir).root; // '/' on Unix, 'C:\' on Windows
+  const home = homedir();
 
   while (true) {
+    // Stop before home dir — ~/.valis/config.json is the GLOBAL config, not project config
+    if (dir === home) return null;
+
     // New location: .valis/config.json
     const newPath = join(dir, '.valis', 'config.json');
     try {

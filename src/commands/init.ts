@@ -791,6 +791,8 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       const loginSuccess = await runLogin();
       if (!loginSuccess) return;
       creds = await loadCredentials();
+      // After login, restart init — now with credentials
+      if (creds) return initCommand(options);
     }
 
     setupMode = authChoice === 'community' ? 'community' : 'hosted';

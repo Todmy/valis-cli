@@ -24,6 +24,11 @@
     "ai",
     "team-knowledge"
   ],
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./mcp/server": "./dist/src/mcp/server.js",
+    "./types": "./dist/src/types.js"
+  },
   "files": [
     "dist/"
   ],

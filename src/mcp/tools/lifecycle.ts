@@ -13,11 +13,12 @@ import type {
   LifecycleHistoryEntry,
   LifecyclePinResponse,
   DecisionStatus,
+  ServerConfig,
 } from '../../types.js';
 import { HOSTED_SUPABASE_URL } from '../../types.js';
 
-export async function handleLifecycle(args: LifecycleArgs): Promise<LifecycleResponse> {
-  const config = await loadConfig();
+export async function handleLifecycle(args: LifecycleArgs, configOverride?: ServerConfig): Promise<LifecycleResponse> {
+  const config = configOverride ?? await loadConfig();
   if (!config) {
     throw new Error('Not configured. Run `valis init` first.');
   }

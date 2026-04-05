@@ -7,7 +7,7 @@ import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { incrementUsage } from '../../billing/usage.js';
-import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus } from '../../types.js';
+import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
 
 interface SearchArgs {
   query: string;
@@ -68,15 +68,15 @@ function buildReplacedByMap(
   return map;
 }
 
-export async function handleSearch(args: SearchArgs): Promise<SearchResponse> {
-  const config = await loadConfig();
+export async function handleSearch(args: SearchArgs, configOverride?: ServerConfig): Promise<SearchResponse> {
+  const config = (configOverride ?? await loadConfig()) as ValisConfig | null;
   if (!config) {
     return { results: [], note: 'Not configured. Run `valis init` first.' };
   }
 
   // T021: Resolve project from per-directory config
-  const resolved = await resolveConfig();
-  const projectId = resolved.project?.project_id;
+  const resolved = configOverride ? null : await resolveConfig();
+  const projectId = configOverride?.project_id || resolved?.project?.project_id;
 
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {

@@ -27,6 +27,7 @@ import type {
   StoreSupersededDetail,
   StoreContradictionWarning,
   DecisionStatus,
+  ServerConfig,
 } from '../../types.js';
 import { HOSTED_SUPABASE_URL } from '../../types.js';
 import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
@@ -115,15 +116,16 @@ async function resolveMemberRole(
 
 export async function handleStore(
   args: StoreArgs,
+  configOverride?: ServerConfig,
 ): Promise<StoreResponse | StoreErrorResponse> {
-  const config = await loadConfig();
+  const config = configOverride ?? await loadConfig();
   if (!config) {
     return { error: 'not_configured', action: 'blocked' as const };
   }
 
   // T023: Resolve project from per-directory config
-  const resolved = await resolveConfig();
-  const projectId = args.project_id || resolved.project?.project_id;
+  const resolved = configOverride ? null : await resolveConfig();
+  const projectId = args.project_id || configOverride?.project_id || resolved?.project?.project_id;
 
   // T023: Reject store if no project configured
   if (!projectId) {

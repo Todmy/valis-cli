@@ -6,7 +6,7 @@ import { proxySearch } from '../../cloud/search-proxy.js';
 import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
-import type { ContextResponse, RerankedResult, DecisionStatus } from '../../types.js';
+import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
 
 interface ContextArgs {
   task_description: string;
@@ -20,8 +20,8 @@ const HISTORICAL_STATUSES: Set<DecisionStatus> = new Set(['deprecated', 'superse
 
 let firstCall = true;
 
-export async function handleContext(args: ContextArgs): Promise<ContextResponse> {
-  const config = await loadConfig();
+export async function handleContext(args: ContextArgs, configOverride?: ServerConfig): Promise<ContextResponse> {
+  const config = (configOverride ?? await loadConfig()) as ValisConfig | null;
   if (!config) {
     return {
       decisions: [],
@@ -45,8 +45,8 @@ export async function handleContext(args: ContextArgs): Promise<ContextResponse>
   }
 
   // T022: Resolve project from per-directory config
-  const resolved = await resolveConfig();
-  const projectId = resolved.project?.project_id;
+  const resolved = configOverride ? null : await resolveConfig();
+  const projectId = configOverride?.project_id || resolved?.project?.project_id;
 
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {

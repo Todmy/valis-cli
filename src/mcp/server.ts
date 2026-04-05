@@ -5,8 +5,9 @@ import { handleStore } from './tools/store.js';
 import { handleSearch } from './tools/search.js';
 import { handleContext } from './tools/context.js';
 import { handleLifecycle } from './tools/lifecycle.js';
+import type { ServerConfig } from '../types.js';
 
-export function createMcpServer(): McpServer {
+export function createMcpServer(configOverride?: ServerConfig): McpServer {
   const server = new McpServer(
     {
       name: 'valis',
@@ -37,7 +38,7 @@ export function createMcpServer(): McpServer {
       depends_on: z.array(z.string().uuid()).optional().describe('UUIDs of dependency decisions'),
     },
     async (args) => {
-      const result = await handleStore(args);
+      const result = await handleStore(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -53,7 +54,7 @@ export function createMcpServer(): McpServer {
       all_projects: z.boolean().optional().describe('Search across all accessible projects instead of just the active one'),
     },
     async (args) => {
-      const result = await handleSearch(args);
+      const result = await handleSearch(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -68,7 +69,7 @@ export function createMcpServer(): McpServer {
       all_projects: z.boolean().optional().describe('Load context from all accessible projects'),
     },
     async (args) => {
-      const result = await handleContext(args);
+      const result = await handleContext(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -83,7 +84,7 @@ export function createMcpServer(): McpServer {
       reason: z.string().optional().describe('Reason for the status change'),
     },
     async (args) => {
-      const result = await handleLifecycle(args);
+      const result = await handleLifecycle(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

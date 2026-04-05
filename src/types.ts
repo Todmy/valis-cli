@@ -314,6 +314,26 @@ export interface ValisConfig {
   project_name?: string | null;
 }
 
+/**
+ * Server-side config for remote MCP endpoint.
+ * Built from AuthResult + env vars, replaces filesystem-based ValisConfig.
+ */
+export interface ServerConfig {
+  org_id: string;
+  member_id: string;
+  author_name: string;
+  role: string;
+  auth_mode: 'jwt';
+  supabase_url: string;
+  supabase_service_role_key: string;
+  qdrant_url: string;
+  qdrant_api_key: string;
+  api_key: string;
+  member_api_key: string;
+  project_id?: string | null;
+  project_name?: string | null;
+}
+
 export interface StoreResponse {
   id: string;
   status: 'stored' | 'duplicate';

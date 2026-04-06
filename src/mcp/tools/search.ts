@@ -150,10 +150,6 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
       });
     }
 
-    if (configOverride) {
-      console.log(`[search] org=${config.org_id} project=${projectId ?? 'none'} query="${args.query}" results=${rawResults.length}`);
-    }
-
     // Build replaced_by reverse lookup from the `replaces` field in raw results
     const replacedByMap = buildReplacedByMap(
       rawResults as Array<SearchResult & { replaces?: string | null }>,

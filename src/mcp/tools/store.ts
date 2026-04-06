@@ -197,9 +197,13 @@ export async function handleStore(
 
   // 3. Try dual write
   try {
-    const supabase = config.auth_mode === 'jwt'
-      ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-      : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    // Server-side (configOverride) has service_role_key — use it directly.
+    // CLI hosted mode uses JWT exchange via getSupabaseJwtClient.
+    const supabase = (configOverride && config.supabase_service_role_key)
+      ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
+      : config.auth_mode === 'jwt'
+        ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
+        : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
     // -----------------------------------------------------------------------
     // Phase 2 pre-write validations
@@ -300,9 +304,11 @@ export async function handleStore(
     // Increment usage counter (best-effort — never block the store)
     // -----------------------------------------------------------------------
     try {
-      const usageApiKey = config.auth_mode === 'jwt'
-        ? (config.member_api_key || config.api_key)
-        : config.supabase_service_role_key;
+      const usageApiKey = (configOverride && config.supabase_service_role_key)
+        ? config.supabase_service_role_key
+        : config.auth_mode === 'jwt'
+          ? (config.member_api_key || config.api_key)
+          : config.supabase_service_role_key;
       await incrementUsage(
         config.supabase_url,
         usageApiKey,

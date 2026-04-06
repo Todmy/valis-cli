@@ -121,9 +121,11 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       let projectIds: string[] = [];
       try {
         if (config.member_id) {
-          const supabase = config.auth_mode === 'jwt'
-            ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = (configOverride && config.supabase_service_role_key)
+            ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
+            : config.auth_mode === 'jwt'
+              ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
+              : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
         }

@@ -115,9 +115,11 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
     let projectListFailed = false;
       try {
         if (config.member_id) {
-          const supabase = config.auth_mode === 'jwt'
-            ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = (configOverride && config.supabase_service_role_key)
+            ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
+            : config.auth_mode === 'jwt'
+              ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
+              : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
         }
@@ -163,9 +165,11 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
       projectNameMap = new Map<string, string>();
       try {
         if (config.member_id) {
-          const supabase = config.auth_mode === 'jwt'
-            ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-            : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = (configOverride && config.supabase_service_role_key)
+            ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
+            : config.auth_mode === 'jwt'
+              ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
+              : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
           const projects = await listMemberProjects(supabase, config.member_id);
           for (const p of projects) {
             projectNameMap.set(p.id, p.name);
@@ -215,9 +219,11 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
 
     // Increment usage counter (best-effort — never block the search)
     try {
-      const usageApiKey = config.auth_mode === 'jwt'
-        ? (config.member_api_key || config.api_key)
-        : config.supabase_service_role_key;
+      const usageApiKey = (configOverride && config.supabase_service_role_key)
+        ? config.supabase_service_role_key
+        : config.auth_mode === 'jwt'
+          ? (config.member_api_key || config.api_key)
+          : config.supabase_service_role_key;
       await incrementUsage(
         config.supabase_url,
         usageApiKey,

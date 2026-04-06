@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { loadConfig } from '../config/store.js';
 import { getSupabaseClient, storeDecision } from '../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../cloud/qdrant.js';
-import { readQueue, flushQueue } from '../offline/queue.js';
+import { readQueue, clearQueue } from '../offline/queue.js';
 import { isDuplicate, markAsSeen } from './dedup.js';
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
@@ -50,7 +50,7 @@ export async function startupSweep(): Promise<SweepResult> {
       }
 
       if (result.queued_flushed > 0) {
-        await flushQueue();
+        await clearQueue();
       }
     }
   } catch {

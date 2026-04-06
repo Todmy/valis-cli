@@ -23,6 +23,7 @@ import { switchCommand } from '../src/commands/switch.js';
 import { loginCommand } from '../src/commands/login.js';
 import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
+import { syncCommand } from '../src/commands/sync.js';
 
 const program = new Command();
 
@@ -335,6 +336,18 @@ program
   .action(async () => {
     try {
       await whoamiCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('sync')
+  .description('Sync offline queue to cloud')
+  .action(async () => {
+    try {
+      await syncCommand();
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

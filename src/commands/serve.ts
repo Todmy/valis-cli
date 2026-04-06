@@ -1,6 +1,6 @@
 import { loadConfig } from '../config/store.js';
 import { findProjectConfig } from '../config/project.js';
-import { createMcpServer } from '../mcp/server.js';
+import { createMcpServer, createProxyMcpServer } from '../mcp/server.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { startWatcher, saveState, initWatcherState } from '../capture/watcher.js';
 import { startHookHandler, stopHookHandler } from '../capture/hook-handler.js';
@@ -9,6 +9,8 @@ import { buildCaptureReminder } from '../channel/push.js';
 import { getSupabaseClient } from '../cloud/supabase.js';
 import { subscribe, type RealtimeSubscription } from '../cloud/realtime.js';
 import { setRealtimeStatus, type RealtimeStatus } from './status.js';
+import { isHostedMode, resolveMcpEndpoint } from '../cloud/api-url.js';
+import { flushQueue } from '../offline/queue.js';
 
 export async function serveCommand(): Promise<void> {
   const config = await loadConfig();
@@ -58,8 +60,26 @@ export async function serveCommand(): Promise<void> {
     console.error(`Hook handler error: ${(err as Error).message}`);
   }
 
-  // 5. Create MCP server (we need the reference for channel push)
-  const mcpServer = createMcpServer();
+  // 5. Create MCP server — proxy mode in hosted, local in community
+  const proxyMode = isHostedMode(config);
+  let mcpServer;
+  if (proxyMode) {
+    console.error('[proxy] Hosted mode — routing through cloud endpoint');
+    // T006: Flush offline queue at session start
+    try {
+      const endpoint = resolveMcpEndpoint(config);
+      const token = config.member_api_key || config.api_key;
+      const { synced, failed } = await flushQueue(endpoint, token);
+      if (synced > 0 || failed > 0) {
+        console.error(`[proxy] Queue flush: ${synced} synced, ${failed} failed`);
+      }
+    } catch {
+      console.error('[proxy] Queue flush failed — will retry on next startup');
+    }
+    mcpServer = createProxyMcpServer(config);
+  } else {
+    mcpServer = createMcpServer();
+  }
 
   // 6. Subscribe to Supabase Realtime for cross-session push (T019)
   let realtimeSub: RealtimeSubscription | null = null;

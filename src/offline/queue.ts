@@ -37,12 +37,71 @@ export async function readQueue(): Promise<QueueEntry[]> {
   }
 }
 
-export async function flushQueue(): Promise<void> {
+export async function clearQueue(): Promise<void> {
   try {
     await writeFile(QUEUE_FILE, '', { mode: 0o600 });
   } catch {
-    // File doesn't exist, nothing to flush
+    // File doesn't exist, nothing to clear
   }
+}
+
+export async function flushQueue(
+  mcpEndpoint: string,
+  bearerToken: string,
+): Promise<{ synced: number; failed: number; remaining: number }> {
+  const entries = await readQueue();
+  if (entries.length === 0) return { synced: 0, failed: 0, remaining: 0 };
+
+  let synced = 0;
+  let failed = 0;
+  const remaining: QueueEntry[] = [];
+
+  for (const entry of entries) {
+    try {
+      const res = await fetch(mcpEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${bearerToken}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: entry.id,
+          method: 'tools/call',
+          params: {
+            name: 'valis_store',
+            arguments: {
+              text: entry.decision.text,
+              type: entry.decision.type,
+              summary: entry.decision.summary,
+              affects: entry.decision.affects,
+              confidence: entry.decision.confidence,
+              project_id: entry.decision.project_id,
+              session_id: entry.decision.session_id,
+            },
+          },
+        }),
+      });
+
+      if (res.ok) {
+        synced++;
+      } else {
+        failed++;
+        remaining.push(entry);
+      }
+    } catch {
+      failed++;
+      remaining.push(entry);
+    }
+  }
+
+  // Rewrite queue with only the failed entries
+  const data = remaining.map((e) => JSON.stringify(e)).join('\n');
+  await writeFile(QUEUE_FILE, data.length > 0 ? data + '\n' : '', {
+    mode: 0o600,
+  });
+
+  return { synced, failed, remaining: remaining.length };
 }
 
 export async function getCount(): Promise<number> {

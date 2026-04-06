@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { appendToQueue, readQueue, flushQueue, getCount } from '../../src/offline/queue.js';
+import { appendToQueue, readQueue, clearQueue, getCount } from '../../src/offline/queue.js';
 
 describe('Offline Queue', () => {
   beforeEach(async () => {
-    await flushQueue();
+    await clearQueue();
   });
 
   it('appends and reads entries', async () => {
@@ -27,9 +27,9 @@ describe('Offline Queue', () => {
     expect(count).toBeGreaterThanOrEqual(2);
   });
 
-  it('flushes queue', async () => {
-    await appendToQueue({ text: 'Will be flushed decision' }, 'author', 'mcp_store');
-    await flushQueue();
+  it('clears queue', async () => {
+    await appendToQueue({ text: 'Will be cleared decision' }, 'author', 'mcp_store');
+    await clearQueue();
     const count = await getCount();
     expect(count).toBe(0);
   });

@@ -57,4 +57,13 @@ export function isHostedMode(config: ValisConfig): boolean {
   );
 }
 
+/**
+ * Resolve the MCP endpoint URL for proxy mode.
+ * Returns the full URL to the remote MCP Streamable HTTP endpoint.
+ */
+export function resolveMcpEndpoint(config: ValisConfig): string {
+  const base = resolveApiUrl(config.supabase_url, isHostedMode(config));
+  return `${base}/api/mcp`;
+}
+
 export { HOSTED_API_URL };

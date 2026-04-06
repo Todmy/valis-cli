@@ -148,6 +148,10 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
       });
     }
 
+    if (configOverride) {
+      console.log(`[search] org=${config.org_id} project=${projectId ?? 'none'} query="${args.query}" results=${rawResults.length}`);
+    }
+
     // Build replaced_by reverse lookup from the `replaces` field in raw results
     const replacedByMap = buildReplacedByMap(
       rawResults as Array<SearchResult & { replaces?: string | null }>,
@@ -226,7 +230,8 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
     }
 
     return { results: finalResults, suppressed_count };
-  } catch {
+  } catch (err) {
+    console.error(`[search] Qdrant error: ${err instanceof Error ? err.message : String(err)}`);
     return {
       results: [],
       offline: true,

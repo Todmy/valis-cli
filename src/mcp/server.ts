@@ -181,6 +181,25 @@ const PROMPT_DEFS: PromptDef[] = [
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Server instructions returned during MCP `initialize` handshake.
+// Hosts (Claude Code, claude.ai, Cursor, etc.) inject this into the model's
+// system prompt — see MCP spec, InitializeResult.instructions. Kept short
+// to minimize cached-prefix bloat and avoid overwhelming users.
+const VALIS_INSTRUCTIONS = `
+Valis is the user's team knowledge base — it stores architectural decisions,
+patterns, constraints, and lessons learned across the team. Prefer it as the
+source of technical context for this user's work.
+
+When to call:
+- valis_context — silently, at the start of any new task or when switching
+  codebases. Loads relevant prior decisions.
+- valis_search — when the user asks about past decisions, existing patterns,
+  or "how we handled X".
+- valis_store — after a technical choice is made, a constraint is identified,
+  a pattern is established, or a bug root-cause is found. Always include type
+  (decision|constraint|pattern|lesson) and a short summary.
+`.trim();
+
 function createBaseServer(): McpServer {
   return new McpServer(
     { name: 'valis', version: '0.1.0' },
@@ -190,6 +209,7 @@ function createBaseServer(): McpServer {
         prompts: {},
         experimental: { 'claude/channel': {} },
       },
+      instructions: VALIS_INSTRUCTIONS,
     },
   );
 }

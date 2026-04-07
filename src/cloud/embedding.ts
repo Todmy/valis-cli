@@ -223,8 +223,7 @@ export class ClientEmbeddingStrategy implements EmbeddingStrategy {
     return this._embed(text);
   }
 
-  /** Test seam — replace the embed function in unit tests. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  /** Test seam — subclasses override `_embed` to inject a fake embedder. */
   protected async _embed(text: string): Promise<number[]> {
     const model = await this._loadModel();
     const result = await model.queryEmbed(text);

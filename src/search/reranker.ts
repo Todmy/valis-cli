@@ -137,6 +137,7 @@ function buildMatchReason(
   stage2Signals: Stage2Signals,
   result: RerankableResult,
   analysis: QueryAnalysis | null,
+  now?: number,
 ): string {
   const parts: string[] = [];
 
@@ -162,7 +163,7 @@ function buildMatchReason(
 
   // Recency
   if (signals.recency_decay >= 0.9) {
-    const ageDays = getAgeDays(result.created_at);
+    const ageDays = getAgeDays(result.created_at, now);
     if (ageDays <= 7) {
       parts.push(`recent (${ageDays} day${ageDays === 1 ? '' : 's'} ago)`);
     }
@@ -459,7 +460,7 @@ export function stage2Rerank(
       s2w.freshness * freshness;
 
     // Generate match reason
-    const matchReason = buildMatchReason(r.signals, stage2Sigs, r, analysis);
+    const matchReason = buildMatchReason(r.signals, stage2Sigs, r, analysis, now);
 
     return {
       ...r,

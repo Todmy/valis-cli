@@ -1,8 +1,19 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { RawDecision, SearchResult, DecisionType } from '../types.js';
+import {
+  detectEmbeddingStrategy,
+  truncateForEmbedding,
+  parseQuotaError,
+  ClientEmbeddingStrategy,
+  EmbeddingQuotaError,
+  DENSE_VECTOR_NAME,
+  BM25_VECTOR_NAME,
+  VECTOR_SIZE,
+  REINDEX_BATCH_SIZE,
+  REINDEX_ABORT_THRESHOLD,
+} from './embedding.js';
 
 export const COLLECTION_NAME = 'decisions';
-const VECTOR_SIZE = 384;
 
 /** Batch size for the Qdrant project_id backfill migration. */
 const MIGRATION_BATCH_SIZE = 100;
@@ -168,19 +179,41 @@ export async function upsertDecision(
     payload.project_id = projectId;
   }
 
-  await qdrant.upsert(COLLECTION_NAME, {
-    points: [
-      {
-        id: decisionId,
-        payload,
-        // Placeholder zero vector — Qdrant Cloud with server-side embedding
-        // will generate the actual vector from the document field.
-        // If server-side embeddings aren't configured, search falls back to
-        // payload filtering only.
-        vector: new Array(VECTOR_SIZE).fill(0),
-      },
-    ],
-  });
+  // 013-semantic-embeddings — generate a real vector via the active embedding
+  // strategy (server inference or local fastembed). The full contextualText
+  // remains in payload.contextual_text — only the embedding *input* is
+  // truncated to the model's safe character ceiling (FR-013b, FR-025).
+  const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
+  const embedInput = truncateForEmbedding(contextualText);
+  const vector =
+    strategy.mode === 'server'
+      ? strategy.vectorForUpsert(embedInput)
+      : await (strategy as ClientEmbeddingStrategy).vectorForUpsertAsync(embedInput);
+
+  try {
+    await qdrant.upsert(COLLECTION_NAME, {
+      points: [
+        {
+          id: decisionId,
+          payload,
+          // Cast: the JS client `VectorStruct` type does not perfectly model
+          // named-vectors-with-Document. Runtime accepts this shape per Qdrant
+          // 1.13 REST schema (server mode) and named-vector-as-number-array
+          // (client mode).
+          vector: vector as never,
+        },
+      ],
+    });
+  } catch (err) {
+    const quota = parseQuotaError(err, strategy.mode);
+    if (quota) {
+      // Re-throw as a structured error. The capture / store flow catches this
+      // and routes the decision into the offline queue (~/.valis/pending.jsonl)
+      // per FR-023a / Constitution III (Non-Blocking).
+      throw quota;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -375,6 +408,44 @@ export function expandQuery(query: string): { original: string; expanded: string
   return { original: query, expanded, expansions: expansionList };
 }
 
+// ---------------------------------------------------------------------------
+// US5 (013-semantic-embeddings) — Score logging diagnostics
+// ---------------------------------------------------------------------------
+
+/**
+ * Log the score distribution of a search result set when `VALIS_DEBUG` is set.
+ *
+ * Output format (one line, stderr via console.warn):
+ *   `[qdrant] search mode=hybrid-rrf count=N avg=X.XXX min=X.XXX max=X.XXX`
+ *
+ * A distribution clustered around 0 indicates the embedding pipeline is
+ * misconfigured (probably scroll-fallback). A distribution centered around
+ * 0.3–0.7 indicates working embeddings. Operators use this to verify the
+ * pipeline end-to-end without writing diagnostic code (FR-021).
+ */
+function logSearchScores(
+  mode: string,
+  points: { score?: number }[],
+  errorMsg?: string,
+): void {
+  if (!process.env.VALIS_DEBUG) return;
+  if (errorMsg) {
+    console.warn(`[qdrant] search mode=${mode} error=${errorMsg}`);
+    return;
+  }
+  if (points.length === 0) {
+    console.warn(`[qdrant] search mode=${mode} count=0`);
+    return;
+  }
+  const scores = points.map((p) => p.score ?? 0);
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  console.warn(
+    `[qdrant] search mode=${mode} count=${scores.length} avg=${avg.toFixed(3)} min=${min.toFixed(3)} max=${max.toFixed(3)}`,
+  );
+}
+
 export async function hybridSearch(
   qdrant: QdrantClient,
   orgId: string,
@@ -383,24 +454,71 @@ export async function hybridSearch(
 ): Promise<SearchResult[]> {
   const { type, limit = 10, projectId, legacyFallback } = options;
 
+  // FR-013a: short-circuit empty queries before any inference call to avoid
+  // wasting embedding tokens on no-op requests.
+  if (query.trim().length === 0) {
+    return [];
+  }
+
   const filter = buildProjectFilter(orgId, projectId, { type, legacyFallback });
 
-  // Expand query with synonyms for better recall (Q4-A)
+  // Expand query with synonyms for better recall (Q4-A) and truncate to the
+  // embedding model's safe input ceiling (FR-013b).
   const { expanded } = expandQuery(query);
+  const truncated = truncateForEmbedding(expanded);
+
+  const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
 
   try {
-    // Try query-based search (requires server-side embeddings)
-    // Use expanded query for broader matching
-    const results = await qdrant.query(COLLECTION_NAME, {
-      query: expanded,
-      filter,
-      limit,
-      with_payload: true,
-    });
+    let results;
+    let mode: string;
+    if (strategy.mode === 'server' && strategy.supportsHybrid) {
+      // US3: hybrid prefetch + RRF fusion. Server-side runs both dense and
+      // BM25 sub-queries in parallel and fuses with reciprocal rank fusion,
+      // combining semantic recall with exact-term precision (FR-008).
+      mode = 'hybrid-rrf';
+      results = await qdrant.query(COLLECTION_NAME, {
+        prefetch: [
+          {
+            query: strategy.queryForDense(truncated) as never,
+            using: DENSE_VECTOR_NAME,
+            limit: limit * 2,
+            filter,
+          },
+          {
+            query: strategy.queryForSparse(truncated) as never,
+            using: BM25_VECTOR_NAME,
+            limit: limit * 2,
+            filter,
+          },
+        ],
+        query: { fusion: 'rrf' } as never,
+        filter,
+        limit,
+        with_payload: true,
+      });
+    } else {
+      // Client mode (or non-hybrid server): dense-only search.
+      mode = 'dense-only';
+      const denseQuery: unknown = await (strategy as ClientEmbeddingStrategy).queryForDenseAsync(truncated);
+      results = await qdrant.query(COLLECTION_NAME, {
+        query: denseQuery as never,
+        using: DENSE_VECTOR_NAME,
+        filter,
+        limit,
+        with_payload: true,
+      });
+    }
 
+    logSearchScores(mode, results.points);
     return results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
-  } catch {
-    // Fallback: scroll with filter only (no vector search)
+  } catch (err) {
+    // Quota errors propagate as structured EmbeddingQuotaError so the caller
+    // can render them. Other errors fall through to scroll fallback (FR-010).
+    const quota = parseQuotaError(err, strategy.mode);
+    if (quota) throw quota;
+
+    logSearchScores('scroll-fallback', [], (err as Error).message);
     const results = await qdrant.scroll(COLLECTION_NAME, {
       filter,
       limit,
@@ -456,18 +574,65 @@ export async function hybridSearchAllProjects(
 ): Promise<SearchResult[]> {
   const { type, limit = 10 } = options;
 
+  // FR-013a: short-circuit empty queries before any inference call.
+  if (query.trim().length === 0) {
+    return [];
+  }
+
   const filter = buildAllProjectsFilter(orgId, projectIds, { type });
 
-  try {
-    const results = await qdrant.query(COLLECTION_NAME, {
-      query,
-      filter,
-      limit,
-      with_payload: true,
-    });
+  // Expand query with synonyms (FR-013) and truncate to the embedding
+  // model's safe input ceiling (FR-013b).
+  const { expanded } = expandQuery(query);
+  const truncated = truncateForEmbedding(expanded);
 
+  const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
+
+  try {
+    let results;
+    let mode: string;
+    if (strategy.mode === 'server' && strategy.supportsHybrid) {
+      // US3: hybrid prefetch + RRF fusion (cross-project variant).
+      mode = 'hybrid-rrf-cross';
+      results = await qdrant.query(COLLECTION_NAME, {
+        prefetch: [
+          {
+            query: strategy.queryForDense(truncated) as never,
+            using: DENSE_VECTOR_NAME,
+            limit: limit * 2,
+            filter,
+          },
+          {
+            query: strategy.queryForSparse(truncated) as never,
+            using: BM25_VECTOR_NAME,
+            limit: limit * 2,
+            filter,
+          },
+        ],
+        query: { fusion: 'rrf' } as never,
+        filter,
+        limit,
+        with_payload: true,
+      });
+    } else {
+      mode = 'dense-only-cross';
+      const denseQuery: unknown = await (strategy as ClientEmbeddingStrategy).queryForDenseAsync(truncated);
+      results = await qdrant.query(COLLECTION_NAME, {
+        query: denseQuery as never,
+        using: DENSE_VECTOR_NAME,
+        filter,
+        limit,
+        with_payload: true,
+      });
+    }
+
+    logSearchScores(mode, results.points);
     return results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
-  } catch {
+  } catch (err) {
+    const quota = parseQuotaError(err, strategy.mode);
+    if (quota) throw quota;
+
+    logSearchScores('scroll-fallback-cross', [], (err as Error).message);
     const results = await qdrant.scroll(COLLECTION_NAME, {
       filter,
       limit,
@@ -658,6 +823,158 @@ export async function migrateQdrantProjectIds(
     }
   }
 
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// Reindex — backfill real embeddings into existing points (013-semantic-embeddings)
+// ---------------------------------------------------------------------------
+
+export interface ReindexOptions {
+  dryRun?: boolean;
+  filter?: Record<string, unknown>;
+  onProgress?: (processed: number, total: number) => void;
+}
+
+export interface ReindexReport {
+  total: number;        // points scanned
+  reindexed: number;    // vectors successfully updated
+  failed: number;       // points missing contextual_text or transient errors
+  skipped: number;      // dry-run skips
+  durationMs: number;
+  /** Set when reindex aborts due to quota exhaustion (FR-023b). */
+  quotaError?: EmbeddingQuotaError;
+}
+
+/**
+ * Re-embed every Qdrant point that matches `options.filter` by reading the
+ * stored `contextual_text` payload field, generating a fresh vector via the
+ * active embedding strategy, and updating the point's vector in place.
+ *
+ * Uses `qdrant.updateVectors` (not `upsert`) so that concurrent payload
+ * changes — e.g. `pinned`, `status`, cluster labels — are preserved. This
+ * is FR-015 / clarification Q3: the reindex path must not clobber payload
+ * fields owned by other features.
+ *
+ * Quota handling (FR-023b): on the first EmbeddingQuotaError we set
+ * `report.quotaError` and return the partial report immediately. The CLI
+ * command renders the structured error and exits non-zero so operators can
+ * detect the state from CI scripts. Unlike the upsert path, reindex does
+ * NOT route into the offline queue — the operator re-runs the command after
+ * the quota window resets.
+ */
+export async function reindexAllPoints(
+  qdrant: QdrantClient,
+  options: ReindexOptions = {},
+): Promise<ReindexReport> {
+  const { dryRun = false, filter, onProgress } = options;
+  const startTime = Date.now();
+  const report: ReindexReport = {
+    total: 0,
+    reindexed: 0,
+    failed: 0,
+    skipped: 0,
+    durationMs: 0,
+  };
+
+  const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
+
+  // Pre-count so onProgress can render a meaningful percentage. One extra
+  // REST call per reindex run, negligible against thousands of point upserts.
+  // If the count call fails, fall back to processed-only progress (the loop
+  // still works; only the percentage display degrades).
+  let totalEstimate = 0;
+  try {
+    const countResult = await qdrant.count(COLLECTION_NAME, {
+      filter,
+      exact: true,
+    });
+    totalEstimate = countResult.count;
+  } catch {
+    totalEstimate = 0;
+  }
+
+  let offset: string | number | undefined = undefined;
+  let consecutiveErrors = 0;
+  let aborted = false;
+
+  outer: while (!aborted) {
+    const scrollResult = await qdrant.scroll(COLLECTION_NAME, {
+      filter,
+      limit: REINDEX_BATCH_SIZE,
+      with_payload: true,
+      ...(offset !== undefined ? { offset } : {}),
+    });
+
+    const points = scrollResult.points;
+    if (points.length === 0) {
+      break;
+    }
+
+    for (const point of points) {
+      report.total++;
+
+      const payload = (point.payload ?? {}) as Record<string, unknown>;
+      const contextualText = payload.contextual_text as string | undefined;
+
+      if (!contextualText || typeof contextualText !== 'string') {
+        // Legacy point without contextual_text — cannot be reindexed.
+        report.failed++;
+        continue;
+      }
+
+      if (dryRun) {
+        report.skipped++;
+        continue;
+      }
+
+      try {
+        const embedInput = truncateForEmbedding(contextualText);
+        const vector =
+          strategy.mode === 'server'
+            ? strategy.vectorForUpsert(embedInput)
+            : await (strategy as ClientEmbeddingStrategy).vectorForUpsertAsync(embedInput);
+
+        await qdrant.updateVectors(COLLECTION_NAME, {
+          points: [{ id: point.id, vector: vector as never }],
+        });
+
+        report.reindexed++;
+        consecutiveErrors = 0;
+      } catch (err) {
+        const quota = parseQuotaError(err, strategy.mode);
+        if (quota) {
+          report.quotaError = quota;
+          aborted = true;
+          break outer;
+        }
+
+        report.failed++;
+        consecutiveErrors++;
+
+        if (consecutiveErrors >= REINDEX_ABORT_THRESHOLD) {
+          throw new Error(
+            `Reindex aborted: ${consecutiveErrors} consecutive errors. Last error: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
+    // Progress callback after each batch — `total` is the pre-counted size
+    // when available, otherwise falls back to the running scan count so the
+    // percentage at least monotonically caps at 100%.
+    onProgress?.(report.total, totalEstimate > 0 ? totalEstimate : report.total);
+
+    // Advance the scroll cursor to the last point's id.
+    offset = points[points.length - 1].id;
+
+    // If the batch was short, no more pages — stop.
+    if (points.length < REINDEX_BATCH_SIZE) {
+      break;
+    }
+  }
+
+  report.durationMs = Date.now() - startTime;
   return report;
 }
 

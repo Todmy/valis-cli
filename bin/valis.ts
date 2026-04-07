@@ -14,6 +14,7 @@ import { adminAuditCommand } from '../src/commands/admin-audit.js';
 import { adminCleanupCommand } from '../src/commands/admin-cleanup.js';
 import { adminPatternsCommand } from '../src/commands/admin-patterns.js';
 import { adminMigrateQdrantCommand } from '../src/commands/admin-migrate-qdrant.js';
+import { adminReindexCommand } from '../src/commands/admin-reindex.js';
 import { adminClustersCommand } from '../src/commands/admin-clusters.js';
 import { adminConsolidateCommand } from '../src/commands/admin-consolidate.js';
 import { enrichCommand } from '../src/commands/enrich.js';
@@ -255,6 +256,19 @@ adminCmd
   .action(async (options) => {
     try {
       await adminMigrateQdrantCommand(options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+adminCmd
+  .command('reindex')
+  .description('Re-embed all decisions in the active org (backfill embeddings)')
+  .option('--dry-run', 'Scan only — do not write any changes', false)
+  .action(async (options) => {
+    try {
+      await adminReindexCommand(options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

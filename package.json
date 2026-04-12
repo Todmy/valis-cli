@@ -1,5 +1,5 @@
 {
-  "name": "valis",
+  "name": "valis-cli",
   "version": "0.1.0",
   "description": "Shared decision intelligence for AI-augmented engineering teams",
   "type": "module",

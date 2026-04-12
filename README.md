@@ -5,7 +5,7 @@ Team decision memory for AI coding agents. Your team's shared hippocampus -- eve
 ## Install
 
 ```bash
-npm install -g valis
+npm install -g valis-cli
 ```
 
 **Requirements**: Node.js 20+

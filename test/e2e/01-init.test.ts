@@ -61,11 +61,13 @@ describeE2E('e2e: valis init (hosted mode)', () => {
     expect(r.qdrant_url).toMatch(/^https:\/\//);
   });
 
-  it('register does NOT return service_role_key or qdrant_api_key', () => {
+  it('register does NOT return service_role_key; qdrant_api_key is empty', () => {
     const keys = Object.keys(reg.response);
     expect(keys).not.toContain('service_role_key');
     expect(keys).not.toContain('supabase_service_role_key');
-    expect(keys).not.toContain('qdrant_api_key');
+    // Production returns qdrant_api_key as an empty string — the important
+    // thing is the VALUE is empty, not that the key is absent.
+    expect(reg.response.qdrant_api_key ?? '').toBe('');
   });
 
   // -------------------------------------------------------------------------

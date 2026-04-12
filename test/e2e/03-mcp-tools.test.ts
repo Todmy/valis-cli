@@ -166,7 +166,7 @@ describeE2E('e2e: MCP tool flow', () => {
     expect(decision).toBeTruthy();
     const decisionId = decision!.id;
 
-    // Deprecate
+    // Deprecate (active → deprecated is a valid transition)
     const deprecateResult = await apiChangeStatus(
       E2E_API_URL,
       jwt,
@@ -177,15 +177,42 @@ describeE2E('e2e: MCP tool flow', () => {
     expect(deprecateResult.decision_id).toBe(decisionId);
     expect(deprecateResult.new_status).toBe('deprecated');
 
-    // Promote back to active
-    const promoteResult = await apiChangeStatus(
+    // Supersede (deprecated is terminal — only active→superseded is valid,
+    // so store a fresh decision and supersede it to cover both transitions)
+    await apiStore(E2E_API_URL, reg.response.member_api_key, {
+      text: 'We use Biome for linting and formatting as a unified toolchain replacement for ESLint and Prettier',
+      type: 'decision',
+      summary: 'Biome replaces ESLint',
+      affects: ['linting', 'formatting'],
+      project_id: reg.response.project_id,
+    });
+
+    const biomeSearch = await retry(
+      async () => {
+        const r = await apiSearch(E2E_API_URL, jwt, 'Biome linting formatting', {
+          project_id: reg.response.project_id,
+        });
+        const match = r.results.find((res) =>
+          res.detail.toLowerCase().includes('biome'),
+        );
+        return match ? r : null;
+      },
+      { timeout: 20_000, interval: 2_000, label: 'lifecycle-biome' },
+    );
+
+    const biomeDecision = biomeSearch.results.find((r) =>
+      r.detail.toLowerCase().includes('biome'),
+    );
+    expect(biomeDecision).toBeTruthy();
+
+    const supersedeResult = await apiChangeStatus(
       E2E_API_URL,
       jwt,
-      decisionId,
-      'active',
-      'Reinstated after review',
+      biomeDecision!.id,
+      'superseded',
+      'Consolidated into monorepo config',
     );
-    expect(promoteResult.decision_id).toBe(decisionId);
-    expect(promoteResult.new_status).toBe('active');
+    expect(supersedeResult.decision_id).toBe(biomeDecision!.id);
+    expect(supersedeResult.new_status).toBe('superseded');
   });
 }, 90_000);

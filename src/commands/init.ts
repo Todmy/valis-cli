@@ -1,4 +1,6 @@
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import select from '@inquirer/select';
 import input from '@inquirer/input';
 import pc from 'picocolors';
@@ -393,7 +395,49 @@ async function selectOrCreateProjectLoggedIn(
   return result as ProjectConfig;
 }
 
-function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin: boolean) {
+async function detectCompetingHooks(): Promise<void> {
+  const competitors = ['qdrant-find', 'mem0'];
+  const warnings: string[] = [];
+
+  // Scan ~/.claude/scripts/
+  try {
+    const scriptsDir = join(homedir(), '.claude', 'scripts');
+    const files = await readdir(scriptsDir);
+    for (const file of files) {
+      try {
+        const content = await readFile(join(scriptsDir, file), 'utf-8');
+        for (const comp of competitors) {
+          if (content.includes(comp)) {
+            warnings.push(`${scriptsDir}/${file} (contains ${comp})`);
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+  } catch { /* scripts dir doesn't exist */ }
+
+  // Scan ~/.claude/settings.json
+  try {
+    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    const content = await readFile(settingsPath, 'utf-8');
+    for (const comp of competitors) {
+      if (content.includes(comp)) {
+        warnings.push(`${settingsPath} (references ${comp})`);
+      }
+    }
+  } catch { /* settings doesn't exist */ }
+
+  if (warnings.length > 0) {
+    console.log();
+    console.log(pc.yellow('[valis] Detected existing knowledge-base hooks:'));
+    for (const w of warnings) {
+      console.log(pc.yellow(`  • ${w}`));
+    }
+    console.log(pc.dim('  Valis search may compete for attention. Consider editing these files'));
+    console.log(pc.dim('  to prioritize valis_search for team decision recall.'));
+  }
+}
+
+async function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin: boolean) {
   console.log(pc.bold('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
   console.log(pc.bold('  Setup Complete!'));
   console.log(pc.bold('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
@@ -406,6 +450,7 @@ function printSummary(config: ValisConfig, projectConfig: ProjectConfig, isJoin:
   }
   console.log(`\n  Next: Start your IDE — Valis MCP server will run automatically.`);
   console.log(`  Or run: ${pc.dim('valis serve')} to test manually.\n`);
+  await detectCompetingHooks();
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +552,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
       console.log(pc.yellow(`⚠ Seed skipped: ${(err as Error).message}`));
     }
 
-    printSummary(config, projectConfig, false);
+    await printSummary(config, projectConfig, false);
     return;
   }
 
@@ -632,7 +677,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     }
 
     if (projectConfig) {
-      printSummary(config, projectConfig, true);
+      await printSummary(config, projectConfig, true);
     }
     return;
   }
@@ -765,6 +810,7 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     console.log(`  Author: ${existing.author_name}`);
     console.log(`\n  Next: Start your IDE — Valis MCP server will run automatically.`);
     console.log(`  Or run: ${pc.dim('valis serve')} to test manually.\n`);
+    await detectCompetingHooks();
     return;
   }
 
@@ -936,5 +982,5 @@ export async function initCommand(options: { join?: string }): Promise<void> {
   }
 
   // Print final summary
-  printSummary(config, projectConfig, false);
+  await printSummary(config, projectConfig, false);
 }

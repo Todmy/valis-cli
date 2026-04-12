@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Shared decision intelligence for AI-augmented engineering teams",
   "type": "module",
+  "main": "./dist/src/index.js",
   "bin": {
     "valis": "./dist/bin/valis.js"
   },
@@ -11,12 +12,21 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run test"
   },
   "engines": {
     "node": ">=20.0.0"
   },
+  "author": "Dmytro Tolok <tolok.d@gmail.com>",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Todmy/valis.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Todmy/valis#readme",
+  "bugs": "https://github.com/Todmy/valis/issues",
   "keywords": [
     "valis",
     "decisions",

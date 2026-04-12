@@ -25,6 +25,7 @@ import { loginCommand } from '../src/commands/login.js';
 import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
+import { wakeUpCommand } from '../src/commands/wake-up.js';
 
 const program = new Command();
 
@@ -362,6 +363,18 @@ program
   .action(async () => {
     try {
       await syncCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('wake-up')
+  .description('Show recent team activity and decisions')
+  .action(async () => {
+    try {
+      await wakeUpCommand();
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

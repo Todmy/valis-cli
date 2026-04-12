@@ -1,14 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Mocks
+// Mocks — vi.hoisted() co-hoists with vi.mock() to avoid TDZ errors
 // ---------------------------------------------------------------------------
 
-const mockSelect = vi.fn();
-const mockEq = vi.fn().mockReturnThis();
-const mockGte = vi.fn().mockReturnThis();
-const mockOrder = vi.fn().mockReturnThis();
-const mockLimit = vi.fn();
+const { mockSelect } = vi.hoisted(() => ({
+  mockSelect: vi.fn(),
+}));
 
 vi.mock('../../src/config/project.js', () => ({
   resolveConfig: vi.fn().mockResolvedValue({

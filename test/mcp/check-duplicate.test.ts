@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Mocks
+// Mocks — vi.hoisted() co-hoists with vi.mock() to avoid TDZ errors
 // ---------------------------------------------------------------------------
+
+const { mockQuery } = vi.hoisted(() => ({
+  mockQuery: vi.fn(),
+}));
 
 vi.mock('../../src/config/store.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
@@ -39,8 +43,6 @@ vi.mock('../../src/config/project.js', () => ({
     },
   }),
 }));
-
-const mockQuery = vi.fn();
 
 vi.mock('../../src/cloud/qdrant.js', () => ({
   getQdrantClient: vi.fn().mockReturnValue({

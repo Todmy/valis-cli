@@ -5,6 +5,8 @@ import { handleStore } from './tools/store.js';
 import { handleSearch } from './tools/search.js';
 import { handleContext } from './tools/context.js';
 import { handleLifecycle } from './tools/lifecycle.js';
+import { handleCheckDuplicate } from './tools/check-duplicate.js';
+import { handleTaxonomy } from './tools/taxonomy.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
@@ -58,6 +60,19 @@ const TOOL_DEFS = {
       decision_id: z.string().describe('UUID of the target decision'),
       reason: z.string().optional().describe('Reason for the status change'),
     },
+  },
+  valis_check_duplicate: {
+    description:
+      'Check for similar existing decisions before storing a new one. Returns semantically similar matches above a threshold. Informational only — never blocks storage.',
+    schema: {
+      text: z.string().min(1).describe('Decision text to check for duplicates'),
+      threshold: z.number().min(0).max(1).optional().describe('Similarity threshold 0.0-1.0 (default 0.85)'),
+    },
+  },
+  valis_get_taxonomy_spec: {
+    description:
+      'Get the Valis taxonomy specification — data types, statuses, naming conventions, and tool usage guidance.',
+    schema: {},
   },
 } as const;
 
@@ -283,6 +298,28 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
     TOOL_DEFS.valis_lifecycle.schema,
     async (args) => {
       const result = await handleLifecycle(args, configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // valis_check_duplicate
+  server.tool(
+    'valis_check_duplicate',
+    TOOL_DEFS.valis_check_duplicate.description,
+    TOOL_DEFS.valis_check_duplicate.schema,
+    async (args) => {
+      const result = await handleCheckDuplicate(args, configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // valis_get_taxonomy_spec
+  server.tool(
+    'valis_get_taxonomy_spec',
+    TOOL_DEFS.valis_get_taxonomy_spec.description,
+    TOOL_DEFS.valis_get_taxonomy_spec.schema,
+    async () => {
+      const result = await handleTaxonomy({});
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

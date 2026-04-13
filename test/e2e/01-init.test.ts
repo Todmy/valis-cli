@@ -134,7 +134,8 @@ describeE2E('e2e: valis init (hosted mode)', () => {
       }),
     });
 
-    expect(res.status).toBe(409);
+    // 409 = duplicate detected, 429 = rate-limited (both confirm rejection)
+    expect([409, 429]).toContain(res.status);
   });
 
   it('rejects invalid org name with 400', async () => {

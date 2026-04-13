@@ -29,7 +29,6 @@ import { register, joinPublic } from '../cloud/registration.js';
 import { loadCredentials, isLoggedIn } from '../config/credentials.js';
 import type { ValisCredentials } from '../config/credentials.js';
 import { HOSTED_API_URL } from '../types.js';
-import type { ExchangeTokenResponse, RegistrationResponse } from '../types.js';
 
 type SetupMode = 'hosted' | 'community';
 
@@ -293,69 +292,32 @@ async function seedAndVerify(
 // ---------------------------------------------------------------------------
 
 /**
- * Exchange the member API key for a JWT and list accessible projects.
+ * List accessible projects via the API and let the user pick one.
  * Falls through to project creation via the idempotent register endpoint.
  */
 async function selectOrCreateProjectLoggedIn(
   creds: ValisCredentials,
 ): Promise<ProjectConfig> {
-  const supabaseUrl = creds.supabase_url || HOSTED_SUPABASE_URL;
-
-  // Exchange key for JWT so we can query projects
-  const exchangeUrl = `${HOSTED_API_URL}/api/exchange-token`;
-  let jwt: string | undefined;
-
+  // List existing projects via API route (works in hosted mode)
+  let projects: Array<{ id: string; name: string; role: string; decision_count: number }> = [];
   try {
-    const res = await fetch(exchangeUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${creds.member_api_key}`,
-      },
-      body: '{}',
+    const listRes = await fetch(`${HOSTED_API_URL}/api/list-projects`, {
+      headers: { Authorization: `Bearer ${creds.member_api_key}` },
     });
-    if (res.ok) {
-      const respBody = (await res.json()) as ExchangeTokenResponse;
-      jwt = respBody.token;
+    if (listRes.ok) {
+      const body = (await listRes.json()) as {
+        projects: Array<{ id: string; name: string; role: string; decision_count: number }>;
+      };
+      projects = body.projects;
     }
   } catch {
-    // JWT exchange failed — fall through to create project
-  }
-
-  // Try to list existing projects via JWT
-  let projects: Array<{ id: string; name: string; role: string }> = [];
-  if (jwt) {
-    try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(supabaseUrl, 'placeholder', {
-        auth: { persistSession: false, autoRefreshToken: false },
-        global: {
-          headers: { Authorization: `Bearer ${jwt}` },
-        },
-      });
-
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select('project_id, role, projects(id, name)')
-        .eq('member_id', creds.member_id);
-
-      if (memberships) {
-        for (const pm of memberships) {
-          const project = pm.projects as unknown as { id: string; name: string } | null;
-          if (project) {
-            projects.push({ id: project.id, name: project.name, role: pm.role as string });
-          }
-        }
-      }
-    } catch {
-      // Failed to list — fall through to create
-    }
+    // Failed to list — fall through to create
   }
 
   if (projects.length > 0) {
     const choices = [
       ...projects.map((p) => ({
-        name: `${p.name} (${p.role})`,
+        name: `${p.name} (${p.role}, ${p.decision_count} decisions)`,
         value: p.id,
       })),
       { name: 'Create new project', value: '__new__' },
@@ -389,7 +351,7 @@ async function selectOrCreateProjectLoggedIn(
     creds.org_name,
     projectName,
     creds.author_name,
-    supabaseUrl,
+    creds.supabase_url || HOSTED_SUPABASE_URL,
   );
 
   console.log(pc.green(`✓ Project "${regResult.project_name}" created`));

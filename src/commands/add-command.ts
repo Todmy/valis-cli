@@ -6,7 +6,7 @@ import select from '@inquirer/select';
 import input from '@inquirer/input';
 import pc from 'picocolors';
 import { loadCredentials, isLoggedIn } from '../config/credentials.js';
-import { HOSTED_API_URL, HOSTED_SUPABASE_URL } from '../types.js';
+import { HOSTED_API_URL } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Skill suggestion heuristics — maps area clusters to skill archetypes
@@ -110,34 +110,15 @@ interface ProjectInfo {
 
 async function listProjects(memberApiKey: string): Promise<ProjectInfo[]> {
   try {
-    const tokenRes = await fetch(`${HOSTED_API_URL}/api/exchange-token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${memberApiKey}`,
-      },
+    const res = await fetch(`${HOSTED_API_URL}/api/list-projects`, {
+      headers: { Authorization: `Bearer ${memberApiKey}` },
     });
-    if (!tokenRes.ok) return [];
-    const { token: jwt } = (await tokenRes.json()) as { token: string };
+    if (!res.ok) return [];
 
-    const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(HOSTED_SUPABASE_URL, 'placeholder', {
-      auth: { persistSession: false, autoRefreshToken: false },
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
-    });
-
-    const { data: memberships } = await supabase
-      .from('project_members')
-      .select('project_id, role, projects(id, name)');
-
-    if (!memberships) return [];
-
-    return memberships
-      .map((pm) => {
-        const project = pm.projects as unknown as { id: string; name: string } | null;
-        return project ? { id: project.id, name: project.name, role: pm.role as string } : null;
-      })
-      .filter((p): p is ProjectInfo => p !== null);
+    const body = (await res.json()) as {
+      projects: Array<{ id: string; name: string; role: string; decision_count: number }>;
+    };
+    return body.projects;
   } catch {
     return [];
   }

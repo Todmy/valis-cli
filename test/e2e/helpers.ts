@@ -160,7 +160,9 @@ export async function writeTestProjectConfig(
   dir: string,
   config: ProjectConfig,
 ): Promise<void> {
-  await writeFile(join(dir, '.valis/config.json'), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  const valisDir = join(dir, '.valis');
+  await mkdir(valisDir, { recursive: true });
+  await writeFile(join(valisDir, 'config.json'), JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +382,7 @@ export async function apiJoinProject(
 /** Create a project via /api/create-project. */
 export async function apiCreateProject(
   apiUrl: string,
-  jwt: string,
+  apiKey: string,
   projectName: string,
 ): Promise<{
   project_id: string;
@@ -391,10 +393,10 @@ export async function apiCreateProject(
   const res = await fetch(`${apiUrl}/api/create-project`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${jwt}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ name: projectName }),
+    body: JSON.stringify({ project_name: projectName }),
   });
 
   if (!res.ok) {

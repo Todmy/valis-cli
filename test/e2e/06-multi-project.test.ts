@@ -54,9 +54,10 @@ describeE2E('e2e: multi-project isolation', () => {
     jwtProjectA = tokenA.token;
 
     // Create project B in the same org
+    // create-project authenticates via API key (tmm_/tm_), not JWT
     const projectB = await apiCreateProject(
       E2E_API_URL,
-      jwtProjectA,
+      reg.response.member_api_key,
       `e2e-project-B-${TEST_RUN_ID}`,
     );
     projectBId = projectB.project_id;

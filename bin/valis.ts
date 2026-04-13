@@ -26,6 +26,7 @@ import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
 import { wakeUpCommand } from '../src/commands/wake-up.js';
+import { hookGateCommand, hookFlagCommand } from '../src/commands/hook.js';
 
 const program = new Command();
 
@@ -380,5 +381,20 @@ program
       process.exit(1);
     }
   });
+
+// Internal hook subcommands — called by Claude Code hooks, not user-facing
+const hookCmd = new Command('hook')
+  .description('Internal hook commands (used by Claude Code)');
+program.addCommand(hookCmd, { hidden: true });
+
+hookCmd
+  .command('gate')
+  .description('PreToolUse gate: ensure valis_search runs before qdrant-find')
+  .action(() => hookGateCommand());
+
+hookCmd
+  .command('flag')
+  .description('PostToolUse flag: mark valis_search as called')
+  .action(() => hookFlagCommand());
 
 program.parse();

@@ -74,12 +74,8 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
   // Set cleanupPeriodDays to prevent auto-cleanup
   settings.cleanupPeriodDays = 99999;
 
-  // Enable development channels for Valis push notifications
-  // Note: --dangerously-load-development-channels is a Claude Code CLI flag.
-  // Users need to launch Claude Code with this flag for channel push to work:
-  //   claude --dangerously-load-development-channels
-  // For Enterprise/Team orgs, channelsEnabled must be set by org admin.
-  // Channel push is an enhancement — MCP tools work without it.
+  // Install attention-gate hooks — ensures valis_search runs before qdrant-find
+  installAttentionHooks(settings);
 
   await mkdir(dirname(settingsPath), { recursive: true });
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
@@ -117,6 +113,60 @@ export async function injectClaudeMdMarkers(projectDir: string): Promise<void> {
 
   await writeFile(claudeMdPath, content);
   await trackFile({ type: 'claude_md_marker', path: claudeMdPath });
+}
+
+// ---------------------------------------------------------------------------
+// Attention gate hooks — installed into ~/.claude/settings.json
+// ---------------------------------------------------------------------------
+
+interface HookEntry {
+  matcher: string;
+  hooks: Array<{ type: string; command: string }>;
+}
+
+/**
+ * Install PreToolUse/PostToolUse hooks that enforce valis_search priority
+ * over competing KB tools (qdrant-find, mem0, etc.).
+ *
+ * - PreToolUse on qdrant-find → `valis hook gate` (blocks until valis_search called)
+ * - PostToolUse on valis_search → `valis hook flag` (marks session as Valis-first)
+ *
+ * Idempotent — skips if hooks are already installed.
+ */
+function installAttentionHooks(settings: Record<string, unknown>): void {
+  const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;
+
+  // PreToolUse: gate qdrant-find
+  if (!hooks.PreToolUse) hooks.PreToolUse = [];
+  const gateCommand = 'valis hook gate';
+  const hasGate = hooks.PreToolUse.some(
+    (e) => e.hooks?.some((h) => h.command === gateCommand),
+  );
+  if (!hasGate) {
+    hooks.PreToolUse.push({
+      matcher: 'mcp__qdrant__qdrant-find',
+      hooks: [{ type: 'command', command: gateCommand }],
+    });
+  }
+
+  // PostToolUse: flag valis_search (both local and remote MCP variants)
+  if (!hooks.PostToolUse) hooks.PostToolUse = [];
+  const flagCommand = 'valis hook flag';
+  const hasFlag = hooks.PostToolUse.some(
+    (e) => e.hooks?.some((h) => h.command === flagCommand),
+  );
+  if (!hasFlag) {
+    hooks.PostToolUse.push({
+      matcher: 'mcp__claude_ai_Valis__valis_search',
+      hooks: [{ type: 'command', command: flagCommand }],
+    });
+    hooks.PostToolUse.push({
+      matcher: 'mcp__valis__valis_search',
+      hooks: [{ type: 'command', command: flagCommand }],
+    });
+  }
+
+  settings.hooks = hooks;
 }
 
 function escapeRegex(str: string): string {

@@ -125,16 +125,15 @@ describeE2E('e2e: decision lifecycle', () => {
           project_id: reg.response.project_id,
         });
         const match = r.results.find((res) => res.id === originalDecisionId);
-        return match ? r : null;
+        // Wait until Qdrant reflects the updated status (eventual consistency)
+        return match?.status === 'deprecated' ? r : null;
       },
       { timeout: 15_000, interval: 2_000, label: 'lifecycle-search-deprecated' },
     );
 
     const match = result.results.find((r) => r.id === originalDecisionId);
     expect(match).toBeTruthy();
-    if (match!.status) {
-      expect(match!.status).toBe('deprecated');
-    }
+    expect(match!.status).toBe('deprecated');
   });
 
   // -------------------------------------------------------------------------
@@ -182,16 +181,15 @@ describeE2E('e2e: decision lifecycle', () => {
           project_id: reg.response.project_id,
         });
         const match = r.results.find((res) => res.id === originalDecisionId);
-        return match ? r : null;
+        // Wait until Qdrant reflects the updated status (eventual consistency)
+        return match?.status === 'superseded' ? r : null;
       },
       { timeout: 15_000, interval: 2_000, label: 'lifecycle-search-superseded' },
     );
 
     const match = result.results.find((r) => r.id === originalDecisionId);
     expect(match).toBeTruthy();
-    if (match!.status) {
-      expect(match!.status).toBe('superseded');
-    }
+    expect(match!.status).toBe('superseded');
   });
 
   // -------------------------------------------------------------------------

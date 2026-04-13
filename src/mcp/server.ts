@@ -225,6 +225,12 @@ When to call:
   to avoid redundancy. Informational only, never blocks.
 - valis_get_taxonomy_spec — when you need to understand Valis data types,
   statuses, or naming conventions.
+
+Insight capture:
+After completing a meaningful code change, briefly explain the non-obvious
+"why" behind your choice — trade-offs, gotchas, or reusable patterns.
+Then call valis_store with the appropriate type and a concise summary
+so the team retains this knowledge.
 `.trim();
 
 function createBaseServer(): McpServer {

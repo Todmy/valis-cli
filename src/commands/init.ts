@@ -190,7 +190,7 @@ async function selectOrCreateProject(
 // ---------------------------------------------------------------------------
 
 async function setupIDEs(config: ValisConfig): Promise<string[]> {
-  console.log(pc.cyan('\nDetecting IDEs...'));
+  console.log(pc.cyan('\nConfiguring IDEs...'));
   const ides = await detectIDEs();
   const detectedNames: string[] = [];
 
@@ -199,17 +199,20 @@ async function setupIDEs(config: ValisConfig): Promise<string[]> {
     detectedNames.push(ide.name);
 
     if (ide.name === 'claude-code') {
+      // configureClaudeCodeMCP is idempotent — checks existing config,
+      // installs MCP server, attention-gate hooks, and CLAUDE.md markers.
+      // Skips components that are already correctly configured.
       await configureClaudeCodeMCP(process.cwd());
       await injectClaudeMdMarkers(process.cwd());
-      console.log(pc.green('  ✓ Claude Code: MCP configured, CLAUDE.md updated'));
+      console.log(pc.green('  ✓ Claude Code: MCP + hooks + CLAUDE.md'));
     } else if (ide.name === 'codex') {
       await configureCodexMCP();
       await injectAgentsMdMarkers(process.cwd());
-      console.log(pc.green('  ✓ Codex: MCP configured, AGENTS.md updated'));
+      console.log(pc.green('  ✓ Codex: MCP + AGENTS.md'));
     } else if (ide.name === 'cursor') {
       await configureCursorMCP();
       await injectCursorrules(process.cwd());
-      console.log(pc.green('  ✓ Cursor: MCP configured, .cursorrules updated'));
+      console.log(pc.green('  ✓ Cursor: MCP + .cursorrules'));
     }
   }
 

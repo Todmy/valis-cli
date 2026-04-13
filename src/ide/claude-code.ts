@@ -36,9 +36,8 @@ recent team decisions before writing code.
 ### Channel reminders
 When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;
 
-export async function configureClaudeCodeMCP(projectDir: string): Promise<void> {
+export async function configureClaudeCodeMCP(_projectDir: string): Promise<void> {
   // MCP servers must go in ~/.claude.json (not ~/.claude/settings.json)
-  // Claude Code reads MCP config from ~/.claude.json "mcpServers" key
   const mcpConfigPath = join(homedir(), '.claude.json');
 
   let mcpConfig: Record<string, unknown> = {};
@@ -49,6 +48,7 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
     // File doesn't exist yet
   }
 
+  // Install MCP server entry (idempotent — overwrites with same config)
   const mcpServers = (mcpConfig.mcpServers || {}) as Record<string, unknown>;
   mcpServers['valis'] = {
     command: 'valis',
@@ -60,7 +60,7 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
   await mkdir(join(homedir(), '.claude'), { recursive: true });
   await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2) + '\n');
 
-  // Also update settings.json for other settings (cleanupPeriodDays, channels)
+  // Update settings.json — hooks + cleanup period
   const settingsPath = join(homedir(), '.claude', 'settings.json');
 
   let settings: Record<string, unknown> = {};
@@ -71,10 +71,9 @@ export async function configureClaudeCodeMCP(projectDir: string): Promise<void> 
     // File doesn't exist yet
   }
 
-  // Set cleanupPeriodDays to prevent auto-cleanup
   settings.cleanupPeriodDays = 99999;
 
-  // Install attention-gate hooks — ensures valis_search runs before qdrant-find
+  // Install attention-gate hooks (idempotent — skips if already present)
   installAttentionHooks(settings);
 
   await mkdir(dirname(settingsPath), { recursive: true });

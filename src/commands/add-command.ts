@@ -244,27 +244,25 @@ export async function addCommandCommand(name?: string): Promise<void> {
       if (projects.length > 0) {
         const projectId = await select({
           message: 'Which project should this command use for context?',
-          choices: [
-            ...projects.map((p) => ({
-              name: `${p.name} (${p.role})`,
-              value: p.id,
-            })),
-            { name: 'None — generic command', value: '__none__' },
-          ],
+          choices: projects.map((p) => ({
+            name: `${p.name} (${p.role})`,
+            value: p.id,
+          })),
         });
 
-        if (projectId !== '__none__') {
-          selectedProject = projects.find((p) => p.id === projectId) || null;
+        selectedProject = projects.find((p) => p.id === projectId) || null;
 
-          // Analyze project data and suggest skills
-          console.log(pc.dim(`  Analyzing ${selectedProject?.name} decisions...`));
-          const areas = await analyzeProjectAreas(creds.member_api_key, projectId);
+        // Analyze project data and suggest skills
+        console.log(pc.dim(`  Analyzing ${selectedProject?.name} decisions...`));
+        const areas = await analyzeProjectAreas(creds.member_api_key, projectId);
 
-          if (areas.length > 0) {
-            suggestedSkills = suggestSkills(areas);
-            console.log(pc.dim(`  Top areas: ${areas.slice(0, 5).join(', ')}`));
-          }
+        if (areas.length > 0) {
+          suggestedSkills = suggestSkills(areas);
+          console.log(pc.dim(`  Top areas: ${areas.slice(0, 5).join(', ')}`));
         }
+      } else {
+        console.log(pc.yellow('  No projects found. Create one first: valis init'));
+        return;
       }
     }
   }
@@ -273,16 +271,17 @@ export async function addCommandCommand(name?: string): Promise<void> {
   let commandName: string;
 
   if (!name && suggestedSkills.length > 0) {
+    const projLabel = selectedProject ? ` (${selectedProject.name})` : '';
     const choices = [
       ...suggestedSkills.slice(0, 5).map((s) => ({
-        name: `${s.name} — ${s.description}`,
+        name: `${s.name}${projLabel} — ${s.description}`,
         value: s.name,
       })),
       { name: 'Custom name...', value: '__custom__' },
     ];
 
     const picked = await select({
-      message: 'Suggested skills based on project data:',
+      message: `Suggested skills for ${selectedProject?.name || 'project'}:`,
       choices,
     });
 

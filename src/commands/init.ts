@@ -312,13 +312,14 @@ async function selectOrCreateProjectLoggedIn(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${creds.member_api_key}`,
       },
+      body: '{}',
     });
     if (res.ok) {
-      const body = (await res.json()) as ExchangeTokenResponse;
-      jwt = body.token;
+      const respBody = (await res.json()) as ExchangeTokenResponse;
+      jwt = respBody.token;
     }
   } catch {
-    // JWT exchange failed — we can still create projects via register
+    // JWT exchange failed — fall through to create project
   }
 
   // Try to list existing projects via JWT

@@ -26,7 +26,8 @@ import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
 import { wakeUpCommand } from '../src/commands/wake-up.js';
-import { hookGateCommand, hookFlagCommand } from '../src/commands/hook.js';
+import { hookSessionStartCommand } from '../src/commands/hook.js';
+import { addCommandCommand } from '../src/commands/add-command.js';
 
 const program = new Command();
 
@@ -388,13 +389,27 @@ const hookCmd = new Command('hook')
 program.addCommand(hookCmd, { hidden: true });
 
 hookCmd
-  .command('gate')
-  .description('PreToolUse gate: ensure valis_search runs before qdrant-find')
-  .action(() => hookGateCommand());
+  .command('session-start')
+  .description('SessionStart hook: inject team context into session')
+  .action(async () => {
+    try {
+      await hookSessionStartCommand();
+    } catch {
+      // Hooks must never crash — silent exit on any error
+      process.exit(0);
+    }
+  });
 
-hookCmd
-  .command('flag')
-  .description('PostToolUse flag: mark valis_search as called')
-  .action(() => hookFlagCommand());
+program
+  .command('add-command [name]')
+  .description('Create a custom /valis-* slash command')
+  .action(async (name) => {
+    try {
+      await addCommandCommand(name);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
 
 program.parse();

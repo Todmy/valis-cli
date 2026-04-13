@@ -1,7 +1,9 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { trackFile } from '../config/manifest.js';
+import { COMMAND_TEMPLATES } from './command-templates.js';
 
 const AGENT_INSTRUCTIONS = `## Team Knowledge (Valis)
 
@@ -73,8 +75,8 @@ export async function configureClaudeCodeMCP(_projectDir: string): Promise<void>
 
   settings.cleanupPeriodDays = 99999;
 
-  // Install attention-gate hooks (idempotent — skips if already present)
-  installAttentionHooks(settings);
+  // Install SessionStart hook (idempotent — cleans old gate hooks, adds session-start)
+  installSessionHook(settings);
 
   await mkdir(dirname(settingsPath), { recursive: true });
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
@@ -115,57 +117,71 @@ export async function injectClaudeMdMarkers(projectDir: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Attention gate hooks — installed into ~/.claude/settings.json
+// SessionStart hook — proactively loads team context into every session
 // ---------------------------------------------------------------------------
 
 interface HookEntry {
   matcher: string;
-  hooks: Array<{ type: string; command: string }>;
+  hooks: Array<{ type: string; command: string; timeout?: number }>;
 }
 
 /**
- * Install PreToolUse/PostToolUse hooks that enforce valis_search priority
- * over competing KB tools (qdrant-find, mem0, etc.).
+ * Install SessionStart hook that injects recent team decisions into the session.
+ * Replaces the old PreToolUse/PostToolUse gate approach.
  *
- * - PreToolUse on qdrant-find → `valis hook gate` (blocks until valis_search called)
- * - PostToolUse on valis_search → `valis hook flag` (marks session as Valis-first)
+ * Also cleans up old gate hooks if present (from earlier versions).
  *
- * Idempotent — skips if hooks are already installed.
+ * Idempotent — skips if already installed.
  */
-function installAttentionHooks(settings: Record<string, unknown>): void {
+function installSessionHook(settings: Record<string, unknown>): void {
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;
 
-  // PreToolUse: gate qdrant-find
-  if (!hooks.PreToolUse) hooks.PreToolUse = [];
-  const gateCommand = 'valis hook gate';
-  const hasGate = hooks.PreToolUse.some(
-    (e) => e.hooks?.some((h) => h.command === gateCommand),
-  );
-  if (!hasGate) {
-    hooks.PreToolUse.push({
-      matcher: 'mcp__qdrant__qdrant-find',
-      hooks: [{ type: 'command', command: gateCommand }],
-    });
+  // Clean up old gate/flag hooks from earlier versions
+  if (hooks.PreToolUse) {
+    hooks.PreToolUse = hooks.PreToolUse.filter(
+      (e) => !e.hooks?.some((h) => h.command === 'valis hook gate'),
+    );
+  }
+  if (hooks.PostToolUse) {
+    hooks.PostToolUse = hooks.PostToolUse.filter(
+      (e) => !e.hooks?.some((h) => h.command === 'valis hook flag'),
+    );
   }
 
-  // PostToolUse: flag valis_search (both local and remote MCP variants)
-  if (!hooks.PostToolUse) hooks.PostToolUse = [];
-  const flagCommand = 'valis hook flag';
-  const hasFlag = hooks.PostToolUse.some(
-    (e) => e.hooks?.some((h) => h.command === flagCommand),
+  // Install SessionStart hook
+  if (!hooks.SessionStart) hooks.SessionStart = [];
+  const hookCommand = 'valis hook session-start';
+  const hasHook = hooks.SessionStart.some(
+    (e) => e.hooks?.some((h) => h.command === hookCommand),
   );
-  if (!hasFlag) {
-    hooks.PostToolUse.push({
-      matcher: 'mcp__claude_ai_Valis__valis_search',
-      hooks: [{ type: 'command', command: flagCommand }],
-    });
-    hooks.PostToolUse.push({
-      matcher: 'mcp__valis__valis_search',
-      hooks: [{ type: 'command', command: flagCommand }],
+  if (!hasHook) {
+    hooks.SessionStart.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: hookCommand, timeout: 10 }],
     });
   }
 
   settings.hooks = hooks;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in slash commands — scaffolded into .claude/commands/ during init
+// ---------------------------------------------------------------------------
+
+export async function scaffoldBuiltInCommands(projectDir: string): Promise<string[]> {
+  const commandsDir = join(projectDir, '.claude', 'commands');
+  await mkdir(commandsDir, { recursive: true });
+
+  const installed: string[] = [];
+
+  for (const [name, content] of Object.entries(COMMAND_TEMPLATES)) {
+    const targetPath = join(commandsDir, `${name}.md`);
+    if (existsSync(targetPath)) continue; // Don't overwrite user customizations
+    await writeFile(targetPath, content);
+    installed.push(name);
+  }
+
+  return installed;
 }
 
 function escapeRegex(str: string): string {

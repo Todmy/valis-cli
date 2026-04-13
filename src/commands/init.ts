@@ -8,7 +8,7 @@ import { loadConfig, saveConfig, getConfigDir } from '../config/store.js';
 import { findProjectConfig, writeProjectConfig } from '../config/project.js';
 import { trackFile } from '../config/manifest.js';
 import { detectIDEs } from '../ide/detect.js';
-import { configureClaudeCodeMCP, injectClaudeMdMarkers } from '../ide/claude-code.js';
+import { configureClaudeCodeMCP, injectClaudeMdMarkers, scaffoldBuiltInCommands } from '../ide/claude-code.js';
 import { configureCodexMCP, injectAgentsMdMarkers } from '../ide/codex.js';
 import { configureCursorMCP, injectCursorrules } from '../ide/cursor.js';
 import { runSeed, runHostedSeed } from '../seed/index.js';
@@ -204,7 +204,9 @@ async function setupIDEs(config: ValisConfig): Promise<string[]> {
       // Skips components that are already correctly configured.
       await configureClaudeCodeMCP(process.cwd());
       await injectClaudeMdMarkers(process.cwd());
-      console.log(pc.green('  ✓ Claude Code: MCP + hooks + CLAUDE.md'));
+      const cmds = await scaffoldBuiltInCommands(process.cwd());
+      const cmdMsg = cmds.length > 0 ? ` + /${cmds.join(', /')} commands` : '';
+      console.log(pc.green(`  ✓ Claude Code: MCP + hooks + CLAUDE.md${cmdMsg}`));
     } else if (ide.name === 'codex') {
       await configureCodexMCP();
       await injectAgentsMdMarkers(process.cwd());

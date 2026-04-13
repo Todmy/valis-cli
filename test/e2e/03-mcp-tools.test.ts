@@ -13,16 +13,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   canRunE2E,
-  registerTestOrg,
-  getJwtToken,
   apiStore,
   apiSearch,
   apiChangeStatus,
   retry,
   E2E_API_URL,
-  E2E_SUPABASE_URL,
   type E2ERegistration,
 } from './helpers.js';
+import { getSharedRegistration } from './shared-registration.js';
 
 const describeE2E = canRunE2E() ? describe : describe.skip;
 
@@ -31,14 +29,9 @@ describeE2E('e2e: MCP tool flow', () => {
   let jwt: string;
 
   beforeAll(async () => {
-    reg = await registerTestOrg('mcp-tools');
-
-    const tokenResponse = await getJwtToken(
-      E2E_SUPABASE_URL,
-      reg.response.member_api_key,
-      reg.response.project_id,
-    );
-    jwt = tokenResponse.token;
+    const shared = await getSharedRegistration();
+    reg = shared.reg;
+    jwt = shared.jwt;
   });
 
   // -------------------------------------------------------------------------

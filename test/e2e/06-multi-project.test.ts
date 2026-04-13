@@ -14,7 +14,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   canRunE2E,
-  registerTestOrg,
   getJwtToken,
   apiStore,
   apiSearch,
@@ -25,6 +24,7 @@ import {
   TEST_RUN_ID,
   type E2ERegistration,
 } from './helpers.js';
+import { getSharedRegistration } from './shared-registration.js';
 
 const describeE2E = canRunE2E() ? describe : describe.skip;
 
@@ -42,8 +42,9 @@ describeE2E('e2e: multi-project isolation', () => {
     'Project B uses Memcached for API response caching with automatic key invalidation';
 
   beforeAll(async () => {
-    // Register org with project A
-    reg = await registerTestOrg('multi-proj');
+    // Use shared registration for project A
+    const shared = await getSharedRegistration();
+    reg = shared.reg;
     projectAId = reg.response.project_id;
 
     // Get JWT scoped to project A

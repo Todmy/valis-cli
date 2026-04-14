@@ -306,13 +306,13 @@ export function buildAllProjectsFilter(
   }
 
   if (projectIds.length > 0) {
-    const shouldClauses: Record<string, unknown>[] = projectIds.map((id) => ({
-      key: 'project_id',
-      match: { value: id },
-    }));
-    // Include legacy points
-    shouldClauses.push({ is_null: { key: 'project_id' } });
-    mustClauses.push({ should: shouldClauses });
+    // Use match.any for multi-value matching + is_null for legacy points
+    mustClauses.push({
+      should: [
+        { key: 'project_id', match: { any: projectIds } },
+        { is_null: { key: 'project_id' } },
+      ],
+    });
   }
 
   return { must: mustClauses };

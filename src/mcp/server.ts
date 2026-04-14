@@ -171,7 +171,7 @@ const PROMPT_DEFS: PromptDef[] = [
         role: 'user' as const,
         content: {
           type: 'text' as const,
-          text: `I'm new to this project and need to understand the existing technical decisions.\n\nUse valis_context with a broad task description like "understand project architecture and conventions" and set all_projects to true. Then:\n1. Summarize the most important active decisions (top 10 by relevance)\n2. List all active constraints (these are non-negotiable rules)\n3. List established patterns (conventions the team follows)\n4. Note any recent lessons learned\n5. Organize everything by topic/module area`,
+          text: `I'm new to this project and need to understand the existing technical decisions.\n\nUse valis_context with a broad task description like "understand project architecture and conventions". Then:\n1. Summarize the most important active decisions (top 10 by relevance)\n2. List all active constraints (these are non-negotiable rules)\n3. List established patterns (conventions the team follows)\n4. Note any recent lessons learned\n5. Organize everything by topic/module area`,
         },
       }],
     }),

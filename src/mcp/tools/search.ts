@@ -96,7 +96,8 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
       const finalResults = visible.slice(0, finalLimit);
 
       return { results: finalResults, suppressed_count };
-    } catch {
+    } catch (err) {
+      console.error(`[search] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
       return {
         results: [],
         offline: true,

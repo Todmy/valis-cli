@@ -104,7 +104,8 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         suppressed_count,
         note,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
       return {
         decisions: [], constraints: [], patterns: [], lessons: [],
         historical: [], total_in_brain: 0, suppressed_count: 0, offline: true,

@@ -136,21 +136,22 @@ export async function runSeed(
   result.total = allDecisions.length;
 
   // Filter out decisions containing secrets
-  const safeDecisions = allDecisions.filter(d => {
-    const secret = detectSecrets(d.raw.text);
+  const safeDecisions = [];
+  for (const d of allDecisions) {
+    const secret = await detectSecrets(d.raw.text);
     if (secret) {
       console.warn('[valis] Blocked seeding decision with ' + secret.pattern + ' — skipped');
-      return false;
+      continue;
     }
     if (d.raw.summary) {
-      const summarySecret = detectSecrets(d.raw.summary);
+      const summarySecret = await detectSecrets(d.raw.summary);
       if (summarySecret) {
         console.warn('[valis] Blocked seeding decision with ' + summarySecret.pattern + ' in summary — skipped');
-        return false;
+        continue;
       }
     }
-    return true;
-  });
+    safeDecisions.push(d);
+  }
 
   // Deduplicate by content hash
   const seenHashes = new Set<string>();

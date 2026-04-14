@@ -136,7 +136,7 @@ export async function handleStore(
   }
 
   // 1. Secret detection
-  const secret = detectSecrets(args.text);
+  const secret = await detectSecrets(args.text);
   if (secret) {
     return {
       error: 'secret_detected',
@@ -147,7 +147,7 @@ export async function handleStore(
 
   // Also check summary field for secrets
   if (args.summary) {
-    const summarySecret = detectSecrets(args.summary);
+    const summarySecret = await detectSecrets(args.summary);
     if (summarySecret) {
       return {
         error: 'secret_detected',

@@ -76,7 +76,7 @@ export async function configureClaudeCodeMCP(_projectDir: string): Promise<void>
   settings.cleanupPeriodDays = 99999;
 
   // Install SessionStart hook (idempotent — cleans old gate hooks, adds session-start)
-  installSessionHook(settings);
+  installHooks(settings);
 
   await mkdir(dirname(settingsPath), { recursive: true });
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
@@ -133,7 +133,7 @@ interface HookEntry {
  *
  * Idempotent — skips if already installed.
  */
-function installSessionHook(settings: Record<string, unknown>): void {
+function installHooks(settings: Record<string, unknown>): void {
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;
 
   // Clean up old gate/flag hooks from earlier versions
@@ -150,14 +150,27 @@ function installSessionHook(settings: Record<string, unknown>): void {
 
   // Install SessionStart hook
   if (!hooks.SessionStart) hooks.SessionStart = [];
-  const hookCommand = 'valis hook session-start';
-  const hasHook = hooks.SessionStart.some(
-    (e) => e.hooks?.some((h) => h.command === hookCommand),
+  const sessionCommand = 'valis hook session-start';
+  const hasSessionHook = hooks.SessionStart.some(
+    (e) => e.hooks?.some((h) => h.command === sessionCommand),
   );
-  if (!hasHook) {
+  if (!hasSessionHook) {
     hooks.SessionStart.push({
       matcher: '',
-      hooks: [{ type: 'command', command: hookCommand, timeout: 10 }],
+      hooks: [{ type: 'command', command: sessionCommand, timeout: 10 }],
+    });
+  }
+
+  // Install PostToolUse capture-check hook (periodic nudge to search & store)
+  if (!hooks.PostToolUse) hooks.PostToolUse = [];
+  const captureCommand = 'valis hook capture-check';
+  const hasCaptureHook = hooks.PostToolUse.some(
+    (e) => e.hooks?.some((h) => h.command === captureCommand),
+  );
+  if (!hasCaptureHook) {
+    hooks.PostToolUse.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: captureCommand, timeout: 5 }],
     });
   }
 

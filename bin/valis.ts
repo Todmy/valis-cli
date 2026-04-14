@@ -26,7 +26,7 @@ import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
 import { wakeUpCommand } from '../src/commands/wake-up.js';
-import { hookSessionStartCommand } from '../src/commands/hook.js';
+import { hookSessionStartCommand, hookCaptureCheckCommand } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 
 const program = new Command();
@@ -394,6 +394,18 @@ hookCmd
   .action(async () => {
     try {
       await hookSessionStartCommand();
+    } catch {
+      // Hooks must never crash — silent exit on any error
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('capture-check')
+  .description('PostToolUse hook: periodic nudge to search & store in Valis')
+  .action(async () => {
+    try {
+      await hookCaptureCheckCommand();
     } catch {
       // Hooks must never crash — silent exit on any error
       process.exit(0);

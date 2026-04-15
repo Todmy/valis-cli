@@ -9,7 +9,7 @@
  * Not user-facing — hidden from `valis --help`.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 interface ProjectConfig {
@@ -120,53 +120,6 @@ export async function hookSessionStartCommand(): Promise<void> {
   }
 
   outputContext(projectConfig.project_name, decisions, contradictionCount);
-}
-
-// ---------------------------------------------------------------------------
-// PostToolUse capture-check — periodic nudge to search & store in Valis
-// ---------------------------------------------------------------------------
-
-const CAPTURE_INTERVAL = 5; // Emit nudge every N tool calls
-
-/**
- * PostToolUse hook: periodically reminds the agent to use Valis for both
- * searching existing decisions and storing new ones.
- *
- * Maintains a per-session counter in /tmp/valis-nudge-<session_id>.json.
- * Only emits additionalContext every CAPTURE_INTERVAL calls; all other
- * calls exit silently in <5ms.
- */
-export async function hookCaptureCheckCommand(): Promise<void> {
-  const sessionId = process.env.CLAUDE_SESSION_ID || 'unknown';
-  const stateFile = `/tmp/valis-nudge-${sessionId}.json`;
-
-  // Read or initialize counter
-  let count = 0;
-  try {
-    const data = await readFile(stateFile, 'utf-8');
-    count = JSON.parse(data).count ?? 0;
-  } catch { /* first call — start at 0 */ }
-
-  count++;
-
-  // Write updated counter
-  await writeFile(stateFile, JSON.stringify({ count }));
-
-  // Only emit on every Nth call
-  if (count % CAPTURE_INTERVAL !== 0) {
-    return;
-  }
-
-  const nudge = {
-    additionalContext: [
-      'Valis periodic check:',
-      '• Before making architectural or technical decisions — call valis_search to check existing team knowledge.',
-      '• After decisions are made — store each one separately via valis_store (one decision per call, never batch multiple decisions into one store call).',
-      '• Types: decision, constraint, pattern, lesson. Always include summary (max 100 chars) and affects.',
-    ].join(' '),
-  };
-
-  process.stdout.write(JSON.stringify(nudge));
 }
 
 function outputContext(

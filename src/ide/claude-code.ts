@@ -76,7 +76,7 @@ export async function configureClaudeCodeMCP(_projectDir: string): Promise<void>
   settings.cleanupPeriodDays = 99999;
 
   // Install SessionStart hook (idempotent — cleans old gate hooks, adds session-start)
-  installHooks(settings);
+  installSessionHook(settings);
 
   await mkdir(dirname(settingsPath), { recursive: true });
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
@@ -129,14 +129,20 @@ interface HookEntry {
  * Install SessionStart hook that injects recent team decisions into the session.
  * Replaces the old PreToolUse/PostToolUse gate approach.
  *
- * Also cleans up old gate hooks if present (from earlier versions).
+ * Also cleans up obsolete hooks from earlier CLI versions:
+ * - PreToolUse "valis hook gate" / PostToolUse "valis hook flag" (old gate approach)
+ * - PostToolUse "valis hook capture-check" (moved to plugin in 017)
  *
  * Idempotent — skips if already installed.
+ *
+ * NOTE: PostToolUse capture-check is now provided by the Claude Code plugin
+ * (todmy/valis-plugin) so the CLI does not register it. Keeps responsibilities
+ * cleanly split: CLI owns headless / CI surfaces, plugin owns interactive hooks.
  */
-function installHooks(settings: Record<string, unknown>): void {
+function installSessionHook(settings: Record<string, unknown>): void {
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;
 
-  // Clean up old gate/flag hooks from earlier versions
+  // Clean up obsolete hooks from earlier versions
   if (hooks.PreToolUse) {
     hooks.PreToolUse = hooks.PreToolUse.filter(
       (e) => !e.hooks?.some((h) => h.command === 'valis hook gate'),
@@ -144,7 +150,9 @@ function installHooks(settings: Record<string, unknown>): void {
   }
   if (hooks.PostToolUse) {
     hooks.PostToolUse = hooks.PostToolUse.filter(
-      (e) => !e.hooks?.some((h) => h.command === 'valis hook flag'),
+      (e) => !e.hooks?.some((h) =>
+        h.command === 'valis hook flag' || h.command === 'valis hook capture-check'
+      ),
     );
   }
 
@@ -158,19 +166,6 @@ function installHooks(settings: Record<string, unknown>): void {
     hooks.SessionStart.push({
       matcher: '',
       hooks: [{ type: 'command', command: sessionCommand, timeout: 10 }],
-    });
-  }
-
-  // Install PostToolUse capture-check hook (periodic nudge to search & store)
-  if (!hooks.PostToolUse) hooks.PostToolUse = [];
-  const captureCommand = 'valis hook capture-check';
-  const hasCaptureHook = hooks.PostToolUse.some(
-    (e) => e.hooks?.some((h) => h.command === captureCommand),
-  );
-  if (!hasCaptureHook) {
-    hooks.PostToolUse.push({
-      matcher: '',
-      hooks: [{ type: 'command', command: captureCommand, timeout: 5 }],
     });
   }
 

@@ -253,9 +253,8 @@ export async function handleStore(
     // -----------------------------------------------------------------------
 
     const extras: StoreExtras = {};
-    if (args.status) {
-      extras.status = args.status;
-    }
+    // FR-018: All decisions default to 'proposed' — active requires explicit review
+    extras.status = args.status ?? 'proposed';
     if (args.replaces) {
       extras.replaces = args.replaces;
     }

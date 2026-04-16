@@ -61,11 +61,17 @@ describe('buildProjectFilter — project_id backward compat', () => {
 });
 
 describe('buildAllProjectsFilter', () => {
-  it('includes all project ids plus legacy fallback', () => {
+  it('uses match.any for project ids plus legacy is_null fallback', () => {
+    // Shape changed in commit f3184bf3 (2026-04-14): Qdrant Cloud rejects
+    // N individual `match.value` clauses inside a nested `should` with 400
+    // Bad Request on cross-project search. Replaced with `match.any`.
+    // Legacy `is_null` fallback remains.
     const filter = buildAllProjectsFilter('org-1', ['proj-a', 'proj-b']);
     const must = filter.must as unknown[];
     const should = (must[1] as { should: unknown[] }).should;
-    expect(should).toHaveLength(3); // 2 projects + is_null
+    expect(should).toHaveLength(2); // match.any (covers all projects) + is_null
+    expect(should[0]).toEqual({ key: 'project_id', match: { any: ['proj-a', 'proj-b'] } });
+    expect(should[1]).toEqual({ is_null: { key: 'project_id' } });
   });
 });
 

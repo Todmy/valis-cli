@@ -84,14 +84,22 @@ describe('buildAllProjectsFilter — cross-project backward compat', () => {
   const projectIds = ['proj-aaa', 'proj-bbb'];
 
   it('includes legacy is_null in should clause', () => {
+    // Shape changed in commit f3184bf3 (2026-04-14): Qdrant Cloud rejects
+    // N individual `match.value` clauses inside a nested `should` with 400
+    // Bad Request on cross-project search. Replaced with `match.any` for
+    // multi-value matching. Legacy `is_null` fallback preserved.
     const filter = buildAllProjectsFilter(orgId, projectIds);
     const mustClauses = filter.must as unknown[];
     expect(mustClauses).toHaveLength(2);
 
     const shouldClause = mustClauses[1] as { should: unknown[] };
-    // 2 project IDs + 1 is_null fallback
-    expect(shouldClause.should).toHaveLength(3);
-    expect(shouldClause.should[2]).toEqual({
+    // match.any (covers all projects in one clause) + is_null fallback
+    expect(shouldClause.should).toHaveLength(2);
+    expect(shouldClause.should[0]).toEqual({
+      key: 'project_id',
+      match: { any: projectIds },
+    });
+    expect(shouldClause.should[1]).toEqual({
       is_null: { key: 'project_id' },
     });
   });

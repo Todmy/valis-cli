@@ -8,6 +8,7 @@ import { handleLifecycle } from './tools/lifecycle.js';
 import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
+import { handleCreateProject } from './tools/create-project.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
@@ -79,6 +80,14 @@ const TOOL_DEFS = {
     description:
       'List every project the authenticated member has access to, with role and decision count. Use this before /valis:init or when the user asks which projects they can connect to.',
     schema: {},
+  },
+  valis_create_project: {
+    description:
+      "Create a new project in the authenticated member's org and assign them as project_admin. Use when the user wants to connect a repo to a project that doesn't exist yet (e.g. during /valis:init after they chose 'create new').",
+    schema: {
+      project_name: z.string().min(1).max(100).describe('Name of the new project (1-100 chars)'),
+      org_id: z.string().uuid().optional().describe("Org UUID — defaults to the authenticated member's org"),
+    },
   },
 } as const;
 
@@ -344,6 +353,18 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
     TOOL_DEFS.valis_list_projects.schema,
     async () => {
       const result = await handleListProjects(configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // valis_create_project — creates a new project and registers the caller as
+  // project_admin. Companion to valis_list_projects for /valis:init "create new" flow.
+  server.tool(
+    'valis_create_project',
+    TOOL_DEFS.valis_create_project.description,
+    TOOL_DEFS.valis_create_project.schema,
+    async (args) => {
+      const result = await handleCreateProject(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

@@ -12,7 +12,23 @@ interface CreateProjectResponse {
   project_id: string;
   project_name: string;
   role: string;
+  invite_code?: string;
   error?: string;
+}
+
+/**
+ * Generate a human-friendly invite code in format XXXX-XXXX.
+ * Uses 32-char alphabet without ambiguous symbols (no 0/O, 1/I/L).
+ * Matches the format produced by `packages/web/src/lib/api-keys.ts` so
+ * invite codes generated via MCP are indistinguishable from route-generated ones.
+ */
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const part = (len: number) =>
+    Array.from(crypto.getRandomValues(new Uint8Array(len)))
+      .map((b) => chars[b % chars.length])
+      .join('');
+  return `${part(4)}-${part(4)}`;
 }
 
 /**
@@ -63,12 +79,14 @@ export async function handleCreateProject(
     }
 
     const supabase = getSupabaseClient(supabaseUrl, serviceRoleKey);
+    const inviteCode = generateInviteCode();
 
-    // 1. Create the project row
+    // 1. Create the project row. `invite_code` is NOT NULL in schema;
+    // omitting it triggers a constraint violation (discovered 2026-04-16).
     const { data: project, error: projectError } = await supabase
       .from('projects')
-      .insert({ org_id: orgId, name: projectName })
-      .select('id, name')
+      .insert({ org_id: orgId, name: projectName, invite_code: inviteCode })
+      .select('id, name, invite_code')
       .single();
 
     if (projectError || !project) {
@@ -104,6 +122,7 @@ export async function handleCreateProject(
       project_id: project.id,
       project_name: project.name,
       role: 'project_admin',
+      invite_code: project.invite_code,
     };
   } catch (err) {
     return {

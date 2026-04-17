@@ -7,6 +7,7 @@ import { handleContext } from './tools/context.js';
 import { handleLifecycle } from './tools/lifecycle.js';
 import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
+import { handleListProjects } from './tools/list-projects.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
@@ -72,6 +73,11 @@ const TOOL_DEFS = {
   valis_get_taxonomy_spec: {
     description:
       'Get the Valis taxonomy specification — data types, statuses, naming conventions, and tool usage guidance.',
+    schema: {},
+  },
+  valis_list_projects: {
+    description:
+      'List every project the authenticated member has access to, with role and decision count. Use this before /valis:init or when the user asks which projects they can connect to.',
     schema: {},
   },
 } as const;
@@ -326,6 +332,18 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
     TOOL_DEFS.valis_get_taxonomy_spec.schema,
     async () => {
       const result = await handleTaxonomy({});
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // valis_list_projects — enumerates projects accessible to the authenticated
+  // member. Used by /valis:init to present choices without an anonymous HTTP fetch.
+  server.tool(
+    'valis_list_projects',
+    TOOL_DEFS.valis_list_projects.description,
+    TOOL_DEFS.valis_list_projects.schema,
+    async () => {
+      const result = await handleListProjects(configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

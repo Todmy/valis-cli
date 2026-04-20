@@ -668,3 +668,47 @@ export interface JoinPublicResponse {
   decision_count: number;
   role: ProjectRole;
 }
+
+// ---------------------------------------------------------------------------
+// CI Enforcement (Phase 018 — 018-ci-enforcement)
+// ---------------------------------------------------------------------------
+
+/** Per-project default CI enforcement mode. Overridable per-repo via `.valis.yaml`. */
+export type EnforcementMode = 'block' | 'warn' | 'suggest';
+
+/** Per-violation severity assigned by the LLM; drives PR-side behavior. */
+export type Severity = 'block' | 'warn' | 'info';
+
+/** Project visibility toggles access to the public `/decisions/{id}` page. */
+export type ProjectVisibility = 'private' | 'public';
+
+/** Transient shape returned by `POST /api/check` and the `valis_check_diff` MCP tool. Not stored as a first-class row. */
+export interface Violation {
+  decision_id: string;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  severity: Severity;
+  explanation: string;
+  decision_url: string;
+}
+
+/** Parsed `.valis.yaml` contents. Unknown fields pass through with a `console.warn`. */
+export interface ValisYamlConfig {
+  project_id: string;
+  enforcement_mode?: EnforcementMode;
+}
+
+/** Long-lived, rotatable token scoped to a single project. Returned by dashboard APIs (never by the MCP/CLI layer). */
+export interface ProjectScopedToken {
+  id: string;
+  project_id: string;
+  issued_by: string;
+  name: string;
+  prefix: string;
+  scopes: Record<string, boolean>;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}

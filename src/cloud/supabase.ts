@@ -126,6 +126,51 @@ export async function getDecisionsByIds(
   return (data || []) as Decision[];
 }
 
+/**
+ * Phase 018 (FR-010 / T011a): batch-load violation counters for a set of
+ * decision IDs. Used to enrich MCP search/context responses so connected AI
+ * assistants can prioritize load-bearing decisions without a reindex of
+ * Qdrant payload (see research.md R-013).
+ *
+ * Returns a map keyed by decision id → {violation_count, last_violated_at}.
+ * Missing rows default to {0, null} at the call site. Best-effort: errors
+ * short-circuit to an empty map rather than propagate, because the search /
+ * context flows must not fail when this optional enrichment fails.
+ */
+export async function fetchViolationCounters(
+  supabase: SupabaseClient,
+  decisionIds: string[],
+): Promise<Map<string, { violation_count: number; last_violated_at: string | null }>> {
+  const map = new Map<
+    string,
+    { violation_count: number; last_violated_at: string | null }
+  >();
+  if (decisionIds.length === 0) return map;
+
+  const { data, error } = await supabase
+    .from('decisions')
+    .select('id, violation_count, last_violated_at')
+    .in('id', decisionIds);
+
+  if (error) {
+    console.warn(`[018/mcp] fetchViolationCounters failed: ${error.message}`);
+    return map;
+  }
+
+  for (const row of data ?? []) {
+    const r = row as {
+      id: string;
+      violation_count: number | null;
+      last_violated_at: string | null;
+    };
+    map.set(r.id, {
+      violation_count: r.violation_count ?? 0,
+      last_violated_at: r.last_violated_at ?? null,
+    });
+  }
+  return map;
+}
+
 export async function storeDecision(
   supabase: SupabaseClient,
   orgId: string,

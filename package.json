@@ -52,6 +52,7 @@
     "chokidar": "^4.0.3",
     "commander": "^13.1.0",
     "picocolors": "^1.1.1",
+    "yaml": "^2.6.0",
     "zod": "^3.24.4",
     "@secretlint/core": "^11.7.1",
     "@secretlint/secretlint-rule-preset-recommend": "^11.7.1"

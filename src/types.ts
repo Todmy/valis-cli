@@ -390,6 +390,10 @@ export interface SearchResult {
   supersedes?: string[];
   /** Graph hop distance: 0 = direct search hit, 1 = 1-hop neighbor (Q4-C). */
   graph_hop?: number;
+  /** Lifetime count of unique (PR, commit, decision) violation events (Phase 018 — FR-010). */
+  violation_count?: number;
+  /** Timestamp of most recent violation event (Phase 018 — FR-010). */
+  last_violated_at?: string | null;
 }
 
 // ---------------------------------------------------------------------------

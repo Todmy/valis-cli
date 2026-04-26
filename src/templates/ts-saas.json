@@ -1,0 +1,137 @@
+{
+  "id": "ts-saas",
+  "version": "0.1",
+  "name": "TypeScript SaaS",
+  "tagline": "Next.js + Postgres + REST",
+  "description": "Conventions for a typical TypeScript SaaS team building API-driven products on Next.js + Postgres. Covers API shape, error handling, logging, auth, deployment, and test discipline. Founder-curated — review before merging into your project's decision base.",
+  "min_plan": "free",
+  "decision_count": 18,
+  "decisions": [
+    {
+      "summary": "All API responses return JSON with a top-level `data` or `error` key — never bare values",
+      "type": "decision",
+      "rationale": "Frontend and SDK code branches on response shape. A consistent envelope means error handling is uniform across services and we never have to teach a new caller \"oh, this endpoint returns an array, but that one returns an object.\" Errors carry `{error: '<code>', message: '<human>'}` so consumers can switch on the code without parsing free text.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["api", "error-handling"]
+    },
+    {
+      "summary": "API errors return structured codes — never substring-match on user-visible messages",
+      "type": "constraint",
+      "rationale": "Error messages are for humans and may be reworded for clarity or i18n at any time without a contract change. The `error` field is the machine-readable contract. Tests asserting on message strings are flaky — switch to asserting on `error` codes.",
+      "affects": ["packages/web/src/app/api/**", "packages/web/test/api/**"],
+      "tags": ["api", "error-handling", "testing"]
+    },
+    {
+      "summary": "Use `pino` (or equivalent structured logger) — never `console.log` in production paths",
+      "type": "constraint",
+      "rationale": "Production logs go to a structured aggregator (CloudWatch / Datadog / Honeycomb). `console.log` produces unparseable strings that cost queryability. Use the structured logger with named fields so every log line is filterable.",
+      "affects": ["packages/web/src/**", "packages/cli/src/**"],
+      "tags": ["logging", "observability"]
+    },
+    {
+      "summary": "Bcrypt cost factor must be ≥ 12 for password hashing",
+      "type": "constraint",
+      "rationale": "Cost 12 takes ~250ms on modern hardware — a sweet spot between user-visible login latency and brute-force resistance. Higher costs (14+) are reserved for highly sensitive use cases. Never use raw SHA-* for passwords.",
+      "affects": ["packages/web/src/lib/auth/**"],
+      "tags": ["auth", "security"]
+    },
+    {
+      "summary": "JWT access tokens TTL ≤ 15 minutes; refresh tokens with rotation on every use",
+      "type": "decision",
+      "rationale": "Short access TTL minimizes blast radius if a token leaks. Refresh-token rotation means a leaked refresh token is invalidated on the legitimate user's next call. Stolen tokens have a hard cap on usefulness.",
+      "affects": ["packages/web/src/lib/auth/**"],
+      "tags": ["auth", "security"]
+    },
+    {
+      "summary": "All PII stored in Postgres uses column-level encryption via pgcrypto or equivalent",
+      "type": "constraint",
+      "rationale": "Plaintext PII in the database is a regulatory and breach-impact risk. Encrypted columns can still be queried for equality (with deterministic encryption) or for aggregate counts (without revealing values). Application-layer keys live in a managed secret store, not env vars in source.",
+      "affects": ["supabase/migrations/**", "packages/web/src/lib/**"],
+      "tags": ["security", "data", "compliance"]
+    },
+    {
+      "summary": "Database migrations are forward-only — no destructive rollback in production",
+      "type": "decision",
+      "rationale": "Rolling back a migration that already changed data is a worse outcome than rolling forward with a fix-up migration. We accept that one-way migrations require more discipline at write time and deliver more reliable production behavior.",
+      "affects": ["supabase/migrations/**"],
+      "tags": ["data", "deployment"]
+    },
+    {
+      "summary": "Schema changes are additive — drop columns only after a deprecation cycle",
+      "type": "constraint",
+      "rationale": "Adding a column is safe and zero-downtime. Dropping or retyping is not. Standard cycle: add new column → backfill → switch readers → switch writers → drop old column in a separate release.",
+      "affects": ["supabase/migrations/**"],
+      "tags": ["data", "deployment"]
+    },
+    {
+      "summary": "All cron jobs and background workers must be idempotent",
+      "type": "constraint",
+      "rationale": "Retries are a fact of life with at-least-once delivery. A job that doubles its effect when it retries (sending two emails, charging twice, applying a delta twice) is a production incident waiting to happen. Idempotency keys + upserts are the discipline.",
+      "affects": ["packages/web/src/app/api/**", "packages/cli/src/**"],
+      "tags": ["reliability", "background-jobs"]
+    },
+    {
+      "summary": "Rate-limit every public-facing endpoint; default deny for unauthenticated traffic",
+      "type": "constraint",
+      "rationale": "Unrate-limited public endpoints are an outage vector and a cost-leak vector. Authenticated traffic gets per-user limits; unauthenticated traffic gets per-IP limits. Default deny means the burden of proof is on the developer to justify why a route is open.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["security", "reliability"]
+    },
+    {
+      "summary": "Use ULID or UUIDv7 for entity IDs — never auto-increment integers",
+      "type": "pattern",
+      "rationale": "Time-sortable, globally unique, no synchronization needed across shards or services. Predictable integer IDs are an info-leak (`/users/1` vs `/users/1000` reveals how big you are) and break in distributed-write topologies.",
+      "affects": ["supabase/migrations/**", "packages/web/src/lib/**"],
+      "tags": ["data", "patterns"]
+    },
+    {
+      "summary": "Every state-changing operation writes a row to `audit_entries` — no exceptions",
+      "type": "constraint",
+      "rationale": "Compliance, debugging, and support all rely on a complete audit trail. The cost of an audit row at write time is microseconds; the cost of NOT having one when an investigation lands is hours. Audit row carries who/what/when/why.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["audit", "compliance"]
+    },
+    {
+      "summary": "Tests targeting external APIs use mocks at the HTTP layer (vi.stubGlobal('fetch'))",
+      "type": "pattern",
+      "rationale": "Mocking at the application-code layer (e.g. mocking the Stripe client) hides real bugs in request shape. Mocking at fetch lets the real client + real serializers run and only stubs the network. This is what production actually does — modulo the network being real.",
+      "affects": ["packages/web/test/**", "packages/cli/test/**"],
+      "tags": ["testing", "patterns"]
+    },
+    {
+      "summary": "Integration tests run against a real Postgres (not a mock) with truncate-between-tests",
+      "type": "decision",
+      "rationale": "Mocked DB tests pass when the migration is broken. We've been bitten — keep integration tests honest by running them against the real schema. Truncate between tests for isolation; transactions are not enough when we want to test cross-transaction visibility.",
+      "affects": ["packages/web/test/integration/**"],
+      "tags": ["testing"]
+    },
+    {
+      "summary": "All env vars are typed at the boundary; never `process.env.X` deep in business logic",
+      "type": "pattern",
+      "rationale": "Reading raw `process.env` from any file is a coupling to deployment configuration. Centralize in a `config.ts` boundary that parses + validates env at startup. A missing var crashes startup loudly instead of silently producing wrong behavior at the first use site.",
+      "affects": ["packages/web/src/**", "packages/cli/src/**"],
+      "tags": ["config", "patterns"]
+    },
+    {
+      "summary": "Feature flags via a stable provider (LaunchDarkly, Statsig, GrowthBook); never hardcoded `if (env === 'prod')`",
+      "type": "decision",
+      "rationale": "Hardcoded environment gates couple feature visibility to deployment, making rollback hard and per-user gating impossible. A flag service decouples \"who sees it\" from \"is it deployed.\" Default-off, kill-switchable, observable.",
+      "affects": ["packages/web/src/**"],
+      "tags": ["feature-flags", "deployment"]
+    },
+    {
+      "summary": "Public-facing pages render on the server (SSR/RSC) by default; client components are an opt-in",
+      "type": "pattern",
+      "rationale": "SSR-first means SEO + first-paint + zero JS for static content. Client components are reserved for genuine interactivity (forms, real-time updates). The boundary is explicit via `'use client'` directives.",
+      "affects": ["packages/web/src/app/**"],
+      "tags": ["frontend", "patterns"]
+    },
+    {
+      "summary": "Every PR includes a test for the change — no untested merges to main",
+      "type": "constraint",
+      "rationale": "Regression prevention. Code without tests is unsupported by anyone but its author. The discipline is: \"the test you write today is the regression you don't pay for in 6 months.\" CI enforces that test count moves forward, not backward.",
+      "affects": ["packages/web/**", "packages/cli/**"],
+      "tags": ["testing", "process"]
+    }
+  ]
+}

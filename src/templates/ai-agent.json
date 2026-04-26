@@ -1,0 +1,116 @@
+{
+  "id": "ai-agent",
+  "version": "0.1",
+  "name": "AI Agent / LLM App",
+  "tagline": "Prompts, evals, fallbacks — agentic apps in production",
+  "description": "Conventions for teams building agentic applications and LLM-powered products. Covers prompt versioning, eval suites, fallbacks, cost limits, and observability — the discipline that distinguishes a demo from a deployable agent. Founder-curated — review before merging.",
+  "min_plan": "free",
+  "decision_count": 15,
+  "decisions": [
+    {
+      "summary": "All prompts are version-pinned in source code — never edited at runtime via env vars or DB",
+      "type": "constraint",
+      "rationale": "A prompt is the agent's behavior contract. Editing at runtime decouples behavior from PR review and eval coverage. Every prompt change goes through code review + eval delta. Source of truth lives in the repo, not in a CMS the QA team can edit at 2am.",
+      "affects": ["packages/web/src/lib/llm/**", "packages/cli/src/**"],
+      "tags": ["llm", "prompts"]
+    },
+    {
+      "summary": "Every prompt has a regression eval suite that runs in CI on prompt changes",
+      "type": "constraint",
+      "rationale": "Without an eval suite, every prompt change is a roll of the dice. The minimum bar: 5–20 input/output golden pairs that catch obvious regressions. Diff in pass-rate vs main is reported in PR comments.",
+      "affects": ["packages/web/test/llm/**"],
+      "tags": ["llm", "testing"]
+    },
+    {
+      "summary": "LLM calls have a hard timeout (30s); if the model exceeds it, return a graceful fallback",
+      "type": "constraint",
+      "rationale": "LLM providers occasionally hang or return very slowly. A user staring at a spinning indicator past 30 seconds has lost confidence in the product. Graceful fallback (e.g. \"I'm having trouble — try again or contact support\") beats a spinner-of-death.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "reliability"]
+    },
+    {
+      "summary": "Production LLM calls are instrumented with input/output tokens, latency, and model ID",
+      "type": "constraint",
+      "rationale": "Cost overruns and quality regressions are both invisible without telemetry. Token counts feed cost dashboards; latency feeds SLO tracking; model ID lets you A/B different models without ambiguity. PostHog or equivalent.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "observability"]
+    },
+    {
+      "summary": "Per-user daily LLM-cost cap enforced at the API boundary; soft warn at 80%, hard cap at 100%",
+      "type": "constraint",
+      "rationale": "A buggy retry loop or a pathological user can torch your monthly bill in hours. Daily caps cap blast radius. Warn at 80% gives a human time to react before the hard cap kicks in.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["llm", "cost", "reliability"]
+    },
+    {
+      "summary": "Structured-output (JSON) calls always validate against a Zod schema; reject unparseable output with a retry",
+      "type": "constraint",
+      "rationale": "LLM JSON mode is best-effort. Schema validation catches malformed output before downstream code crashes. Retry once with a stricter prompt; on second failure, fall through to a degraded path.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "patterns"]
+    },
+    {
+      "summary": "Temperature 0 for deterministic tasks (classification, extraction, structured output); only relax for creative generation",
+      "type": "constraint",
+      "rationale": "Non-zero temperature makes outputs probabilistic — the same input can produce different outputs. Determinism is essential for tasks the user expects to be repeatable (\"extract the entities from this document\"). Save creativity for tasks that genuinely benefit.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm"]
+    },
+    {
+      "summary": "Tool-calling agents are bounded by max-step limit (typically 10) and max-cost-per-task budget",
+      "type": "constraint",
+      "rationale": "An unbounded agent can loop forever, consume the daily cap in one task, and surprise the user with bills. Step + cost caps are the guardrails. When hit, return a graceful \"task too complex — try a different approach\" message.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "agents", "cost"]
+    },
+    {
+      "summary": "Sensitive operations (delete, transfer, schedule) require human-in-the-loop confirmation — never autonomous",
+      "type": "constraint",
+      "rationale": "An LLM that can delete or move things autonomously is a liability. The pattern: LLM proposes, human approves. Friction is the feature. Read-only autonomy is fine; write-side autonomy requires a second pair of eyes.",
+      "affects": ["packages/web/src/lib/llm/**", "packages/web/src/app/api/**"],
+      "tags": ["llm", "agents", "security"]
+    },
+    {
+      "summary": "User-content + system-prompt boundary is hard — no user input ever appears unescaped in the system prompt",
+      "type": "constraint",
+      "rationale": "Prompt injection is real and cheap. The discipline: user input goes in <user_input>...</user_input> tags inside the user message, never interpolated into the system message. The system message is a static contract.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "security"]
+    },
+    {
+      "summary": "Embeddings + vector store calls are cached on the input hash; cache hit returns immediately",
+      "type": "pattern",
+      "rationale": "Embedding the same content multiple times is pure waste. Cache by sha256(input) → vector. Hit ratio in production is typically 30-60% on real workloads. Cache TTL aligned with embedding-model version.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "patterns", "cost"]
+    },
+    {
+      "summary": "Multi-step agent traces are surfaced in a debug panel for support — never opaque to the engineer investigating an issue",
+      "type": "decision",
+      "rationale": "When a user reports \"the agent did the wrong thing,\" the only useful debugging artifact is the full trace: prompt, tool calls, retrieved chunks, intermediate reasoning. Surface it in an admin panel so support can self-serve diagnosis without spelunking logs.",
+      "affects": ["packages/web/src/app/**", "packages/web/src/lib/llm/**"],
+      "tags": ["llm", "observability", "support"]
+    },
+    {
+      "summary": "Gateway / provider routing uses an explicit fallback chain (e.g. anthropic → bedrock → openai)",
+      "type": "decision",
+      "rationale": "A single-provider dependency is a single-point-of-failure dependency. Vercel AI Gateway / OpenRouter / Portkey provide explicit fallback ordering. When primary is overloaded, traffic transparently shifts to backup. Tag every call with the actually-used provider for billing reconciliation.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "reliability"]
+    },
+    {
+      "summary": "Eval pass-rate is published per-model in the dashboard; switching models requires re-running the suite",
+      "type": "constraint",
+      "rationale": "Models drift. \"Claude Haiku 4.5\" today is not the same as \"Claude Haiku 4.5\" in 2 weeks if the provider silently rolls a fix. Pass-rate over time is a quality regression detector. Switching to a new model = full re-eval, not a config flip.",
+      "affects": ["packages/web/test/llm/**"],
+      "tags": ["llm", "testing", "operations"]
+    },
+    {
+      "summary": "Customer data sent to LLM providers is governed by an explicit data-processing addendum (DPA)",
+      "type": "constraint",
+      "rationale": "Sending PII to a third-party LLM without a DPA is a GDPR / contract violation waiting to happen. Each provider in the fallback chain needs its own DPA. Default behavior: redact / tokenize PII at the call boundary unless the DPA permits the specific data class.",
+      "affects": ["packages/web/src/lib/llm/**"],
+      "tags": ["llm", "compliance", "privacy"]
+    }
+  ]
+}

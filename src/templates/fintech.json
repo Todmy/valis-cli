@@ -1,0 +1,165 @@
+{
+  "id": "fintech",
+  "version": "0.1",
+  "name": "FinTech / Regulated",
+  "tagline": "Audit, encryption, retention — compliance-ready",
+  "description": "Conventions for compliance-aware teams building financial-services or other regulated software. Covers audit, encryption, retention, PII handling, and operational discipline expected by SOC 2 / ISO 27001 / GDPR auditors. Founder-curated — review before merging.",
+  "min_plan": "pro",
+  "decision_count": 22,
+  "decisions": [
+    {
+      "summary": "Every state-changing operation writes an audit row with actor + before-state + after-state + reason",
+      "type": "constraint",
+      "rationale": "SOC 2 CC6.1 + 7.2 + 8.1 require attributable evidence of every change. The audit trail must include WHO did WHAT to WHICH entity WHEN and WHY. Reason is required even for routine operations — \"normal_use\" is acceptable; absence is not.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["audit", "compliance"]
+    },
+    {
+      "summary": "Audit logs are append-only; no UPDATE or DELETE on `audit_entries` permitted at the application layer",
+      "type": "constraint",
+      "rationale": "An audit log that can be modified is not an audit log. DB-level guard (REVOKE UPDATE,DELETE) belt-and-braces with an application-layer rule. Compliance auditors check both.",
+      "affects": ["supabase/migrations/**", "packages/web/src/lib/**"],
+      "tags": ["audit", "compliance", "data"]
+    },
+    {
+      "summary": "PII columns use deterministic encryption for equality lookups; non-equality fields use random encryption",
+      "type": "constraint",
+      "rationale": "Deterministic encryption preserves WHERE = lookups but allows frequency analysis. Random encryption thwarts frequency analysis but loses queryability. Use deterministic only when equality lookup is required — never default to it.",
+      "affects": ["supabase/migrations/**", "packages/web/src/lib/**"],
+      "tags": ["security", "data", "compliance"]
+    },
+    {
+      "summary": "Customer data retention is bounded by the active contract — auto-purge T+30 days after termination",
+      "type": "decision",
+      "rationale": "GDPR Article 5(1)(e) (storage limitation). Indefinite retention is the default failure mode of relational systems — set explicit boundaries. T+30 days gives operations time to recover from a misclick before purge is irreversible.",
+      "affects": ["supabase/migrations/**", "packages/web/src/lib/**"],
+      "tags": ["compliance", "data", "retention"]
+    },
+    {
+      "summary": "Backups are encrypted at rest with keys distinct from production-DB keys; rotation quarterly",
+      "type": "constraint",
+      "rationale": "A breach of the production environment must not auto-compromise backups. Distinct keys means an attacker who exfiltrates the DB key still cannot read the backup blob. Quarterly rotation bounds the blast radius of a leaked key.",
+      "affects": ["supabase/migrations/**", "infra/**"],
+      "tags": ["security", "data", "backups"]
+    },
+    {
+      "summary": "All access to production DB requires individual named credentials — no shared service accounts for human use",
+      "type": "constraint",
+      "rationale": "Shared service accounts make audit useless (\"who ran this query?\" → \"the service\"). Each engineer gets their own credentials with role-based grants. Shared service-account credentials are reserved for application code, not humans.",
+      "affects": ["infra/**", "packages/web/src/lib/**"],
+      "tags": ["security", "audit", "operations"]
+    },
+    {
+      "summary": "Security incident response includes mandatory disclosure to legal within 24 hours of detection",
+      "type": "constraint",
+      "rationale": "GDPR breach notification window is 72 hours. Internal escalation to legal at 24 hours leaves a buffer to assess + draft + notify. Engineering does not unilaterally decide whether an incident requires regulator disclosure.",
+      "affects": ["docs/runbooks/**"],
+      "tags": ["compliance", "incident-response"]
+    },
+    {
+      "summary": "Penetration testing every 12 months by an independent third party; findings tracked to closure in JIRA/Linear",
+      "type": "decision",
+      "rationale": "SOC 2 CC4.1 expects independent testing at least annually. Findings without tracked remediation are findings, not closures — auditors check both the report and the remediation evidence.",
+      "affects": ["docs/security/**"],
+      "tags": ["security", "compliance", "process"]
+    },
+    {
+      "summary": "All third-party dependencies must clear an SCA scan in CI before merge; vuln severity ≥ high blocks",
+      "type": "constraint",
+      "rationale": "Software supply chain attacks are now a primary breach vector (cf SolarWinds, log4shell). SCA = Snyk / Dependabot / Socket / npm audit. High-severity vulns block merge; medium gets a 14-day SLA; low is best-effort.",
+      "affects": [".github/workflows/**", "packages/**/package.json"],
+      "tags": ["security", "supply-chain", "ci"]
+    },
+    {
+      "summary": "Production secrets live in a managed secret store (AWS Secrets Manager / Vault); never in env files committed to source",
+      "type": "constraint",
+      "rationale": "Source-committed secrets are a top-3 exfil vector (history is searchable, even after `git rm`). Managed secret stores provide rotation, audit, and access scoping. The `.env.local` file pattern is dev-only.",
+      "affects": ["packages/**/src/**", "infra/**"],
+      "tags": ["security", "secrets"]
+    },
+    {
+      "summary": "Production database connections use mutual TLS (mTLS) — server cert + client cert both validated",
+      "type": "constraint",
+      "rationale": "TLS server-only authenticates the DB to the client. mTLS authenticates both directions, so a leaked client connection-string isn't enough — the attacker also needs the client cert. Higher operational cost; the right cost for regulated environments.",
+      "affects": ["infra/**", "packages/web/src/lib/**"],
+      "tags": ["security", "data"]
+    },
+    {
+      "summary": "All API requests require a request_id header; logged + traced through the full call chain",
+      "type": "decision",
+      "rationale": "Distributed-system debugging is impossible without trace IDs. Request_id flows from client → API → background jobs → audit rows so an investigation can reconstruct a complete causal trace. Generate at the edge if the client didn't.",
+      "affects": ["packages/web/src/lib/**", "packages/web/src/app/api/**"],
+      "tags": ["observability", "audit"]
+    },
+    {
+      "summary": "Logs are scrubbed of PII at the boundary — never log full credit cards, SSNs, or email addresses",
+      "type": "constraint",
+      "rationale": "Logs are a high-volume PII-leak surface. The discipline: log identifiers (member_id, transaction_id), not values (email, card, SSN). A scrubbing middleware at the logger boundary catches drift; PRs reviewing log statements catches the rest.",
+      "affects": ["packages/web/src/lib/**"],
+      "tags": ["security", "logging", "compliance"]
+    },
+    {
+      "summary": "Every transaction over a defined threshold (e.g. $1k) requires a second-factor confirmation",
+      "type": "constraint",
+      "rationale": "Account takeover via password compromise is one of the highest-impact attack vectors in fintech. Per-transaction 2FA on high-value movement caps the damage window. Threshold is configurable per-customer based on risk profile.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["security", "auth", "fraud"]
+    },
+    {
+      "summary": "Anti-fraud rules run synchronously in-line with the transaction — never asynchronously after the fact",
+      "type": "decision",
+      "rationale": "Async fraud detection means fraudulent transactions complete and the loss is sunk before detection. In-line means slightly higher transaction latency in exchange for a stop-the-bad-thing-before-it-happens guarantee. Worth it.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["fraud", "transactions"]
+    },
+    {
+      "summary": "All money values stored as integers in minor units (cents/pence) — never floating-point",
+      "type": "constraint",
+      "rationale": "Floating-point arithmetic introduces rounding errors that compound across millions of transactions. Integer minor-unit math is exact. Currency is tracked separately. Display formatting is the boundary that converts to user-visible formats.",
+      "affects": ["packages/web/src/lib/**", "supabase/migrations/**"],
+      "tags": ["financial", "data"]
+    },
+    {
+      "summary": "Idempotency keys are required on every write endpoint; duplicate keys return the original response",
+      "type": "constraint",
+      "rationale": "Network retries are inevitable. Without idempotency keys, retries can double-charge, double-credit, or double-execute. The pattern: client generates a UUID per logical operation, server stores `(idempotency_key, response)` for 24h, returns cached response on repeat.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["reliability", "transactions"]
+    },
+    {
+      "summary": "Database writes are wrapped in transactions; multi-table updates are atomic or roll back fully",
+      "type": "constraint",
+      "rationale": "Partial-write states are a debugger's nightmare. The discipline: any operation that touches more than one row in more than one table opens a transaction. Read-only operations need no transaction unless they require consistent snapshot semantics.",
+      "affects": ["packages/web/src/lib/**", "packages/web/src/app/api/**"],
+      "tags": ["data", "reliability"]
+    },
+    {
+      "summary": "Account access logs surface in a self-serve customer dashboard (\"who logged into my account?\")",
+      "type": "decision",
+      "rationale": "Customers detect account compromise faster than the platform does in many cases. Surfacing access logs to the customer turns them into a partial security observer for their own account. GDPR also strengthens the customer's right to this information.",
+      "affects": ["packages/web/src/app/**"],
+      "tags": ["security", "customer-facing", "compliance"]
+    },
+    {
+      "summary": "GDPR data-subject-access-request (DSAR) responds in ≤ 30 days; export is machine-readable JSON",
+      "type": "constraint",
+      "rationale": "GDPR Article 15 + 20. The 30-day SLA is a hard regulatory deadline. JSON over PDF because (a) machine-readable per Article 20, (b) easier to generate from production systems, (c) easier for the user to import elsewhere.",
+      "affects": ["packages/web/src/app/api/**"],
+      "tags": ["compliance", "data"]
+    },
+    {
+      "summary": "All deployments require a peer review approval; production hotfixes require post-merge review within 24h",
+      "type": "constraint",
+      "rationale": "Solo-merging to production is a single-engineer mistake-amplifier. Peer review catches a meaningful fraction of bugs. Hotfix exception exists because production-down beats process-purity, but the post-merge review is non-negotiable for the audit trail.",
+      "affects": [".github/**"],
+      "tags": ["process", "compliance"]
+    },
+    {
+      "summary": "Secret rotation cadence: API keys quarterly, DB passwords semi-annually, signing keys annually with overlap",
+      "type": "constraint",
+      "rationale": "Time-bounded secrets cap the blast radius of an undetected leak. Overlap windows (briefly accept old + new) prevent rotation from causing downtime. Audit logs record every rotation so post-incident analysis can pin a leak window.",
+      "affects": ["infra/**", "docs/security/**"],
+      "tags": ["security", "secrets", "process"]
+    }
+  ]
+}

@@ -106,19 +106,36 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       };
     } catch (err) {
       console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
+      // 019/US1 (R-001, contracts/mcp-context.md): on HTTP transport the
+      // request is being served by a Vercel Function with live cloud access —
+      // the `offline` flag is structurally impossible. Emit
+      // `backend_unavailable` so operators (and the agent) get an
+      // operator-actionable signal instead of the misleading "offline" cue
+      // that drove uninstalls per BUG #84.
       return {
         decisions: [], constraints: [], patterns: [], lessons: [],
-        historical: [], total_in_brain: 0, suppressed_count: 0, offline: true,
+        historical: [], total_in_brain: 0, suppressed_count: 0,
+        backend_unavailable: true,
       };
     }
   }
+
+  // 019/US1 (R-001 + R-006 + contracts/mcp-context.md):
+  //   When running server-side (configOverride set = HTTP MCP transport) and
+  //   no project scope is set, mirror handleSearch's cross-project fallback:
+  //   pull the caller's project memberships and search across them. If the
+  //   caller has zero accessible projects, surface
+  //   `no_accessible_projects: true` so the agent can distinguish "no data
+  //   yet" from "infrastructure failure".
+  const isServerMode = Boolean(configOverride);
+  const wantsCrossProject = args.all_projects || (isServerMode && !projectId);
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     let results;
 
-    if (args.all_projects) {
-      // T022: Cross-project context — load from all accessible projects
+    if (wantsCrossProject) {
+      // T022 + 019/US1: Cross-project context — load from all accessible projects
       let projectIds: string[] = [];
       try {
         if (config.member_id) {
@@ -131,11 +148,23 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
           projectIds = projects.map((p) => p.id);
         }
       } catch {
-        // Fall back to org-wide
+        // Fall back to org-wide for CLI mode; HTTP-mode handled below.
       }
 
       if (projectIds.length > 0) {
         results = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, { limit: 50 });
+      } else if (isServerMode) {
+        // 019/US1: HTTP transport + zero memberships → explicit indicator,
+        // do NOT silently leak org-wide data the caller can't access.
+        return {
+          decisions: [],
+          constraints: [],
+          patterns: [],
+          lessons: [],
+          historical: [],
+          total_in_brain: 0,
+          no_accessible_projects: true,
+        };
       } else {
         results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
       }
@@ -210,7 +239,28 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       suppressed_count,
       note,
     };
-  } catch {
+  } catch (err) {
+    // 019/US1 (R-001, T068): server-mode (HTTP MCP transport) must NEVER emit
+    // `offline:true` — that's a CLI-stdio fallback indicator. Emit
+    // `infrastructure_error` (and `backend_unavailable` for contract symmetry)
+    // so operators have an actionable signal. CLI-stdio path keeps `offline`
+    // for legacy compatibility.
+    if (isServerMode) {
+      console.error(
+        `[context] Backend error (server mode): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        decisions: [],
+        constraints: [],
+        patterns: [],
+        lessons: [],
+        historical: [],
+        total_in_brain: 0,
+        suppressed_count: 0,
+        infrastructure_error: true,
+        backend_unavailable: true,
+      };
+    }
     return {
       decisions: [],
       constraints: [],

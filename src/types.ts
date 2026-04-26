@@ -462,7 +462,25 @@ export interface ContextResponse {
   /** Number of results suppressed from default view (T050). */
   suppressed_count?: number;
   note?: string;
+  /** CLI-stdio fallback indicator. NEVER set on HTTP transport (per 019 R-001). */
   offline?: boolean;
+  /**
+   * 019/US1: caller has zero accessible projects. Distinguishes "no data yet"
+   * from "infrastructure failure". Only emitted on HTTP transport when the
+   * cross-project fallback returns no project memberships.
+   */
+  no_accessible_projects?: boolean;
+  /**
+   * 019/US1: backend genuinely unreachable on HTTP transport. Replaces the
+   * (incorrect) `offline:true` signal that was driving uninstalls per BUG #84.
+   */
+  backend_unavailable?: boolean;
+  /**
+   * 019/US1 (T068): search backend reachable but raised an error. Distinguished
+   * from `backend_unavailable` (network/auth) and `no_accessible_projects` (zero
+   * memberships).
+   */
+  infrastructure_error?: boolean;
 }
 
 export interface DashboardStats {

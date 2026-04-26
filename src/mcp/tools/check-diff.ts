@@ -66,6 +66,8 @@ interface ApiCheckSuccessBody {
 interface ApiCheckErrorBody {
   error: string;
   message: string;
+  max_bytes?: number;
+  [key: string]: unknown;
 }
 
 const SOFT_FAIL_OPEN_REASONS = new Set([
@@ -88,14 +90,49 @@ function pluralise(n: number, word: string): string {
   return n === 1 ? `${n} ${word}` : `${n} ${word}s`;
 }
 
+// Map specific /api/check error codes to user-facing messages.
+// Per FR-007 + T096: oversized, malformed, not-accessible each get a
+// distinct hand-written message instead of the generic fallback.
+function formatHardError(status: number, errBody: ApiCheckErrorBody): string {
+  const code = errBody.error ?? `http_${status}`;
+  switch (code) {
+    case 'diff_too_large': {
+      const limit =
+        typeof errBody.max_bytes === 'number'
+          ? ` (limit: ${errBody.max_bytes.toLocaleString('en-US')} bytes)`
+          : '';
+      return `Check could not run: diff_too_large — diff exceeds the supported size${limit}. Split the change into smaller commits and re-run.`;
+    }
+    case 'invalid_diff':
+    case 'malformed_diff':
+      return 'Check could not run: invalid_diff — diff could not be parsed. Make sure the input is a valid unified diff (`git diff` output).';
+    case 'project_not_accessible':
+    case 'project_not_found':
+      // Deliberately do NOT echo the project_id — leaks scope info to the agent.
+      return 'Check could not run: project_not_accessible — you do not have access to this project. Make sure you are a member of the project linked to this directory.';
+    default: {
+      const message = errBody.message ?? 'Unknown error';
+      return `Check could not run: ${code} — ${message}.`;
+    }
+  }
+}
+
 export async function handleCheckDiff(
   args: CheckDiffArgs,
   configOverride?: ServerConfig,
 ): Promise<CheckDiffResult> {
+  // FR-010 short-circuit (T097): empty / whitespace-only diff means "nothing to
+  // check". Return a friendly success message WITHOUT issuing any network call,
+  // touching config, or otherwise consuming budget. This is the load-bearing
+  // implementation of FR-010's zero-backend-cost guarantee — the slash-command
+  // prompt at valis-plugin/commands/check.md keeps a defensive copy, but the
+  // testable invariant lives here.
   if (typeof args.diff !== 'string' || args.diff.trim().length === 0) {
-    return errorResult(
-      'Check could not run: malformed_diff — `diff` must be a non-empty unified-diff string.',
-    );
+    return {
+      content: [
+        textBlock('Working tree is clean — nothing to check.'),
+      ],
+    };
   }
 
   const config = (configOverride ?? (await loadConfig())) as ValisConfig | null;
@@ -165,10 +202,7 @@ export async function handleCheckDiff(
 
   // Hard error path: 4xx / 5xx with structured error body.
   if (!response.ok) {
-    const errBody = parsed as ApiCheckErrorBody;
-    const code = errBody.error ?? `http_${response.status}`;
-    const message = errBody.message ?? response.statusText ?? 'Unknown error';
-    return errorResult(`Check could not run: ${code} — ${message}.`);
+    return errorResult(formatHardError(response.status, parsed as ApiCheckErrorBody));
   }
 
   const body = parsed as ApiCheckSuccessBody;

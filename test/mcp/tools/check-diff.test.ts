@@ -1,9 +1,13 @@
 /**
- * 019/US2 (T009 + T070 + T071) — valis_check_diff MCP tool tests.
+ * 019/US2 (T009 + T070 + T071 + T096 + T097) — valis_check_diff MCP tool tests.
  *
  * Mocks the global fetch per audit-client.test pattern; covers the 6 cases
  * from research R-007 plus the two analyze-patch cases (T070 zero-decisions
- * cost guard, T071 shared-budget assertion).
+ * cost guard, T071 shared-budget assertion) plus the four post-/speckit.analyze
+ * retrofits: T096 covers the three FR-007 failure categories that T009 missed
+ * (oversized 413, malformed 400, project-not-accessible 403); T097 promotes
+ * FR-010's "nothing to check" short-circuit from prompt-only logic to a
+ * code-asserted invariant on the wrapper.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -286,14 +290,6 @@ describe('handleCheckDiff', () => {
     expect(body.metadata.pr_url).toBeUndefined();
   });
 
-  // Edge case: empty diff string → malformed before any fetch.
-  it('rejects empty diff with malformed_diff error before issuing fetch', async () => {
-    const result = await handleCheckDiff({ diff: '   ' }, buildServerConfig());
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('malformed_diff');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   // Edge case: no project scope at all.
   it('rejects when no project_id is resolvable from args, override, or .valis.json', async () => {
     const config = buildServerConfig({ project_id: undefined });
@@ -301,5 +297,75 @@ describe('handleCheckDiff', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('project_not_found');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // T097 — analyze C5 patch: FR-010 "nothing to check" promoted from
+  // prompt-only logic into the wrapper. Empty / whitespace-only diff returns
+  // the friendly success message with isError ABSENT and ZERO fetch calls
+  // (zero backend cost per FR-010). Two fixtures: '' and a multi-whitespace
+  // string. Both must short-circuit identically.
+  it.each([
+    ['empty string', ''],
+    ['whitespace only', '   \n  \t\n'],
+  ])('FR-010 — %s diff returns success with zero fetch calls', async (_label, diff) => {
+    const result = await handleCheckDiff({ diff }, buildServerConfig());
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text).toContain('Working tree is clean');
+    expect(result.content[0].text).toContain('nothing to check');
+    // Hardest-edge guarantee: NO network calls. Protects FR-010's
+    // "zero backend cost" promise against future regressions.
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  // T096 — analyze H5 patch: FR-007 explicit failure categories. T009's
+  // original 6 cases covered 401/429/500/network — these three add the
+  // remaining categories named in FR-007 (oversized, malformed, not-accessible).
+
+  it('FR-007 oversized diff (413) — surfaces "diff_too_large" with the limit', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(413, {
+        error: 'diff_too_large',
+        message: 'Diff exceeds size limit.',
+        max_bytes: 524288,
+      }),
+    );
+    const result = await handleCheckDiff({ diff: SAMPLE_DIFF }, buildServerConfig());
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('diff_too_large');
+    expect(result.content[0].text).toContain('Split the change');
+    // The limit must be surfaced so the user knows what to aim for.
+    expect(result.content[0].text).toMatch(/524,?288/);
+  });
+
+  it('FR-007 malformed diff (400) — surfaces "invalid_diff" with parse hint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(400, {
+        error: 'invalid_diff',
+        message: 'Could not parse unified diff at line 7.',
+      }),
+    );
+    const result = await handleCheckDiff({ diff: SAMPLE_DIFF }, buildServerConfig());
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('invalid_diff');
+    expect(result.content[0].text).toContain('could not be parsed');
+    expect(result.content[0].text).toContain('git diff');
+  });
+
+  it('FR-007 project not accessible (403) — does not leak project_id to the agent', async () => {
+    const secretProjectId = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(403, {
+        error: 'project_not_accessible',
+        message: `Member is not a participant in project ${secretProjectId}.`,
+      }),
+    );
+    const result = await handleCheckDiff({ diff: SAMPLE_DIFF }, buildServerConfig());
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('project_not_accessible');
+    expect(result.content[0].text).toContain('do not have access');
+    // Critical: the upstream message contains the project UUID; our wrapper
+    // must NOT echo it through to the agent (information leak guard).
+    expect(result.content[0].text).not.toContain(secretProjectId);
   });
 });

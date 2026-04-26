@@ -6,6 +6,12 @@ interface CreateProjectArgs {
   project_name: string;
   /** Optional org_id. Defaults to the authenticated member's org. */
   org_id?: string;
+  /**
+   * 019/US3: enforcement mode for new project.
+   * Accepted: 'block' (default) | 'suggest'.
+   * 'warn' is REJECTED — see contracts/api-projects.md.
+   */
+  enforcement_mode?: string;
 }
 
 interface CreateProjectResponse {
@@ -13,7 +19,38 @@ interface CreateProjectResponse {
   project_name: string;
   role: string;
   invite_code?: string;
+  enforcement_mode?: 'block' | 'suggest';
   error?: string;
+  message?: string;
+}
+
+/**
+ * 019/US3: validate enforcement_mode at the MCP path.
+ * Mirrors the route handler so dashboard, CLI, and MCP all share the same
+ * acceptance set.
+ */
+function validateEnforcementModeArg(
+  raw: string | undefined,
+): { ok: true; value: 'block' | 'suggest' } | { ok: false; error: string; message: string } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: 'block' };
+  }
+  if (raw === 'warn') {
+    return {
+      ok: false,
+      error: 'invalid_enforcement_mode',
+      message:
+        '`warn` is no longer accepted for new projects. Use `block` or `suggest`.',
+    };
+  }
+  if (raw === 'block' || raw === 'suggest') {
+    return { ok: true, value: raw };
+  }
+  return {
+    ok: false,
+    error: 'invalid_enforcement_mode',
+    message: 'enforcement_mode must be one of: block, suggest.',
+  };
 }
 
 /**
@@ -78,6 +115,19 @@ export async function handleCreateProject(
       return { project_id: '', project_name: '', role: '', error: 'project_name_too_long' };
     }
 
+    // 019/US3: enforcement_mode validation BEFORE any insert.
+    const modeCheck = validateEnforcementModeArg(args.enforcement_mode);
+    if (!modeCheck.ok) {
+      return {
+        project_id: '',
+        project_name: '',
+        role: '',
+        error: modeCheck.error,
+        message: modeCheck.message,
+      };
+    }
+    const effectiveEnforcementMode = modeCheck.value;
+
     const supabase = getSupabaseClient(supabaseUrl, serviceRoleKey);
     const inviteCode = generateInviteCode();
 
@@ -85,8 +135,13 @@ export async function handleCreateProject(
     // omitting it triggers a constraint violation (discovered 2026-04-16).
     const { data: project, error: projectError } = await supabase
       .from('projects')
-      .insert({ org_id: orgId, name: projectName, invite_code: inviteCode })
-      .select('id, name, invite_code')
+      .insert({
+        org_id: orgId,
+        name: projectName,
+        invite_code: inviteCode,
+        enforcement_mode: effectiveEnforcementMode,
+      })
+      .select('id, name, invite_code, enforcement_mode')
       .single();
 
     if (projectError || !project) {
@@ -123,6 +178,8 @@ export async function handleCreateProject(
       project_name: project.name,
       role: 'project_admin',
       invite_code: project.invite_code,
+      enforcement_mode:
+        (project.enforcement_mode as 'block' | 'suggest') ?? effectiveEnforcementMode,
     };
   } catch (err) {
     return {

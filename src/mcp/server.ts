@@ -9,6 +9,7 @@ import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
 import { handleCreateProject } from './tools/create-project.js';
+import { handleCheckDiff } from './tools/check-diff.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
@@ -87,6 +88,24 @@ const TOOL_DEFS = {
     schema: {
       project_name: z.string().min(1).max(100).describe('Name of the new project (1-100 chars)'),
       org_id: z.string().uuid().optional().describe("Org UUID — defaults to the authenticated member's org"),
+      enforcement_mode: z
+        .enum(['block', 'suggest'])
+        .optional()
+        .describe(
+          "Enforcement mode for the new project. Defaults to 'block'. The legacy 'warn' value is rejected per 019/US3.",
+        ),
+    },
+  },
+  valis_check_diff: {
+    description:
+      'Run the same enforcement check that the GitHub Action runs at PR time, but against an unstaged or staged unified diff. Use BEFORE committing to surface decision violations early. Pair with /valis:check, which captures `git diff HEAD` and forwards it here.',
+    schema: {
+      diff: z.string().min(1).describe('Unified-diff text (output of `git diff` or equivalent)'),
+      project_id: z.string().uuid().optional().describe('Optional project UUID — resolved from session context if absent'),
+      metadata: z.object({
+        actor: z.string().optional().describe('Free-text actor label (e.g. "alice in IDE")'),
+        commit_sha: z.string().optional().describe('Optional — if the diff is against a specific commit'),
+      }).optional().describe('Optional metadata. `pr_url` is intentionally not accepted — its presence would re-classify the check as PR-time.'),
     },
   },
 } as const;
@@ -366,6 +385,19 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
     async (args) => {
       const result = await handleCreateProject(args, configOverride);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // 019/US2: valis_check_diff — shift-left enforcement against working-tree diff.
+  // Returns one summary block + one per-violation block (already human-readable),
+  // so we forward the content directly instead of re-stringifying as JSON.
+  server.tool(
+    'valis_check_diff',
+    TOOL_DEFS.valis_check_diff.description,
+    TOOL_DEFS.valis_check_diff.schema,
+    async (args) => {
+      const result = await handleCheckDiff(args, configOverride);
+      return result;
     },
   );
 

@@ -84,7 +84,7 @@ const TOOL_DEFS = {
   },
   valis_create_project: {
     description:
-      "Create a new project in the authenticated member's org and assign them as project_admin. Use when the user wants to connect a repo to a project that doesn't exist yet (e.g. during /valis:init after they chose 'create new').",
+      "Create a new project in the authenticated member's org and assign them as project_admin. Use when the user wants to connect a repo to a project that doesn't exist yet (e.g. during /valis:init after they chose 'create new'). Optionally seed it from a constitution template ('ts-saas', 'fintech', 'ai-agent') — fintech requires the 'pro' plan or higher.",
     schema: {
       project_name: z.string().min(1).max(100).describe('Name of the new project (1-100 chars)'),
       org_id: z.string().uuid().optional().describe("Org UUID — defaults to the authenticated member's org"),
@@ -93,6 +93,12 @@ const TOOL_DEFS = {
         .optional()
         .describe(
           "Enforcement mode for the new project. Defaults to 'block'. The legacy 'warn' value is rejected per 019/US3.",
+        ),
+      template_id: z
+        .enum(['ts-saas', 'fintech', 'ai-agent'])
+        .optional()
+        .describe(
+          "Optional constitution template to seed the project with. Templates are version-pinned; the seeded `template_source` records '<id>@v<version>'. Plan-locked: 'fintech' requires 'pro' or higher.",
         ),
     },
   },

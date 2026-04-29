@@ -16,6 +16,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import type { Decision } from '../types.js';
+import { getActiveCollectionName } from '../cloud/embedding.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,7 +37,9 @@ export interface DedupCandidate {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const COLLECTION_NAME = 'decisions';
+// 019/US4: dedup operates on the same active collection the rest of the
+// stack uses. Resolved at module load.
+const COLLECTION_NAME = getActiveCollectionName();
 
 /**
  * Deduplicate symmetric candidate pairs so that (A,B) and (B,A) are collapsed

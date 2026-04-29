@@ -11,9 +11,17 @@ import {
   VECTOR_SIZE,
   REINDEX_BATCH_SIZE,
   REINDEX_ABORT_THRESHOLD,
+  getActiveCollectionName,
+  getDualWriteCollection,
+  vectorForUpsertAtVersion,
 } from './embedding.js';
 
-export const COLLECTION_NAME = 'decisions';
+/**
+ * Active Qdrant collection. Resolved at module load against
+ * `EMBEDDING_ACTIVE_VERSION` so the alias-swap is a single env-var flip
+ * + redeploy. See `embedding.ts` `getActiveCollectionName`.
+ */
+export const COLLECTION_NAME: string = getActiveCollectionName();
 
 /** Batch size for the Qdrant project_id backfill migration. */
 const MIGRATION_BATCH_SIZE = 100;
@@ -190,20 +198,38 @@ export async function upsertDecision(
       ? strategy.vectorForUpsert(embedInput)
       : await (strategy as ClientEmbeddingStrategy).vectorForUpsertAsync(embedInput);
 
+  // Dual-write window (US4): when `EMBEDDING_DUAL_WRITE=1`, we also write the
+  // same decision to the inactive-version collection so it stays warm during
+  // the migration / 7-day retention. Inactive-version writes use the same
+  // strategy class but a different model + char ceiling (`v1` vs `v2`).
+  const dualTarget = strategy.mode === 'server' ? getDualWriteCollection() : null;
+
+  const point = {
+    id: decisionId,
+    payload,
+    // Cast: the JS client `VectorStruct` type does not perfectly model
+    // named-vectors-with-Document. Runtime accepts this shape per Qdrant
+    // 1.13 REST schema (server mode) and named-vector-as-number-array
+    // (client mode).
+    vector: vector as never,
+  };
+
   try {
-    await qdrant.upsert(COLLECTION_NAME, {
-      points: [
-        {
-          id: decisionId,
-          payload,
-          // Cast: the JS client `VectorStruct` type does not perfectly model
-          // named-vectors-with-Document. Runtime accepts this shape per Qdrant
-          // 1.13 REST schema (server mode) and named-vector-as-number-array
-          // (client mode).
-          vector: vector as never,
-        },
-      ],
-    });
+    if (dualTarget) {
+      // Dual-write — both upserts MUST succeed; if either fails, the function
+      // throws and the caller's outer handling decides retry / offline-queue.
+      // Promise.all short-circuits on first reject (matches FR T031 contract:
+      // "both fail atomically on inference error").
+      const dualVector = vectorForUpsertAtVersion(contextualText, dualTarget.version);
+      await Promise.all([
+        qdrant.upsert(COLLECTION_NAME, { points: [point] }),
+        qdrant.upsert(dualTarget.collection, {
+          points: [{ id: decisionId, payload, vector: dualVector as never }],
+        }),
+      ]);
+    } else {
+      await qdrant.upsert(COLLECTION_NAME, { points: [point] });
+    }
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
     if (quota) {

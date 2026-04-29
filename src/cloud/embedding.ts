@@ -16,28 +16,73 @@
 import type { QdrantClient } from '@qdrant/js-client-rest';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants — versioned for the bge-m3 migration (US4 / 019-launch-readiness)
 // ---------------------------------------------------------------------------
 
-export const DENSE_MODEL = 'sentence-transformers/all-MiniLM-L6-v2' as const;
+/** v1 (legacy): English-dominant, 384-dim. */
+export const DENSE_MODEL_V1 = 'sentence-transformers/all-MiniLM-L6-v2' as const;
+export const VECTOR_SIZE_V1 = 384;
+/** ~4 chars/token × 512-token window ≈ 2000 char safe ceiling. */
+export const MAX_EMBEDDING_INPUT_CHARS_V1 = 2000;
+
+/** v2 (active target): BAAI/bge-m3, multilingual (100+ langs), 1024-dim. */
+export const DENSE_MODEL_V2 = 'BAAI/bge-m3' as const;
+export const VECTOR_SIZE_V2 = 1024;
+/** bge-m3 8192-token window ≈ 24000 char safe ceiling at 3 chars/token. */
+export const MAX_EMBEDDING_INPUT_CHARS_V2 = 24000;
+
+export type EmbeddingVersion = 'v1' | 'v2';
+
+/**
+ * Active embedding version, gated by env var `EMBEDDING_ACTIVE_VERSION`.
+ * Default `v1` until the prod cutover. After alias swap → set to `v2`.
+ */
+export function getActiveEmbeddingVersion(): EmbeddingVersion {
+  return process.env.EMBEDDING_ACTIVE_VERSION === 'v2' ? 'v2' : 'v1';
+}
+
+/**
+ * Dual-write window flag. When `EMBEDDING_DUAL_WRITE=1`, every embed write
+ * produces vectors for BOTH versions and writes to BOTH collections so the
+ * inactive version stays warm during the migration / 7-day retention.
+ */
+export function isDualWriteEnabled(): boolean {
+  return process.env.EMBEDDING_DUAL_WRITE === '1';
+}
+
+export function getDenseModel(
+  version: EmbeddingVersion = getActiveEmbeddingVersion(),
+): string {
+  return version === 'v2' ? DENSE_MODEL_V2 : DENSE_MODEL_V1;
+}
+
+export function getVectorSize(
+  version: EmbeddingVersion = getActiveEmbeddingVersion(),
+): number {
+  return version === 'v2' ? VECTOR_SIZE_V2 : VECTOR_SIZE_V1;
+}
+
+export function getMaxEmbeddingInputChars(
+  version: EmbeddingVersion = getActiveEmbeddingVersion(),
+): number {
+  return version === 'v2' ? MAX_EMBEDDING_INPUT_CHARS_V2 : MAX_EMBEDDING_INPUT_CHARS_V1;
+}
+
+/**
+ * Backward-compat exports — resolved at module load against active version.
+ * Hosted users redeploy on env-var flip, so a one-shot resolution is enough.
+ */
+export const DENSE_MODEL = getDenseModel();
+export const VECTOR_SIZE = getVectorSize();
+export const MAX_EMBEDDING_INPUT_CHARS = getMaxEmbeddingInputChars();
+
 export const BM25_MODEL = 'Qdrant/bm25' as const;
 export const DENSE_VECTOR_NAME = '' as const;
 export const BM25_VECTOR_NAME = 'bm25' as const;
-export const VECTOR_SIZE = 384;
 export const PROBE_POINT_ID = '00000000-0000-0000-0000-000000000001';
 export const PROBE_TEXT = 'embedding strategy detection probe';
 export const REINDEX_BATCH_SIZE = 50;
 export const REINDEX_ABORT_THRESHOLD = 10;
-
-/**
- * Conservative character ceiling for embedding input (FR-013b).
- *
- * MiniLM-L6-v2 has a 512-token window. ~4 characters per token gives roughly
- * 2000 characters as a safe ceiling that fits comfortably with overhead for
- * BPE expansion. The full original text remains in `payload.detail` and
- * `payload.contextual_text` — only the embedding *input* is truncated.
- */
-export const MAX_EMBEDDING_INPUT_CHARS = 2000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,17 +177,21 @@ export function parseQuotaError(
 // ---------------------------------------------------------------------------
 
 /**
- * Truncate text to `MAX_EMBEDDING_INPUT_CHARS` before sending to inference.
+ * Truncate text to the active embedding model's safe character ceiling.
  * Emits a one-line WARN to stderr when truncation occurs so operators can
  * spot abnormally long inputs. The full text MUST remain in payload —
  * callers truncate only the embedding input, not the stored payload.
  */
-export function truncateForEmbedding(text: string): string {
-  if (text.length <= MAX_EMBEDDING_INPUT_CHARS) return text;
+export function truncateForEmbedding(
+  text: string,
+  version: EmbeddingVersion = getActiveEmbeddingVersion(),
+): string {
+  const ceiling = getMaxEmbeddingInputChars(version);
+  if (text.length <= ceiling) return text;
   console.warn(
-    `[embedding] truncated input from ${text.length} to ${MAX_EMBEDDING_INPUT_CHARS} chars`,
+    `[embedding] truncated input from ${text.length} to ${ceiling} chars (version=${version})`,
   );
-  return text.slice(0, MAX_EMBEDDING_INPUT_CHARS);
+  return text.slice(0, ceiling);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,16 +201,21 @@ export function truncateForEmbedding(text: string): string {
 export class ServerInferenceStrategy implements EmbeddingStrategy {
   readonly mode = 'server' as const;
   readonly supportsHybrid = true;
+  readonly version: EmbeddingVersion;
+
+  constructor(version: EmbeddingVersion = getActiveEmbeddingVersion()) {
+    this.version = version;
+  }
 
   vectorForUpsert(text: string): UpsertVector {
     return {
-      [DENSE_VECTOR_NAME]: { text, model: DENSE_MODEL },
+      [DENSE_VECTOR_NAME]: { text, model: getDenseModel(this.version) },
       [BM25_VECTOR_NAME]: { text, model: BM25_MODEL },
     };
   }
 
   queryForDense(text: string): DenseQueryInput {
-    return { text, model: DENSE_MODEL };
+    return { text, model: getDenseModel(this.version) };
   }
 
   queryForSparse(text: string): SparseQueryInput {
@@ -300,6 +354,7 @@ export async function detectEmbeddingStrategy(
   }
 
   _detectionInFlight = (async () => {
+    const probeModel = getDenseModel();
     try {
       await qdrant.upsert(collectionName, {
         points: [
@@ -309,7 +364,7 @@ export async function detectEmbeddingStrategy(
             // named-vectors-with-Document. Runtime accepts this shape per
             // Qdrant 1.13 REST schema.
             vector: {
-              [DENSE_VECTOR_NAME]: { text: PROBE_TEXT, model: DENSE_MODEL },
+              [DENSE_VECTOR_NAME]: { text: PROBE_TEXT, model: probeModel },
               [BM25_VECTOR_NAME]: { text: PROBE_TEXT, model: BM25_MODEL },
             } as never,
             payload: { org_id: '__probe__', __probe: true },
@@ -341,4 +396,61 @@ export async function detectEmbeddingStrategy(
 export function _resetStrategyCache(): void {
   _cachedStrategy = null;
   _detectionInFlight = null;
+}
+
+// ---------------------------------------------------------------------------
+// US4 / 019 — Dual-write helpers for the bge-m3 migration window
+// ---------------------------------------------------------------------------
+
+/**
+ * Default collection naming convention for the dual-write window.
+ *
+ * - v1 lives in `'decisions'` (the legacy collection — kept stable for
+ *   rollback during the 7-day retention window).
+ * - v2 lives in `'decisions_v2'` (created by the migration script).
+ *
+ * Reads always go through the **active** collection (computed by
+ * `getActiveCollectionName`). Writes go through the active collection,
+ * plus the dual-write collection when `EMBEDDING_DUAL_WRITE=1`.
+ */
+export const COLLECTION_V1 = 'decisions' as const;
+export const COLLECTION_V2 = 'decisions_v2' as const;
+
+export function getActiveCollectionName(
+  version: EmbeddingVersion = getActiveEmbeddingVersion(),
+): string {
+  return version === 'v2' ? COLLECTION_V2 : COLLECTION_V1;
+}
+
+/**
+ * When dual-write is enabled, return the *other* collection (so the
+ * caller writes to active + this one). Returns null when dual-write is
+ * disabled. The "other" collection's version is the inverse of the active
+ * version — so callers always cover both halves of the migration matrix.
+ */
+export function getDualWriteCollection(): {
+  collection: string;
+  version: EmbeddingVersion;
+} | null {
+  if (!isDualWriteEnabled()) return null;
+  const active = getActiveEmbeddingVersion();
+  const otherVersion: EmbeddingVersion = active === 'v1' ? 'v2' : 'v1';
+  return {
+    collection: getActiveCollectionName(otherVersion),
+    version: otherVersion,
+  };
+}
+
+/**
+ * Build a `vectorForUpsert` payload for an arbitrary version, suitable for
+ * dual-write. Truncates the input against the destination version's character
+ * ceiling (since v1 and v2 have different windows).
+ */
+export function vectorForUpsertAtVersion(
+  text: string,
+  version: EmbeddingVersion,
+): UpsertVector {
+  const strategy = new ServerInferenceStrategy(version);
+  const truncated = truncateForEmbedding(text, version);
+  return strategy.vectorForUpsert(truncated);
 }

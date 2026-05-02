@@ -329,10 +329,17 @@ export class ClusterRegistry {
     decisionId: string,
     clusterId: string,
   ): Promise<void> {
+    // 019/US4: update via filter so all chunks of a multi-chunk decision
+    // pick up the cluster_id, with fallback for legacy single-point records.
     await this.qdrant.setPayload(COLLECTION_NAME, {
       payload: { cluster_id: clusterId },
-      points: [decisionId],
-    });
+      filter: {
+        should: [
+          { must: [{ key: 'decision_id', match: { value: decisionId } }] },
+          { has_id: [decisionId] },
+        ],
+      },
+    } as Parameters<typeof this.qdrant.setPayload>[1]);
   }
 
   /** Get member IDs for a cluster. */

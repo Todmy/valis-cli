@@ -15,6 +15,39 @@ import {
   getDualWriteCollection,
   vectorForUpsertAtVersion,
 } from './embedding.js';
+import { chunkText, type Chunk } from './chunking.js';
+import { createHash } from 'node:crypto';
+
+/**
+ * Build a deterministic UUIDv5-shaped point ID for a chunk N>0 of a parent
+ * decision. Chunk 0 always reuses the parent decision UUID so existing
+ * Postgres FK references and external links keep resolving.
+ *
+ * The shape (8-4-4-4-12 hex) is what Qdrant accepts as a UUID-format point ID.
+ * We derive it from sha256(parentId + ':' + index) and format the first 32
+ * hex chars with the UUIDv5 layout (variant bits set so it's a valid UUID).
+ */
+function chunkPointId(parentDecisionId: string, chunkIndex: number): string {
+  if (chunkIndex === 0) return parentDecisionId;
+  const h = createHash('sha256')
+    .update(`${parentDecisionId}:chunk:${chunkIndex}`)
+    .digest('hex');
+  // RFC 4122 v5-shaped: set version=5 in high nibble of byte 6, variant=10
+  // in high bits of byte 8.
+  const b6 = ((parseInt(h.slice(12, 14), 16) & 0x0f) | 0x50)
+    .toString(16)
+    .padStart(2, '0');
+  const b8 = ((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80)
+    .toString(16)
+    .padStart(2, '0');
+  return [
+    h.slice(0, 8),
+    h.slice(8, 12),
+    `${b6}${h.slice(14, 16)}`,
+    `${b8}${h.slice(18, 20)}`,
+    h.slice(20, 32),
+  ].join('-');
+}
 
 /**
  * Active Qdrant collection. Resolved at module load against
@@ -187,16 +220,13 @@ export async function upsertDecision(
     payload.project_id = projectId;
   }
 
-  // 013-semantic-embeddings — generate a real vector via the active embedding
-  // strategy (server inference or local fastembed). The full contextualText
-  // remains in payload.contextual_text — only the embedding *input* is
-  // truncated to the model's safe character ceiling (FR-013b, FR-025).
+  // 019/US4 — chunk long decisions for the e5-large 514-token window.
+  // Each chunk becomes a separate Qdrant point sharing the same parent
+  // payload + carrying chunk-specific metadata (decision_id, chunk_index,
+  // total_chunks, chunk_text). Search-side dedup groups by decision_id and
+  // keeps the max score per parent decision.
   const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
-  const embedInput = truncateForEmbedding(contextualText);
-  const vector =
-    strategy.mode === 'server'
-      ? strategy.vectorForUpsert(embedInput)
-      : await (strategy as ClientEmbeddingStrategy).vectorForUpsertAsync(embedInput);
+  const chunks: Chunk[] = chunkText(contextualText);
 
   // Dual-write window (US4): when `EMBEDDING_DUAL_WRITE=1`, we also write the
   // same decision to the inactive-version collection so it stays warm during
@@ -204,31 +234,49 @@ export async function upsertDecision(
   // strategy class but a different model + char ceiling (`v1` vs `v2`).
   const dualTarget = strategy.mode === 'server' ? getDualWriteCollection() : null;
 
-  const point = {
-    id: decisionId,
-    payload,
-    // Cast: the JS client `VectorStruct` type does not perfectly model
-    // named-vectors-with-Document. Runtime accepts this shape per Qdrant
-    // 1.13 REST schema (server mode) and named-vector-as-number-array
-    // (client mode).
-    vector: vector as never,
+  const buildPointForChunk = async (chunk: Chunk) => {
+    const chunkPayload: Record<string, unknown> = {
+      ...payload,
+      decision_id: decisionId,
+      chunk_index: chunk.index,
+      total_chunks: chunk.total,
+      chunk_text: chunk.text,
+    };
+    const embedInput = truncateForEmbedding(chunk.text);
+    const vector =
+      strategy.mode === 'server'
+        ? strategy.vectorForUpsert(embedInput)
+        : await (strategy as ClientEmbeddingStrategy).vectorForUpsertAsync(embedInput);
+    return {
+      id: chunkPointId(decisionId, chunk.index),
+      payload: chunkPayload,
+      vector: vector as never,
+    };
   };
 
   try {
+    const points = await Promise.all(chunks.map(buildPointForChunk));
+
     if (dualTarget) {
       // Dual-write — both upserts MUST succeed; if either fails, the function
       // throws and the caller's outer handling decides retry / offline-queue.
-      // Promise.all short-circuits on first reject (matches FR T031 contract:
-      // "both fail atomically on inference error").
-      const dualVector = vectorForUpsertAtVersion(contextualText, dualTarget.version);
+      const dualPoints = chunks.map((chunk) => ({
+        id: chunkPointId(decisionId, chunk.index),
+        payload: {
+          ...payload,
+          decision_id: decisionId,
+          chunk_index: chunk.index,
+          total_chunks: chunk.total,
+          chunk_text: chunk.text,
+        },
+        vector: vectorForUpsertAtVersion(chunk.text, dualTarget.version) as never,
+      }));
       await Promise.all([
-        qdrant.upsert(COLLECTION_NAME, { points: [point] }),
-        qdrant.upsert(dualTarget.collection, {
-          points: [{ id: decisionId, payload, vector: dualVector as never }],
-        }),
+        qdrant.upsert(COLLECTION_NAME, { points }),
+        qdrant.upsert(dualTarget.collection, { points: dualPoints }),
       ]);
     } else {
-      await qdrant.upsert(COLLECTION_NAME, { points: [point] });
+      await qdrant.upsert(COLLECTION_NAME, { points });
     }
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
@@ -248,15 +296,45 @@ export async function upsertDecision(
  * Used by the pin/unpin lifecycle actions to keep Qdrant in sync with
  * Postgres so that the recencyDecay signal can read `pinned` at search time.
  */
+/**
+ * 019/US4 helper: apply a payload patch to all chunks of a decision (or
+ * the legacy single point if the record predates chunking). Keeps multi-chunk
+ * payload coherent for downstream readers.
+ */
+export async function setDecisionPayload(
+  qdrant: QdrantClient,
+  decisionId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await qdrant.setPayload(COLLECTION_NAME, {
+    payload,
+    filter: {
+      should: [
+        { must: [{ key: 'decision_id', match: { value: decisionId } }] },
+        { has_id: [decisionId] },
+      ],
+    },
+  } as never);
+}
+
 export async function updatePinnedPayload(
   qdrant: QdrantClient,
   decisionId: string,
   pinned: boolean,
 ): Promise<void> {
+  // 019/US4: a decision may live as N chunk points sharing decision_id.
+  // Update by filter so all chunks stay in sync. Filter also matches the
+  // legacy single-point case where the point id == decision id (no
+  // decision_id payload field) — should clause covers both shapes.
   await qdrant.setPayload(COLLECTION_NAME, {
     payload: { pinned },
-    points: [decisionId],
-  });
+    filter: {
+      should: [
+        { must: [{ key: 'decision_id', match: { value: decisionId } }] },
+        { has_id: [decisionId] },
+      ],
+    },
+  } as never);
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +573,10 @@ export async function hybridSearch(
 
   const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
 
+  // 019/US4: pull more candidates than `limit` so chunk-dedup still has
+  // enough distinct decisions to fill the requested slot count.
+  const fetchLimit = limit * 4;
+
   try {
     let results;
     let mode: string;
@@ -508,19 +590,19 @@ export async function hybridSearch(
           {
             query: strategy.queryForDense(truncated) as never,
             using: DENSE_VECTOR_NAME,
-            limit: limit * 2,
+            limit: fetchLimit * 2,
             filter,
           },
           {
             query: strategy.queryForSparse(truncated) as never,
             using: BM25_VECTOR_NAME,
-            limit: limit * 2,
+            limit: fetchLimit * 2,
             filter,
           },
         ],
         query: { fusion: 'rrf' } as never,
         filter,
-        limit,
+        limit: fetchLimit,
         with_payload: true,
       });
     } else {
@@ -531,13 +613,14 @@ export async function hybridSearch(
         query: denseQuery as never,
         using: DENSE_VECTOR_NAME,
         filter,
-        limit,
+        limit: fetchLimit,
         with_payload: true,
       });
     }
 
     logSearchScores(mode, results.points);
-    return results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
+    const mapped = results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
+    return dedupByDecisionId(mapped, limit);
   } catch (err) {
     // Quota errors propagate as structured EmbeddingQuotaError so the caller
     // can render them. Other errors fall through to scroll fallback (FR-010).
@@ -547,11 +630,12 @@ export async function hybridSearch(
     logSearchScores('scroll-fallback', [], (err as Error).message);
     const results = await qdrant.scroll(COLLECTION_NAME, {
       filter,
-      limit,
+      limit: fetchLimit,
       with_payload: true,
     });
 
-    return results.points.map((point) => mapPointToSearchResult(point, 0));
+    const mapped = results.points.map((point) => mapPointToSearchResult(point, 0));
+    return dedupByDecisionId(mapped, limit);
   }
 }
 
@@ -565,8 +649,11 @@ function mapPointToSearchResult(
   score: number,
 ): SearchResult {
   const payload = (point.payload ?? {}) as Record<string, unknown>;
+  // Parent decision id falls back to the point id for legacy single-point
+  // (pre-019/US4) records that don't carry a chunk payload.
+  const parentId = (payload.decision_id as string) ?? (point.id as string);
   return {
-    id: point.id as string,
+    id: parentId,
     score,
     type: payload.type as DecisionType,
     summary: (payload.summary as string) || null,
@@ -583,6 +670,30 @@ function mapPointToSearchResult(
     project_id: (payload.project_id as string) ?? undefined,
     project_name: (payload.project_name as string) ?? undefined,
   };
+}
+
+/**
+ * Deduplicate chunked search results to one entry per parent decision.
+ *
+ * Per Q3 of speckit.clarify Session 2026-05-03 — "max score per
+ * decision_id". Multiple chunks of the same long decision can each match
+ * a query; we surface the strongest hit and drop the rest. Ranks the
+ * remaining results by descending score and trims to `limit`.
+ */
+function dedupByDecisionId(
+  results: SearchResult[],
+  limit: number,
+): SearchResult[] {
+  const best = new Map<string, SearchResult>();
+  for (const r of results) {
+    const existing = best.get(r.id);
+    if (!existing || r.score > existing.score) {
+      best.set(r.id, r);
+    }
+  }
+  return Array.from(best.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 /**
@@ -614,6 +725,9 @@ export async function hybridSearchAllProjects(
 
   const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
 
+  // 019/US4: over-fetch so chunk-dedup still surfaces `limit` distinct decisions.
+  const fetchLimit = limit * 4;
+
   try {
     let results;
     let mode: string;
@@ -625,19 +739,19 @@ export async function hybridSearchAllProjects(
           {
             query: strategy.queryForDense(truncated) as never,
             using: DENSE_VECTOR_NAME,
-            limit: limit * 2,
+            limit: fetchLimit * 2,
             filter,
           },
           {
             query: strategy.queryForSparse(truncated) as never,
             using: BM25_VECTOR_NAME,
-            limit: limit * 2,
+            limit: fetchLimit * 2,
             filter,
           },
         ],
         query: { fusion: 'rrf' } as never,
         filter,
-        limit,
+        limit: fetchLimit,
         with_payload: true,
       });
     } else {
@@ -647,13 +761,14 @@ export async function hybridSearchAllProjects(
         query: denseQuery as never,
         using: DENSE_VECTOR_NAME,
         filter,
-        limit,
+        limit: fetchLimit,
         with_payload: true,
       });
     }
 
     logSearchScores(mode, results.points);
-    return results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
+    const mapped = results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
+    return dedupByDecisionId(mapped, limit);
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
     if (quota) throw quota;
@@ -661,11 +776,12 @@ export async function hybridSearchAllProjects(
     logSearchScores('scroll-fallback-cross', [], (err as Error).message);
     const results = await qdrant.scroll(COLLECTION_NAME, {
       filter,
-      limit,
+      limit: fetchLimit,
       with_payload: true,
     });
 
-    return results.points.map((point) => mapPointToSearchResult(point, 0));
+    const mapped = results.points.map((point) => mapPointToSearchResult(point, 0));
+    return dedupByDecisionId(mapped, limit);
   }
 }
 

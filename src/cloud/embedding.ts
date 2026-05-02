@@ -25,11 +25,13 @@ export const VECTOR_SIZE_V1 = 384;
 /** ~4 chars/token × 512-token window ≈ 2000 char safe ceiling. */
 export const MAX_EMBEDDING_INPUT_CHARS_V1 = 2000;
 
-/** v2 (active target): BAAI/bge-m3, multilingual (100+ langs), 1024-dim. */
-export const DENSE_MODEL_V2 = 'BAAI/bge-m3' as const;
+/** v2 (active target): intfloat/multilingual-e5-large, 100+ langs, 1024-dim.
+ * Available via Qdrant Cloud managed inference (paid cluster, free tier 5M tok/mo). */
+export const DENSE_MODEL_V2 = 'intfloat/multilingual-e5-large' as const;
 export const VECTOR_SIZE_V2 = 1024;
-/** bge-m3 8192-token window ≈ 24000 char safe ceiling at 3 chars/token. */
-export const MAX_EMBEDDING_INPUT_CHARS_V2 = 24000;
+/** e5-large 514-token window. UA/PL tokenize to ~1.3-1.5x more tokens/char than EN,
+ * so 1500 char chunks give safety margin under multilingual tokenizers. */
+export const MAX_EMBEDDING_INPUT_CHARS_V2 = 2000;
 
 export type EmbeddingVersion = 'v1' | 'v2';
 

@@ -1,9 +1,13 @@
 /**
- * 019/US4 / T030 — bge-m3 strategy assertions.
+ * 019/US4 / T030 — multilingual-e5-large strategy assertions.
  *
  * Verifies the v2 ServerInferenceStrategy emits Document shapes with the
- * bge-m3 model, the v2 char ceiling truncates input correctly, and
- * vectorForUpsertAtVersion produces the right model per version.
+ * intfloat/multilingual-e5-large model, the v2 char ceiling truncates
+ * input correctly, and vectorForUpsertAtVersion produces the right model
+ * per version.
+ *
+ * Switched from BAAI/bge-m3 (not in Qdrant Cloud catalog) per
+ * speckit.clarify Session 2026-05-03 — see specs/019-launch-readiness/spec.md.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -26,8 +30,8 @@ import {
   type EmbeddingVersion,
 } from '../../src/cloud/embedding.js';
 
-describe('US4 — bge-m3 v2 strategy', () => {
-  it('VECTOR_SIZE_V2 = 1024 (bge-m3 dimensionality)', () => {
+describe('US4 — multilingual-e5-large v2 strategy', () => {
+  it('VECTOR_SIZE_V2 = 1024 (e5-large dimensionality)', () => {
     expect(VECTOR_SIZE_V2).toBe(1024);
   });
 
@@ -35,27 +39,27 @@ describe('US4 — bge-m3 v2 strategy', () => {
     expect(VECTOR_SIZE_V1).toBe(384);
   });
 
-  it('DENSE_MODEL_V2 is BAAI/bge-m3', () => {
-    expect(DENSE_MODEL_V2).toBe('BAAI/bge-m3');
+  it('DENSE_MODEL_V2 is intfloat/multilingual-e5-large', () => {
+    expect(DENSE_MODEL_V2).toBe('intfloat/multilingual-e5-large');
   });
 
   it('DENSE_MODEL_V1 is the legacy MiniLM identifier', () => {
     expect(DENSE_MODEL_V1).toBe('sentence-transformers/all-MiniLM-L6-v2');
   });
 
-  it('MAX_EMBEDDING_INPUT_CHARS_V2 = 24000 (8K-token window × ~3 char/token)', () => {
-    expect(MAX_EMBEDDING_INPUT_CHARS_V2).toBe(24000);
+  it('MAX_EMBEDDING_INPUT_CHARS_V2 = 2000 (514-token window, multilingual safety)', () => {
+    expect(MAX_EMBEDDING_INPUT_CHARS_V2).toBe(2000);
   });
 
   it('MAX_EMBEDDING_INPUT_CHARS_V1 = 2000 (legacy 512-token window)', () => {
     expect(MAX_EMBEDDING_INPUT_CHARS_V1).toBe(2000);
   });
 
-  it('ServerInferenceStrategy("v2") vectorForUpsert emits bge-m3 Document', () => {
+  it('ServerInferenceStrategy("v2") vectorForUpsert emits e5-large Document', () => {
     const strat = new ServerInferenceStrategy('v2');
     const v = strat.vectorForUpsert('text');
     expect(v).toEqual({
-      [DENSE_VECTOR_NAME]: { text: 'text', model: 'BAAI/bge-m3' },
+      [DENSE_VECTOR_NAME]: { text: 'text', model: 'intfloat/multilingual-e5-large' },
       [BM25_VECTOR_NAME]: { text: 'text', model: BM25_MODEL },
     });
   });
@@ -78,12 +82,12 @@ describe('US4 — bge-m3 v2 strategy', () => {
 });
 
 describe('US4 — truncation', () => {
-  it('v2: leaves text under 24000 chars untouched', () => {
+  it('v2: leaves text under 2000 chars untouched', () => {
     const text = 'a'.repeat(MAX_EMBEDDING_INPUT_CHARS_V2);
     expect(truncateForEmbedding(text, 'v2')).toEqual(text);
   });
 
-  it('v2: truncates inputs above 24000 chars', () => {
+  it('v2: truncates inputs above 2000 chars', () => {
     const text = 'a'.repeat(MAX_EMBEDDING_INPUT_CHARS_V2 + 100);
     const out = truncateForEmbedding(text, 'v2');
     expect(out).toHaveLength(MAX_EMBEDDING_INPUT_CHARS_V2);
@@ -95,17 +99,17 @@ describe('US4 — truncation', () => {
     expect(out).toHaveLength(MAX_EMBEDDING_INPUT_CHARS_V1);
   });
 
-  it('v1 ceiling differs from v2 ceiling', () => {
-    expect(MAX_EMBEDDING_INPUT_CHARS_V1).not.toEqual(MAX_EMBEDDING_INPUT_CHARS_V2);
+  it('v1 and v2 share the same 2000 char ceiling now (chunking handles longer inputs)', () => {
+    expect(MAX_EMBEDDING_INPUT_CHARS_V1).toEqual(MAX_EMBEDDING_INPUT_CHARS_V2);
   });
 });
 
 describe('US4 — vectorForUpsertAtVersion', () => {
-  it('v2 truncates against the v2 ceiling and uses bge-m3', () => {
+  it('v2 truncates against the v2 ceiling and uses e5-large', () => {
     const long = 'b'.repeat(MAX_EMBEDDING_INPUT_CHARS_V2 + 50);
     const out = vectorForUpsertAtVersion(long, 'v2') as Record<string, { text: string; model: string }>;
     expect(out[DENSE_VECTOR_NAME].text).toHaveLength(MAX_EMBEDDING_INPUT_CHARS_V2);
-    expect(out[DENSE_VECTOR_NAME].model).toBe('BAAI/bge-m3');
+    expect(out[DENSE_VECTOR_NAME].model).toBe('intfloat/multilingual-e5-large');
   });
 
   it('v1 truncates against the v1 ceiling and uses MiniLM', () => {

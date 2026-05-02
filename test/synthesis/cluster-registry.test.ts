@@ -63,7 +63,31 @@ function createMockQdrant() {
 
     setPayload: vi.fn().mockImplementation((_collection: string, opts: Record<string, unknown>) => {
       const payload = opts.payload as Record<string, unknown>;
-      const pointIds = opts.points as string[];
+      // 019/US4: production now passes a filter `{should: [{must:[{key:'decision_id', match:{value:id}}]}, {has_id:[id]}]}`
+      // instead of a points list, so chunk-aware writes hit all chunks of a
+      // decision. The test fixture predates chunking and stores 1 point per
+      // decision keyed by decision id, so we resolve the filter back to a
+      // single id by walking either branch.
+      const opt = opts as { points?: string[]; filter?: { should?: unknown[] } };
+      let pointIds: string[] = [];
+      if (Array.isArray(opt.points)) {
+        pointIds = opt.points;
+      } else if (opt.filter?.should) {
+        for (const branch of opt.filter.should as Array<Record<string, unknown>>) {
+          if (Array.isArray((branch as { has_id?: string[] }).has_id)) {
+            pointIds.push(...((branch as { has_id: string[] }).has_id));
+          }
+          const must = (branch as { must?: Array<Record<string, unknown>> }).must;
+          if (Array.isArray(must)) {
+            for (const c of must) {
+              const mc = c as { key?: string; match?: { value?: string } };
+              if (mc.key === 'decision_id' && typeof mc.match?.value === 'string') {
+                pointIds.push(mc.match.value);
+              }
+            }
+          }
+        }
+      }
       for (const id of pointIds) {
         const existing = payloads.get(id) ?? {};
         payloads.set(id, { ...existing, ...payload });
@@ -133,11 +157,15 @@ describe('ClusterRegistry', () => {
       const registry = new ClusterRegistry(mock as never, orgId);
       const result = await registry.assignCluster('dec-new', 'Auth API decision', ['auth', 'api']);
 
-      // Should have set cluster_id on the new decision
-      expect(mock.setPayload).toHaveBeenCalledWith('decisions', {
+      // Should have set cluster_id on the new decision. 019/US4: payload
+      // setter now uses filter (chunk-aware) instead of `points: [id]`.
+      expect(mock.setPayload).toHaveBeenCalledWith('decisions', expect.objectContaining({
         payload: { cluster_id: 'cluster_existing' },
-        points: ['dec-new'],
-      });
+      }));
+      const setCall = (mock.setPayload.mock.calls as unknown as Array<[string, { payload?: { cluster_id?: string } }]>).find(
+        ([, opt]) => opt.payload?.cluster_id === 'cluster_existing',
+      );
+      expect(JSON.stringify(setCall?.[1])).toContain('dec-new');
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe('cluster_existing');

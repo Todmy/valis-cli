@@ -113,10 +113,18 @@ export async function compressCluster(
   // Mark originals with grouped_by in Qdrant payload (best-effort)
   for (const decisionId of cluster.decision_ids) {
     try {
+      // 019/US4: a decision may live as N chunk points sharing decision_id —
+      // update via filter so all chunks pick up grouped_by, with a fallback
+      // for legacy single-point records.
       await qdrant.setPayload(COLLECTION_NAME, {
         payload: { grouped_by: patternDecision.id },
-        points: [decisionId],
-      });
+        filter: {
+          should: [
+            { must: [{ key: 'decision_id', match: { value: decisionId } }] },
+            { has_id: [decisionId] },
+          ],
+        },
+      } as Parameters<typeof qdrant.setPayload>[1]);
     } catch {
       // Non-fatal — Qdrant payload update failures don't block compression
     }

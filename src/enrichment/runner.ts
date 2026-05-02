@@ -222,14 +222,21 @@ export async function runEnrichment(
 
       // Update Qdrant payload
       try {
+        // 019/US4: a decision may live as N chunk points sharing decision_id —
+        // update via filter so all chunks stay in sync.
         await qdrant.setPayload(COLLECTION_NAME, {
           payload: {
             type: result.type,
             summary: result.summary,
             affects: result.affects,
           },
-          points: [decision.id],
-        });
+          filter: {
+            should: [
+              { must: [{ key: 'decision_id', match: { value: decision.id } }] },
+              { has_id: [decision.id] },
+            ],
+          },
+        } as Parameters<typeof qdrant.setPayload>[1]);
       } catch {
         // Qdrant update failures are non-fatal — Postgres is source of truth
         console.warn(`[valis] Qdrant payload update failed for ${decision.id}`);

@@ -461,15 +461,48 @@ export async function handleStore(
       response.contradictions = contradictions;
     }
     return response;
-  } catch {
-    // 4. Offline fallback
-    const id = await appendToQueue(raw, config.author_name, 'mcp_store');
-    markAsSeen(args.text, args.session_id);
+  } catch (err) {
+    // BUG #143 root-cause fix: the previous bare-catch swallowed the real
+    // error and unconditionally fell through to `appendToQueue`, which
+    // mkdir's `os.homedir()/.valis`. On Vercel Fluid Compute the sandbox
+    // user-home (`/home/sbx_user1051`) is not pre-created → `mkdir` throws
+    // `ENOENT`, and that's the error every caller actually saw — masking
+    // whatever truly broke the primary write.
+    //
+    // Two-tier handling now:
+    //   - server mode (configOverride present): no fs persistence — return
+    //     a structured infrastructure_error with the original message so
+    //     the agent/operator can triage without prod-log access.
+    //   - CLI-stdio mode: legitimate offline fallback via local queue;
+    //     queue.ts itself was hardened to fall back to os.tmpdir() if
+    //     homedir mkdir fails, but if even that fails we surface both
+    //     errors instead of swallowing them.
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error(`[store] Backend error: ${errorMessage}`);
 
-    return {
-      id,
-      status: 'stored' as const,
-      synced: false,
-    };
+    if (configOverride) {
+      return {
+        error: 'infrastructure_error',
+        action: 'blocked',
+        error_message: errorMessage,
+      };
+    }
+
+    try {
+      const id = await appendToQueue(raw, config.author_name, 'mcp_store');
+      markAsSeen(args.text, args.session_id);
+      return {
+        id,
+        status: 'stored' as const,
+        synced: false,
+      };
+    } catch (queueErr) {
+      const queueMsg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+      return {
+        error: 'queue_unavailable',
+        action: 'blocked',
+        error_message: `${errorMessage} (offline-queue fallback also failed: ${queueMsg})`,
+      };
+    }
   }
 }

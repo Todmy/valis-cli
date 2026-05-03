@@ -1,18 +1,55 @@
 import { readFile, writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import type { QueueEntry, RawDecision, DecisionSource } from '../types.js';
 import { randomUUID } from 'node:crypto';
 
-const QUEUE_DIR = join(homedir(), '.valis');
-const QUEUE_FILE = join(QUEUE_DIR, 'pending.jsonl');
+const PRIMARY_QUEUE_DIR = join(homedir(), '.valis');
+const FALLBACK_QUEUE_DIR = join(tmpdir(), 'valis-queue');
+
+/**
+ * Resolve a writable queue dir on first use and cache it.
+ *
+ * Some sandboxes (Vercel Fluid Compute, restricted CI runners) report a
+ * non-existent / unwritable home dir from `os.homedir()`. `mkdir
+ * --recursive` cannot create missing top-level path components in those
+ * environments — see BUG #143. Falling back to `os.tmpdir()` keeps the
+ * offline-queue contract honest without masking real backend errors.
+ *
+ * Module-level cache: pay the resolution cost once per process. Reads
+ * (`readQueue`/`clearQueue`) need the same resolved path so they see
+ * what `appendToQueue` wrote.
+ */
+let cachedQueueFile: string | null = null;
+
+async function getQueueFile(): Promise<string> {
+  if (cachedQueueFile) return cachedQueueFile;
+  try {
+    await mkdir(PRIMARY_QUEUE_DIR, { recursive: true, mode: 0o700 });
+    cachedQueueFile = join(PRIMARY_QUEUE_DIR, 'pending.jsonl');
+    return cachedQueueFile;
+  } catch (homeErr) {
+    try {
+      await mkdir(FALLBACK_QUEUE_DIR, { recursive: true, mode: 0o700 });
+      console.error(
+        `[queue] Home-dir queue unavailable (${(homeErr as Error).message}); falling back to ${FALLBACK_QUEUE_DIR}`,
+      );
+      cachedQueueFile = join(FALLBACK_QUEUE_DIR, 'pending.jsonl');
+      return cachedQueueFile;
+    } catch (tmpErr) {
+      throw new Error(
+        `Both queue dirs unwritable: home=${(homeErr as Error).message}; tmp=${(tmpErr as Error).message}`,
+      );
+    }
+  }
+}
 
 export async function appendToQueue(
   decision: RawDecision,
   author: string,
   source: DecisionSource,
 ): Promise<string> {
-  await mkdir(QUEUE_DIR, { recursive: true, mode: 0o700 });
+  const queueFile = await getQueueFile();
   const entry: QueueEntry = {
     id: randomUUID(),
     decision,
@@ -20,13 +57,14 @@ export async function appendToQueue(
     source,
     queued_at: new Date().toISOString(),
   };
-  await appendFile(QUEUE_FILE, JSON.stringify(entry) + '\n');
+  await appendFile(queueFile, JSON.stringify(entry) + '\n');
   return entry.id;
 }
 
 export async function readQueue(): Promise<QueueEntry[]> {
   try {
-    const data = await readFile(QUEUE_FILE, 'utf-8');
+    const queueFile = await getQueueFile();
+    const data = await readFile(queueFile, 'utf-8');
     return data
       .trim()
       .split('\n')
@@ -39,9 +77,10 @@ export async function readQueue(): Promise<QueueEntry[]> {
 
 export async function clearQueue(): Promise<void> {
   try {
-    await writeFile(QUEUE_FILE, '', { mode: 0o600 });
+    const queueFile = await getQueueFile();
+    await writeFile(queueFile, '', { mode: 0o600 });
   } catch {
-    // File doesn't exist, nothing to clear
+    // File doesn't exist or queue dir unwritable — nothing to clear.
   }
 }
 
@@ -96,8 +135,9 @@ export async function flushQueue(
   }
 
   // Rewrite queue with only the failed entries
+  const queueFile = await getQueueFile();
   const data = remaining.map((e) => JSON.stringify(e)).join('\n');
-  await writeFile(QUEUE_FILE, data.length > 0 ? data + '\n' : '', {
+  await writeFile(queueFile, data.length > 0 ? data + '\n' : '', {
     mode: 0o600,
   });
 

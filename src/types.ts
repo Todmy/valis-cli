@@ -355,6 +355,11 @@ export interface StoreErrorResponse {
     message: string;
     checkout_url: string | null;
   };
+  /**
+   * Human-readable diagnostic for `error: 'infrastructure_error'` in server
+   * mode. Lets operators (and the agent) triage without prod-log access.
+   */
+  error_message?: string;
 }
 
 export interface SearchResult {

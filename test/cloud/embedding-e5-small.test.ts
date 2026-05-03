@@ -1,8 +1,8 @@
 /**
- * 019/US4 / T030 — multilingual-e5-large strategy assertions.
+ * 019/US4 / T030 — multilingual-e5-small strategy assertions.
  *
  * Verifies the v2 ServerInferenceStrategy emits Document shapes with the
- * intfloat/multilingual-e5-large model, the v2 char ceiling truncates
+ * intfloat/multilingual-e5-small model, the v2 char ceiling truncates
  * input correctly, and vectorForUpsertAtVersion produces the right model
  * per version.
  *
@@ -30,17 +30,17 @@ import {
   type EmbeddingVersion,
 } from '../../src/cloud/embedding.js';
 
-describe('US4 — multilingual-e5-large v2 strategy', () => {
-  it('VECTOR_SIZE_V2 = 1024 (e5-large dimensionality)', () => {
-    expect(VECTOR_SIZE_V2).toBe(1024);
+describe('US4 — multilingual-e5-small v2 strategy', () => {
+  it('VECTOR_SIZE_V2 = 384 (e5-small dimensionality)', () => {
+    expect(VECTOR_SIZE_V2).toBe(384);
   });
 
   it('VECTOR_SIZE_V1 = 384 (legacy MiniLM)', () => {
     expect(VECTOR_SIZE_V1).toBe(384);
   });
 
-  it('DENSE_MODEL_V2 is intfloat/multilingual-e5-large', () => {
-    expect(DENSE_MODEL_V2).toBe('intfloat/multilingual-e5-large');
+  it('DENSE_MODEL_V2 is intfloat/multilingual-e5-small', () => {
+    expect(DENSE_MODEL_V2).toBe('intfloat/multilingual-e5-small');
   });
 
   it('DENSE_MODEL_V1 is the legacy MiniLM identifier', () => {
@@ -55,11 +55,11 @@ describe('US4 — multilingual-e5-large v2 strategy', () => {
     expect(MAX_EMBEDDING_INPUT_CHARS_V1).toBe(2000);
   });
 
-  it('ServerInferenceStrategy("v2") vectorForUpsert emits e5-large Document', () => {
+  it('ServerInferenceStrategy("v2") vectorForUpsert emits e5-small Document', () => {
     const strat = new ServerInferenceStrategy('v2');
     const v = strat.vectorForUpsert('text');
     expect(v).toEqual({
-      [DENSE_VECTOR_NAME]: { text: 'text', model: 'intfloat/multilingual-e5-large' },
+      [DENSE_VECTOR_NAME]: { text: 'text', model: 'intfloat/multilingual-e5-small' },
       [BM25_VECTOR_NAME]: { text: 'text', model: BM25_MODEL },
     });
   });
@@ -105,11 +105,11 @@ describe('US4 — truncation', () => {
 });
 
 describe('US4 — vectorForUpsertAtVersion', () => {
-  it('v2 truncates against the v2 ceiling and uses e5-large', () => {
+  it('v2 truncates against the v2 ceiling and uses e5-small', () => {
     const long = 'b'.repeat(MAX_EMBEDDING_INPUT_CHARS_V2 + 50);
     const out = vectorForUpsertAtVersion(long, 'v2') as Record<string, { text: string; model: string }>;
     expect(out[DENSE_VECTOR_NAME].text).toHaveLength(MAX_EMBEDDING_INPUT_CHARS_V2);
-    expect(out[DENSE_VECTOR_NAME].model).toBe('intfloat/multilingual-e5-large');
+    expect(out[DENSE_VECTOR_NAME].model).toBe('intfloat/multilingual-e5-small');
   });
 
   it('v1 truncates against the v1 ceiling and uses MiniLM', () => {

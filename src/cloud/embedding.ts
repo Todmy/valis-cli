@@ -25,12 +25,20 @@ export const VECTOR_SIZE_V1 = 384;
 /** ~4 chars/token × 512-token window ≈ 2000 char safe ceiling. */
 export const MAX_EMBEDDING_INPUT_CHARS_V1 = 2000;
 
-/** v2 (active target): intfloat/multilingual-e5-large, 100+ langs, 1024-dim.
- * Available via Qdrant Cloud managed inference (paid cluster, free tier 5M tok/mo). */
-export const DENSE_MODEL_V2 = 'intfloat/multilingual-e5-large' as const;
-export const VECTOR_SIZE_V2 = 1024;
-/** e5-large 514-token window. UA/PL tokenize to ~1.3-1.5x more tokens/char than EN,
- * so 1500 char chunks give safety margin under multilingual tokenizers. */
+/** v2 (active target): intfloat/multilingual-e5-small, 100+ langs, 384-dim.
+ *
+ * Why e5-SMALL (not -large): empirical Qdrant Cloud catalog probe (2026-05-03)
+ * showed neither bge-m3 nor e5-large is in the free-tier catalog. e5-small is
+ * the only free multilingual option. Critically, 384d matches the legacy
+ * MiniLM dimensionality — so the prod migration becomes a one-line env flip
+ * (no collection drop+recreate). PBaaS A/B test confirmed +16.7pp UA, +23.3pp
+ * RU, +40pp JA recall@5 vs MiniLM with zero EN regression — see
+ * specs/019-launch-readiness/baselines/pbaas-multilingual-ab-test.md. */
+export const DENSE_MODEL_V2 = 'intfloat/multilingual-e5-small' as const;
+export const VECTOR_SIZE_V2 = 384;
+/** e5-small 512-token window. UA/PL tokenize to ~1.3-1.5x more tokens/char
+ * than EN, so 1500 char chunks (1.0x) give safety margin under multilingual
+ * tokenizers; chunking module enforces this ceiling. */
 export const MAX_EMBEDDING_INPUT_CHARS_V2 = 2000;
 
 export type EmbeddingVersion = 'v1' | 'v2';

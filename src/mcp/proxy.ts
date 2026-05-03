@@ -67,7 +67,7 @@ export async function initializeProxy(
   const res = await rpc(mcpEndpoint, bearerToken, 'initialize', {
     protocolVersion: '2025-03-26',
     capabilities: {},
-    clientInfo: { name: 'valis-cli', version: '0.1.0' },
+    clientInfo: { name: 'valis-cli', version: '0.1.2' },
   });
   return (res.result ?? {}) as Record<string, unknown>;
 }

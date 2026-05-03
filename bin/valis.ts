@@ -35,7 +35,7 @@ const program = new Command();
 program
   .name('valis')
   .description('Shared decision intelligence for AI-augmented engineering teams')
-  .version('0.1.0');
+  .version('0.1.2');
 
 program
   .command('init')

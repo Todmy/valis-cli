@@ -486,6 +486,12 @@ export interface ContextResponse {
    * memberships).
    */
   infrastructure_error?: boolean;
+  /**
+   * BUG #144 (2026-05-03): when `infrastructure_error: true`, surface the
+   * underlying error message so operators / agents can triage without
+   * prod-log access. Same pattern as `StoreErrorResponse.error_message`.
+   */
+  error_message?: string;
 }
 
 export interface DashboardStats {

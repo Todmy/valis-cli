@@ -226,4 +226,23 @@ describe('handleContext', () => {
     expect(result.offline).toBeUndefined();
     expect(result.no_accessible_projects).toBeUndefined();
   });
+
+  // BUG #144 (2026-05-03): the previous catch swallowed the underlying
+  // error via `console.error` only — agent callers had no way to triage
+  // without prod-log access, so every backend failure looked identical.
+  // Now `error_message` carries the original message to the response.
+  it('propagates the underlying error_message (BUG #144 regression guard)', async () => {
+    vi.mocked(listMemberProjects).mockResolvedValueOnce([
+      { id: 'proj-a' } as never,
+    ]);
+    vi.mocked(hybridSearchAllProjects).mockRejectedValueOnce(
+      new Error('connect ECONNREFUSED 127.0.0.1:6333'),
+    );
+
+    const config = buildServerConfig();
+    const result = await handleContext({ task_description: 'auth' }, config);
+
+    expect(result.infrastructure_error).toBe(true);
+    expect(result.error_message).toContain('ECONNREFUSED');
+  });
 });

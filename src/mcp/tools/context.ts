@@ -105,6 +105,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         note,
       };
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
       // 019/US1 (R-001, contracts/mcp-context.md): on HTTP transport the
       // request is being served by a Vercel Function with live cloud access —
@@ -112,10 +113,12 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       // `backend_unavailable` so operators (and the agent) get an
       // operator-actionable signal instead of the misleading "offline" cue
       // that drove uninstalls per BUG #84.
+      // BUG #144: surface `error_message` so triage works without prod logs.
       return {
         decisions: [], constraints: [], patterns: [], lessons: [],
         historical: [], total_in_brain: 0, suppressed_count: 0,
         backend_unavailable: true,
+        error_message: errorMessage,
       };
     }
   }
@@ -245,10 +248,14 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     // `infrastructure_error` (and `backend_unavailable` for contract symmetry)
     // so operators have an actionable signal. CLI-stdio path keeps `offline`
     // for legacy compatibility.
+    //
+    // BUG #144 (2026-05-03): the previous catch eaten the actual error via
+    // `console.error` — agents calling MCP have no log access, so every
+    // failure looked the same. Now propagate the message in `error_message`,
+    // mirroring the pattern shipped for store.ts in BUG #143.
+    const errorMessage = err instanceof Error ? err.message : String(err);
     if (isServerMode) {
-      console.error(
-        `[context] Backend error (server mode): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`[context] Backend error (server mode): ${errorMessage}`);
       return {
         decisions: [],
         constraints: [],
@@ -259,6 +266,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         suppressed_count: 0,
         infrastructure_error: true,
         backend_unavailable: true,
+        error_message: errorMessage,
       };
     }
     return {

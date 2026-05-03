@@ -685,7 +685,19 @@ export async function listMemberProjects(
     });
   }
 
-  return (data || []) as ProjectInfo[];
+  // BUG #144 root cause: the RPC `list_member_projects` returns rows with
+  // columns named `project_id`/`project_name`/`project_role` (per migration
+  // 004), but `ProjectInfo` declares `id`/`name`/`role`. The previous bare
+  // `as ProjectInfo[]` cast was a TypeScript lie — at runtime every row's
+  // `.id` was undefined, so callers like `valis_context` produced
+  // `match.any: [null, null, ...]` filters that Qdrant 400's. Map
+  // explicitly to the public shape.
+  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    id: (row.project_id ?? row.id) as string,
+    name: (row.project_name ?? row.name ?? 'unknown') as string,
+    role: (row.project_role ?? row.role) as string,
+    decision_count: Number(row.decision_count ?? 0),
+  }));
 }
 
 /** Response from the create-project Edge Function. */

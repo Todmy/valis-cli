@@ -254,20 +254,8 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     // failure looked the same. Now propagate the message in `error_message`,
     // mirroring the pattern shipped for store.ts in BUG #143.
     const errorMessage = err instanceof Error ? err.message : String(err);
-    // BUG #144 deep-trace: when Qdrant returns a non-OK status the client
-    // wraps it as ApiError, which exposes `.status` and `.data` (response
-    // body). The plain `.message` is just the HTTP status text and hides
-    // the actual cause. Surface as much as is available.
-    const errExtra = err as { status?: number; statusText?: string; data?: unknown; cause?: unknown; stack?: string };
     if (isServerMode) {
-      console.error(
-        `[context] Backend error (server mode): ${errorMessage} ` +
-          `| status=${errExtra.status ?? 'n/a'} ` +
-          `| statusText=${errExtra.statusText ?? 'n/a'} ` +
-          `| data=${JSON.stringify(errExtra.data ?? null).slice(0, 500)} ` +
-          `| cause=${errExtra.cause ? String(errExtra.cause).slice(0, 200) : 'n/a'} ` +
-          `| stack=${(errExtra.stack ?? 'n/a').slice(0, 500)}`,
-      );
+      console.error(`[context] Backend error (server mode): ${errorMessage}`);
       return {
         decisions: [],
         constraints: [],

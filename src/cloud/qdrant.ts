@@ -718,12 +718,6 @@ export async function hybridSearchAllProjects(
 
   const filter = buildAllProjectsFilter(orgId, projectIds, { type });
 
-  // BUG #144 deep-trace: log the filter shape so we can correlate
-  // against Qdrant's "Format error at column N" complaint.
-  console.error(
-    `[qdrant.hybridSearchAllProjects] projectIds=${projectIds.length} filter=${JSON.stringify(filter).slice(0, 800)}`,
-  );
-
   // Expand query with synonyms (FR-013) and truncate to the embedding
   // model's safe input ceiling (FR-013b).
   const { expanded } = expandQuery(query);

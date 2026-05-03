@@ -28,6 +28,7 @@ import { syncCommand } from '../src/commands/sync.js';
 import { wakeUpCommand } from '../src/commands/wake-up.js';
 import { hookSessionStartCommand } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
+import { indexCommand } from '../src/commands/index-cmd.js';
 
 const program = new Command();
 
@@ -98,6 +99,24 @@ program
   .action(async () => {
     try {
       await dashboardCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('index <folder>')
+  .description('Bulk-import markdown documentation as decisions (preview + confirm)')
+  .option('--strategy <mode>', 'file (one decision per file) or section (one per H2)', 'file')
+  .option('--use-git', 'Extract author + first-commit-time from git log')
+  .option('--type <type>', 'Default decision type if not inferable from filename', 'decision')
+  .option('--affects <tags>', 'Comma-separated tags applied to every decision')
+  .option('--dry-run', 'Preview only, no writes')
+  .option('--yes', 'Skip confirmation prompt')
+  .action(async (folder, options) => {
+    try {
+      await indexCommand(folder, options);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

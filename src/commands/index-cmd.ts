@@ -1,0 +1,362 @@
+/**
+ * `valis index <folder>` — bulk-import markdown documentation as decisions.
+ *
+ * Walks the folder for `.md` / `.markdown` files, optionally splits each by
+ * H2 sections, optionally pulls git blame for author + first-commit-time,
+ * shows a preview table, asks for confirmation, then stores each draft via
+ * the same path used by `valis_store` (Postgres source-of-truth + Qdrant
+ * upsert with chunking + e5-small managed inference).
+ *
+ * Use cases:
+ *   - First-time onboarding: an existing repo with `docs/` directory of
+ *     architectural notes. Index in one shot instead of typing each one.
+ *   - Migrating from another knowledge tool (Notion export → markdown).
+ *
+ * Flags:
+ *   --strategy file|section   (default: file)
+ *   --use-git                 (extract author + created_at from git log)
+ *   --type <decision|pattern|constraint|lesson>
+ *   --affects <a,b,c>         (comma-separated tags applied to all)
+ *   --dry-run                 (preview only, no writes)
+ *   --yes                     (skip confirmation prompt)
+ *
+ * Examples:
+ *   valis index ./docs
+ *   valis index ./docs --strategy section --use-git
+ *   valis index ./architecture --type pattern --affects api,auth
+ */
+
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { join, extname, relative, basename, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
+import pc from 'picocolors';
+
+import { loadConfig } from '../config/store.js';
+import { resolveConfig } from '../config/project.js';
+import { getSupabaseClient, storeDecision } from '../cloud/supabase.js';
+import { getQdrantClient, upsertDecision } from '../cloud/qdrant.js';
+import type { RawDecision, DecisionType } from '../types.js';
+
+type ImportableType = Exclude<DecisionType, 'pending'>;
+
+interface IndexOptions {
+  strategy?: 'file' | 'section';
+  useGit?: boolean;
+  type?: string;
+  affects?: string;
+  dryRun?: boolean;
+  yes?: boolean;
+}
+
+interface DraftDecision {
+  filePath: string;
+  relativePath: string;
+  sectionTitle: string | null;
+  summary: string;
+  detail: string;
+  author: string;
+  createdAt: string;
+  type: ImportableType;
+  affects: string[];
+}
+
+const VALID_TYPES: ImportableType[] = ["decision", "pattern", "constraint", "lesson"];
+
+async function* walkMarkdown(dir: string): AsyncIterable<string> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      yield* walkMarkdown(full);
+    } else if (e.isFile()) {
+      const ext = extname(e.name).toLowerCase();
+      if (ext === '.md' || ext === '.markdown') yield full;
+    }
+  }
+}
+
+function splitOnH2(content: string): { sectionTitle: string; body: string }[] {
+  const lines = content.split('\n');
+  const sections: { sectionTitle: string; body: string }[] = [];
+  let currentTitle: string | null = null;
+  let currentBody: string[] = [];
+
+  for (const line of lines) {
+    const m = line.match(/^##\s+(.+?)\s*#*\s*$/);
+    if (m) {
+      if (currentTitle !== null) {
+        sections.push({ sectionTitle: currentTitle, body: currentBody.join('\n').trim() });
+      }
+      currentTitle = m[1].trim();
+      currentBody = [];
+    } else if (currentTitle !== null) {
+      currentBody.push(line);
+    }
+  }
+  if (currentTitle !== null) {
+    sections.push({ sectionTitle: currentTitle, body: currentBody.join('\n').trim() });
+  }
+  return sections.filter((s) => s.body.length > 0);
+}
+
+function extractH1(content: string): string | null {
+  for (const line of content.split('\n')) {
+    const m = line.match(/^#\s+(.+?)\s*#*\s*$/);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+function summarize(text: string, max = 100): string {
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= max) return trimmed;
+  return trimmed.slice(0, max - 1).trimEnd() + '…';
+}
+
+interface GitMeta {
+  author: string;
+  createdAt: string;
+}
+
+/**
+ * git log --diff-filter=A --follow --reverse — first author + iso date for
+ * the file's add commit. Uses execFileSync (not exec) so file paths can
+ * never inject shell tokens — `repoRoot` and `relPath` are forwarded as
+ * argv positions, not interpolated.
+ */
+function gitMetaForFile(repoRoot: string, filePath: string): GitMeta | null {
+  try {
+    const rel = relative(repoRoot, filePath);
+    const out = execFileSync(
+      'git',
+      ['-C', repoRoot, 'log', '--diff-filter=A', '--follow', '--reverse', '--format=%an|%aI', '--', rel],
+      { encoding: 'utf8' },
+    ).trim();
+    if (!out) return null;
+    const firstLine = out.split('\n')[0];
+    const [author, iso] = firstLine.split('|');
+    if (!author || !iso) return null;
+    return { author, createdAt: iso };
+  } catch {
+    return null;
+  }
+}
+
+function findGitRoot(start: string): string | null {
+  try {
+    return execFileSync('git', ['-C', start, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function inferTypeFromFilename(filename: string, fallback: ImportableType): ImportableType {
+  const lower = filename.toLowerCase();
+  if (lower.startsWith('decision-')) return 'decision';
+  if (lower.startsWith('pattern-')) return 'pattern';
+  if (lower.startsWith('constraint-')) return 'constraint';
+  if (lower.startsWith('lesson-') || lower.startsWith('postmortem-')) return 'lesson';
+  return fallback;
+}
+
+async function buildDrafts(
+  folder: string,
+  options: IndexOptions,
+  defaults: { author: string; affects: string[]; type: ImportableType },
+): Promise<DraftDecision[]> {
+  const drafts: DraftDecision[] = [];
+  const gitRoot = options.useGit ? findGitRoot(folder) : null;
+  if (options.useGit && !gitRoot) {
+    console.warn(pc.yellow('warning: --use-git given but folder is not in a git repo; skipping git metadata'));
+  }
+
+  for await (const filePath of walkMarkdown(folder)) {
+    const content = await readFile(filePath, 'utf8');
+    if (content.trim().length === 0) continue;
+
+    const meta = gitRoot ? gitMetaForFile(gitRoot, filePath) : null;
+    const author = meta?.author ?? defaults.author;
+    const createdAt = meta?.createdAt ?? new Date().toISOString();
+    const fileType = inferTypeFromFilename(basename(filePath), defaults.type);
+    const relativePath = relative(folder, filePath);
+
+    if (options.strategy === 'section') {
+      const fileH1 = extractH1(content);
+      const sections = splitOnH2(content);
+      if (sections.length === 0) {
+        drafts.push({
+          filePath,
+          relativePath,
+          sectionTitle: null,
+          summary: summarize(fileH1 ?? basename(filePath, extname(filePath))),
+          detail: content.trim(),
+          author,
+          createdAt,
+          type: fileType,
+          affects: defaults.affects,
+        });
+        continue;
+      }
+      for (const sec of sections) {
+        const summaryPrefix = fileH1 ? `${fileH1} — ${sec.sectionTitle}` : sec.sectionTitle;
+        drafts.push({
+          filePath,
+          relativePath,
+          sectionTitle: sec.sectionTitle,
+          summary: summarize(summaryPrefix),
+          detail: sec.body,
+          author,
+          createdAt,
+          type: fileType,
+          affects: defaults.affects,
+        });
+      }
+    } else {
+      const h1 = extractH1(content);
+      drafts.push({
+        filePath,
+        relativePath,
+        sectionTitle: null,
+        summary: summarize(h1 ?? basename(filePath, extname(filePath))),
+        detail: content.trim(),
+        author,
+        createdAt,
+        type: fileType,
+        affects: defaults.affects,
+      });
+    }
+  }
+
+  return drafts;
+}
+
+function renderPreview(drafts: DraftDecision[]): void {
+  console.log(pc.bold(`\nPreview — ${drafts.length} draft decision(s):\n`));
+  const maxRows = 20;
+  const rows = drafts.slice(0, maxRows);
+  for (let i = 0; i < rows.length; i++) {
+    const d = rows[i];
+    const sec = d.sectionTitle ? pc.dim(` [${d.sectionTitle}]`) : '';
+    const author = pc.dim(`(${d.author}, ${d.createdAt.slice(0, 10)})`);
+    const type = pc.cyan(`[${d.type}]`);
+    console.log(`  ${pc.gray(`${i + 1}.`)} ${type} ${pc.bold(d.summary)}${sec}`);
+    console.log(`     ${pc.gray(d.relativePath)} ${author}`);
+  }
+  if (drafts.length > maxRows) {
+    console.log(pc.dim(`     … and ${drafts.length - maxRows} more`));
+  }
+}
+
+async function confirm(message: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = (await rl.question(`${message} [y/N] `)).trim().toLowerCase();
+    return ans === 'y' || ans === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+export async function indexCommand(folder: string, options: IndexOptions): Promise<void> {
+  const config = await loadConfig();
+  if (!config) {
+    console.error('Error: Valis not configured. Run `valis init` first.');
+    process.exit(1);
+  }
+  if (!config.org_id) {
+    console.error('Error: no org_id in config. Run `valis init` first.');
+    process.exit(1);
+  }
+
+  const absFolder = resolve(folder);
+  const folderStat = await stat(absFolder).catch(() => null);
+  if (!folderStat || !folderStat.isDirectory()) {
+    console.error(`Error: ${absFolder} is not a directory.`);
+    process.exit(1);
+  }
+
+  const resolved = await resolveConfig();
+  const projectId = resolved.project?.project_id;
+  if (!projectId) {
+    console.warn(
+      pc.yellow('Warning: no project_id resolved from .valis.json. ') +
+      pc.yellow('Decisions will be stored without project_id (cross-project visible).'),
+    );
+  }
+
+  const defaultType: ImportableType = (options.type as ImportableType) ?? 'decision';
+  if (!VALID_TYPES.includes(defaultType)) {
+    console.error(`Error: --type must be one of ${VALID_TYPES.join(', ')}`);
+    process.exit(1);
+  }
+  const defaultAffects = options.affects
+    ? options.affects.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+  const author = config.member_id ?? 'cli-import';
+
+  console.log(pc.bold(`Scanning ${absFolder}...`));
+  const drafts = await buildDrafts(absFolder, options, {
+    author,
+    affects: defaultAffects,
+    type: defaultType,
+  });
+
+  if (drafts.length === 0) {
+    console.log(pc.yellow('No markdown files found to index.'));
+    return;
+  }
+
+  renderPreview(drafts);
+
+  if (options.dryRun) {
+    console.log(pc.dim('\n(--dry-run; no decisions written)'));
+    return;
+  }
+
+  if (!options.yes) {
+    const ok = await confirm(`\nStore ${drafts.length} decision(s) into project ${projectId ?? '(none)'}?`);
+    if (!ok) {
+      console.log(pc.yellow('Aborted.'));
+      return;
+    }
+  }
+
+  const supabase = getSupabaseClient(
+    config.supabase_url ?? '',
+    config.supabase_service_role_key ?? '',
+  );
+  const qdrant = getQdrantClient(config.qdrant_url ?? '', config.qdrant_api_key ?? '');
+
+  let stored = 0;
+  let failed = 0;
+  for (const d of drafts) {
+    const raw: RawDecision = {
+      text: d.detail,
+      type: d.type,
+      summary: d.summary,
+      affects: d.affects,
+      project_id: projectId ?? undefined,
+    };
+    try {
+      const stored_pg = await storeDecision(supabase, config.org_id, raw, d.author, 'seed');
+      await upsertDecision(qdrant, config.org_id, stored_pg.id, raw, d.author, {
+        project_id: projectId ?? undefined,
+      });
+      stored++;
+      if (stored % 10 === 0 || stored === drafts.length) {
+        console.log(pc.dim(`  stored ${stored}/${drafts.length}`));
+      }
+    } catch (err) {
+      failed++;
+      console.error(pc.red(`  failed ${d.relativePath}: ${(err as Error).message}`));
+    }
+  }
+
+  console.log();
+  console.log(pc.green(`✓ Stored ${stored} decision(s)`));
+  if (failed > 0) console.log(pc.red(`✗ ${failed} failed`));
+}

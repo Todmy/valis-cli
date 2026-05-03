@@ -1,6 +1,14 @@
 /**
  * `valis index <folder>` — bulk-import markdown documentation as decisions.
  *
+ * Interactive by default: only the folder is required. Strategy, git
+ * metadata, default type, and affects-tags are asked one prompt at a time.
+ * Any of those answers can be pre-filled (and the prompt skipped) by
+ * passing the corresponding flag — same way `git commit` skips its editor
+ * if `-m` is given. `--yes` short-circuits both the per-question prompts
+ * (defaults applied: strategy=file, useGit=false, type=decision, affects=[])
+ * and the final confirmation.
+ *
  * Walks the folder for `.md` / `.markdown` files, optionally splits each by
  * H2 sections, optionally pulls git blame for author + first-commit-time,
  * shows a preview table, asks for confirmation, then stores each draft via
@@ -12,24 +20,26 @@
  *     architectural notes. Index in one shot instead of typing each one.
  *   - Migrating from another knowledge tool (Notion export → markdown).
  *
- * Flags:
- *   --strategy file|section   (default: file)
- *   --use-git                 (extract author + created_at from git log)
+ * Flag overrides (all optional; missing ones are prompted for):
+ *   --strategy file|section
+ *   --use-git                 (truthy override; for "no", answer the prompt or use --yes)
  *   --type <decision|pattern|constraint|lesson>
  *   --affects <a,b,c>         (comma-separated tags applied to all)
  *   --dry-run                 (preview only, no writes)
- *   --yes                     (skip confirmation prompt)
+ *   --yes                     (skip prompts AND final confirmation)
  *
  * Examples:
- *   valis index ./docs
- *   valis index ./docs --strategy section --use-git
- *   valis index ./architecture --type pattern --affects api,auth
+ *   valis index ./docs                                  # fully interactive
+ *   valis index ./docs --strategy section --use-git     # those two skipped
+ *   valis index ./docs --yes                            # all defaults, no prompts
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, extname, relative, basename, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
+import select from '@inquirer/select';
+import input from '@inquirer/input';
 import pc from 'picocolors';
 
 import { loadConfig } from '../config/store.js';
@@ -261,6 +271,83 @@ async function confirm(message: string): Promise<boolean> {
   }
 }
 
+/**
+ * Fill in any options the user did not pass on the command line by
+ * prompting them. `--yes` skips prompts entirely and uses safe defaults.
+ *
+ * Returned shape adds `affectsList` (parsed) and a narrowed `type` so the
+ * caller doesn't re-parse strings.
+ */
+interface ResolvedOptions extends IndexOptions {
+  strategy: 'file' | 'section';
+  useGit: boolean;
+  type: ImportableType;
+  affectsList: string[];
+}
+
+async function resolveInteractiveOptions(options: IndexOptions): Promise<ResolvedOptions> {
+  const yes = options.yes === true;
+  const interactive = !yes;
+
+  const strategy: 'file' | 'section' =
+    options.strategy ??
+    (interactive
+      ? await select({
+          message: 'How should each markdown file map to decisions?',
+          choices: [
+            { name: 'file — one decision per file (good for short notes)', value: 'file' },
+            { name: 'section — one decision per H2 heading (good for long docs)', value: 'section' },
+          ],
+          default: 'file',
+        })
+      : 'file');
+
+  const useGit: boolean =
+    options.useGit ??
+    (interactive
+      ? await select({
+          message: 'Pull author + first-commit date from git log?',
+          choices: [
+            { name: 'no — use current user / now()', value: false },
+            { name: 'yes — git log (folder must be in a git repo)', value: true },
+          ],
+          default: false,
+        })
+      : false);
+
+  const type: ImportableType =
+    (options.type as ImportableType | undefined) ??
+    (interactive
+      ? await select({
+          message: 'Default decision type when filename has no `decision-/pattern-/...` prefix?',
+          choices: VALID_TYPES.map((t) => ({ name: t, value: t })),
+          default: 'decision',
+        })
+      : 'decision');
+
+  const affectsRaw =
+    options.affects ??
+    (interactive
+      ? await input({
+          message: 'Affects tags applied to every decision (comma-separated, leave blank for none):',
+          default: '',
+        })
+      : '');
+  const affectsList = affectsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return {
+    ...options,
+    strategy,
+    useGit,
+    type,
+    affects: affectsRaw || undefined,
+    affectsList,
+  };
+}
+
 export async function indexCommand(folder: string, options: IndexOptions): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -288,21 +375,22 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
     );
   }
 
-  const defaultType: ImportableType = (options.type as ImportableType) ?? 'decision';
-  if (!VALID_TYPES.includes(defaultType)) {
+  // Resolve missing options interactively (unless --yes was passed).
+  // Each flag the user already provided short-circuits its prompt — same
+  // ergonomics as `git commit`: pass `-m` and the editor never opens.
+  const resolved_opts = await resolveInteractiveOptions(options);
+
+  if (resolved_opts.type && !VALID_TYPES.includes(resolved_opts.type)) {
     console.error(`Error: --type must be one of ${VALID_TYPES.join(', ')}`);
     process.exit(1);
   }
-  const defaultAffects = options.affects
-    ? options.affects.split(',').map((s) => s.trim()).filter(Boolean)
-    : [];
   const author = config.member_id ?? 'cli-import';
 
-  console.log(pc.bold(`Scanning ${absFolder}...`));
-  const drafts = await buildDrafts(absFolder, options, {
+  console.log(pc.bold(`\nScanning ${absFolder}...`));
+  const drafts = await buildDrafts(absFolder, resolved_opts, {
     author,
-    affects: defaultAffects,
-    type: defaultType,
+    affects: resolved_opts.affectsList,
+    type: resolved_opts.type,
   });
 
   if (drafts.length === 0) {

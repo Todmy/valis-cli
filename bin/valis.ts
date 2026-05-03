@@ -107,13 +107,13 @@ program
 
 program
   .command('index <folder>')
-  .description('Bulk-import markdown documentation as decisions (preview + confirm)')
-  .option('--strategy <mode>', 'file (one decision per file) or section (one per H2)', 'file')
-  .option('--use-git', 'Extract author + first-commit-time from git log')
-  .option('--type <type>', 'Default decision type if not inferable from filename', 'decision')
-  .option('--affects <tags>', 'Comma-separated tags applied to every decision')
+  .description('Bulk-import markdown documentation as decisions (interactive)')
+  .option('--strategy <mode>', 'file | section (skip the strategy prompt)')
+  .option('--use-git', 'Extract author + first-commit-time from git log (skip prompt)')
+  .option('--type <type>', 'Default decision type when filename prefix is missing (skip prompt)')
+  .option('--affects <tags>', 'Comma-separated tags applied to every decision (skip prompt)')
   .option('--dry-run', 'Preview only, no writes')
-  .option('--yes', 'Skip confirmation prompt')
+  .option('--yes', 'Skip ALL prompts; use defaults (file / no-git / decision / no-affects)')
   .action(async (folder, options) => {
     try {
       await indexCommand(folder, options);

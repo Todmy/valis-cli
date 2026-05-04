@@ -530,7 +530,10 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   if (!options.yes && options.enrich === undefined && hostedJwt) {
     const est = estimateEnrichmentCost(drafts);
     runEnrich = await select({
-      message: 'After import, also run LLM enrichment? (classifies type + extracts affects tags)',
+      message:
+        'Enrich drafts with LLM? — auto-classifies type (decision/pattern/' +
+        'constraint/lesson), generates summary, extracts affects-tags, scores ' +
+        'confidence. Required for type/area filters + confidence ranking in search.',
       choices: [
         { name: 'no  — skip enrichment (free)', value: false },
         {
@@ -637,12 +640,28 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
       await runHostedEnrichmentBatched(config, storedIds);
     }
   } else if (storedProposed > 0 && hostedJwt) {
-    // Even when the user said no to enrichment, leave a low-key pointer so
-    // the proposed-drafts pile doesn't sit indefinitely without triage.
+    // Even when the user said no to enrichment, surface what's left to do.
+    // First-time users see "unclassified drafts" as broken — explain WHAT
+    // enrichment buys them (type, summary, affects, confidence) so they can
+    // judge whether to spend the tokens.
+    const cost = formatCostUsd(
+      estimateEnrichmentCost(drafts.filter((d) => !d.typeFromPrefix)).costUsd,
+    );
+    console.log();
+    console.log(pc.dim(`Next steps for the ${storedProposed} draft(s):`));
+    console.log(
+      pc.dim('  • ') +
+        pc.bold('valis enrich') +
+        pc.dim('          — auto-fill type, summary, affects-tags, confidence ') +
+        pc.dim(`(${cost} with Haiku)`),
+    );
+    console.log(
+      pc.dim('  • dashboard → Proposals — review and promote/dismiss manually (free)'),
+    );
     console.log(
       pc.dim(
-        `\nTip: ${storedProposed} drafts are unclassified. ` +
-          `Run \`valis enrich\` later (~${formatCostUsd(estimateEnrichmentCost(drafts.filter((d) => !d.typeFromPrefix)).costUsd)}) to classify them.`,
+        '  Without either, drafts stay searchable but type/area filters and ' +
+          'confidence-ranking won\'t apply.',
       ),
     );
   }

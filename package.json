@@ -39,7 +39,8 @@
     "./mcp/server": "./dist/src/mcp/server.js",
     "./types": "./dist/src/types.js",
     "./templates": "./dist/src/templates/index.js",
-    "./templates/*.json": "./dist/src/templates/*.json"
+    "./templates/*.json": "./dist/src/templates/*.json",
+    "./cloud/chunking": "./dist/src/cloud/chunking.js"
   },
   "files": [
     "dist/"

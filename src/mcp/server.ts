@@ -52,7 +52,18 @@ const TOOL_DEFS = {
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Decision classification'),
       summary: z.string().max(100).optional().describe('Brief summary (max 100 chars)'),
       affects: z.array(z.string()).optional().describe("Affected areas, e.g. ['auth', 'payments']"),
-      confidence: z.number().int().min(1).max(10).optional().describe('Confidence score 1-10'),
+      // 0.1.6 / BUG #152: aligned to Postgres CHECK constraint
+       // (decisions.confidence REAL 0.0..1.0, set in migration 011). The 1..10
+      // INTEGER range was the original migration 001 shape; 011 relaxed it to
+      // float and the schema here was never updated. Every cross-harness
+      // agent that respected the published JSON Schema and sent an integer was
+      // failing the call with `decisions_confidence_check`. Float matches.
+      confidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe('Confidence score 0.0–1.0 (0=uncertain, 1=high)'),
       project_id: z.string().optional().describe('Project directory name'),
       session_id: z.string().optional().describe('Session UUID for dedup'),
       status: z.enum(['active', 'proposed']).optional().describe("Initial status — 'proposed' for team review, defaults to 'active'"),

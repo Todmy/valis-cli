@@ -42,6 +42,7 @@ export async function startupSweep(): Promise<SweepResult> {
             decision.id,
             entry.decision,
             entry.author,
+            { source: entry.source },
           ).catch(() => {});
           result.queued_flushed++;
         } catch {

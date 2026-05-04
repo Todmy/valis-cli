@@ -280,6 +280,7 @@ export async function handleStore(
       const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
       await upsertDecision(qdrant, config.org_id, decision.id, raw, config.author_name, {
         project_id: projectId,
+        source: 'mcp_store',
       });
     } catch {
       // Qdrant failure — Postgres is source of truth

@@ -133,6 +133,12 @@ export interface UpsertExtras {
   replaces?: string | null;
   /** Project UUID. Included in payload for project-scoped filtering. */
   project_id?: string;
+  /**
+   * Origin of this decision (mcp_store, seed, file_watcher, ...).
+   * Surfaced in search results so the UI can distinguish bulk-imported
+   * (`seed`) decisions from organically-captured ones.
+   */
+  source?: string;
 }
 
 /**
@@ -212,6 +218,7 @@ export async function upsertDecision(
     replaces: extras?.replaces ?? null as string | null,
     depends_on: extras?.depends_on ?? [] as string[],
     status: extras?.status ?? 'active',
+    source: extras?.source ?? null,
     created_at: new Date().toISOString(),
   };
 
@@ -669,6 +676,9 @@ function mapPointToSearchResult(
     // T019: Include project_id and project_name for cross-project result labeling
     project_id: (payload.project_id as string) ?? undefined,
     project_name: (payload.project_name as string) ?? undefined,
+    // 0.1.3: surface origin so UI can show "imported via valis index" badge,
+    // and so search filters can target organically-captured vs bulk-seeded.
+    source: (payload.source as import('../types.js').DecisionSource) ?? undefined,
   };
 }
 

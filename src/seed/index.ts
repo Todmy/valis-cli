@@ -168,7 +168,7 @@ export async function runSeed(
       // Inject project_id into each seeded decision when available
       const rawWithProject = projectId ? { ...raw, project_id: projectId } : raw;
       const decision = await storeDecision(supabase, orgId, rawWithProject, author, 'seed' as DecisionSource);
-      await upsertDecision(qdrant, orgId, decision.id, rawWithProject, author).catch(() => {
+      await upsertDecision(qdrant, orgId, decision.id, rawWithProject, author, { source: 'seed' }).catch(() => {
         // Qdrant failure non-critical during seed
       });
       result.stored++;

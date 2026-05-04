@@ -389,6 +389,13 @@ export interface SearchResult {
   project_name?: string;
   /** Project UUID from Qdrant payload (Phase 4 — US3). */
   project_id?: string;
+  /**
+   * Origin of this decision (mcp_store, seed, file_watcher, ...).
+   * Surfaced from Qdrant payload so the UI can render "imported via
+   * valis index" badges and search filters can target organically-
+   * captured vs bulk-seeded subsets.
+   */
+  source?: DecisionSource;
   /** Human-readable explanation of why this result matched the query (Q4-B). */
   matchReason?: string;
   /** Chain of decision IDs this one superseded, oldest first (Q4-C). */

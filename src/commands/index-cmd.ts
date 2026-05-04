@@ -69,6 +69,14 @@ interface DraftDecision {
   createdAt: string;
   type: ImportableType;
   affects: string[];
+  /**
+   * True when `type` was inferred from the filename prefix
+   * (`decision-*`, `pattern-*`, `constraint-*`, `lesson-*`,
+   * `postmortem-*`) — i.e. the type is high-confidence. False when we
+   * fell back to the `--type` default for an unprefixed file — those
+   * are stored as `status: 'proposed'` for later triage (0.1.3).
+   */
+  typeFromPrefix: boolean;
 }
 
 const VALID_TYPES: ImportableType[] = ["decision", "pattern", "constraint", "lesson"];
@@ -164,13 +172,18 @@ function findGitRoot(start: string): string | null {
   }
 }
 
-function inferTypeFromFilename(filename: string, fallback: ImportableType): ImportableType {
+function inferTypeFromFilename(
+  filename: string,
+  fallback: ImportableType,
+): { type: ImportableType; fromPrefix: boolean } {
   const lower = filename.toLowerCase();
-  if (lower.startsWith('decision-')) return 'decision';
-  if (lower.startsWith('pattern-')) return 'pattern';
-  if (lower.startsWith('constraint-')) return 'constraint';
-  if (lower.startsWith('lesson-') || lower.startsWith('postmortem-')) return 'lesson';
-  return fallback;
+  if (lower.startsWith('decision-')) return { type: 'decision', fromPrefix: true };
+  if (lower.startsWith('pattern-')) return { type: 'pattern', fromPrefix: true };
+  if (lower.startsWith('constraint-')) return { type: 'constraint', fromPrefix: true };
+  if (lower.startsWith('lesson-') || lower.startsWith('postmortem-')) {
+    return { type: 'lesson', fromPrefix: true };
+  }
+  return { type: fallback, fromPrefix: false };
 }
 
 async function buildDrafts(
@@ -191,7 +204,9 @@ async function buildDrafts(
     const meta = gitRoot ? gitMetaForFile(gitRoot, filePath) : null;
     const author = meta?.author ?? defaults.author;
     const createdAt = meta?.createdAt ?? new Date().toISOString();
-    const fileType = inferTypeFromFilename(basename(filePath), defaults.type);
+    const inferred = inferTypeFromFilename(basename(filePath), defaults.type);
+    const fileType = inferred.type;
+    const typeFromPrefix = inferred.fromPrefix;
     const relativePath = relative(folder, filePath);
 
     if (options.strategy === 'section') {
@@ -208,6 +223,7 @@ async function buildDrafts(
           createdAt,
           type: fileType,
           affects: defaults.affects,
+          typeFromPrefix,
         });
         continue;
       }
@@ -223,6 +239,7 @@ async function buildDrafts(
           createdAt,
           type: fileType,
           affects: defaults.affects,
+          typeFromPrefix,
         });
       }
     } else {
@@ -237,6 +254,7 @@ async function buildDrafts(
         createdAt,
         type: fileType,
         affects: defaults.affects,
+        typeFromPrefix,
       });
     }
   }
@@ -245,14 +263,26 @@ async function buildDrafts(
 }
 
 function renderPreview(drafts: DraftDecision[]): void {
+  const proposedCount = drafts.filter((d) => !d.typeFromPrefix).length;
+  const activeCount = drafts.length - proposedCount;
   console.log(pc.bold(`\nPreview — ${drafts.length} draft decision(s):\n`));
+  if (proposedCount > 0) {
+    console.log(
+      pc.dim(`  → ${activeCount} will be `) +
+        pc.green('active') +
+        pc.dim(' (typed via filename prefix), ') +
+        pc.dim(`${proposedCount} `) +
+        pc.yellow('proposed') +
+        pc.dim(' (drafts; promote/dismiss in dashboard)\n'),
+    );
+  }
   const maxRows = 20;
   const rows = drafts.slice(0, maxRows);
   for (let i = 0; i < rows.length; i++) {
     const d = rows[i];
     const sec = d.sectionTitle ? pc.dim(` [${d.sectionTitle}]`) : '';
     const author = pc.dim(`(${d.author}, ${d.createdAt.slice(0, 10)})`);
-    const type = pc.cyan(`[${d.type}]`);
+    const type = d.typeFromPrefix ? pc.cyan(`[${d.type}]`) : pc.yellow(`[${d.type} • draft]`);
     console.log(`  ${pc.gray(`${i + 1}.`)} ${type} ${pc.bold(d.summary)}${sec}`);
     console.log(`     ${pc.gray(d.relativePath)} ${author}`);
   }
@@ -315,15 +345,14 @@ async function resolveInteractiveOptions(options: IndexOptions): Promise<Resolve
         })
       : false);
 
+  // 0.1.3: dropped the interactive type prompt entirely. Files with a
+  // `decision-/pattern-/constraint-/lesson-/postmortem-` prefix get their
+  // type inferred (in buildDrafts). Files without a prefix default to
+  // `decision` BUT are stored as `status: 'proposed'` so they sit in the
+  // drafts queue for triage rather than polluting the active set. The
+  // `--type` flag still works as an explicit override for unprefixed files.
   const type: ImportableType =
-    (options.type as ImportableType | undefined) ??
-    (interactive
-      ? await select({
-          message: 'Default decision type when filename has no `decision-/pattern-/...` prefix?',
-          choices: VALID_TYPES.map((t) => ({ name: t, value: t })),
-          default: 'decision',
-        })
-      : 'decision');
+    (options.type as ImportableType | undefined) ?? 'decision';
 
   const affectsRaw =
     options.affects ??
@@ -420,21 +449,33 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   const qdrant = getQdrantClient(config.qdrant_url ?? '', config.qdrant_api_key ?? '');
 
   let stored = 0;
+  let storedProposed = 0;
   let failed = 0;
   for (const d of drafts) {
+    // 0.1.3: files with a recognized prefix (`decision-/pattern-/...`) get
+    // typed + active status; files without one get `status: 'proposed'` so
+    // they sit in the drafts queue for triage rather than polluting the
+    // active set.
+    const status: 'active' | 'proposed' = d.typeFromPrefix ? 'active' : 'proposed';
     const raw: RawDecision = {
       text: d.detail,
       type: d.type,
       summary: d.summary,
       affects: d.affects,
       project_id: projectId ?? undefined,
+      // Lower confidence on auto-classified untyped imports so the
+      // reranker doesn't promote them above organically-captured items.
+      confidence: d.typeFromPrefix ? undefined : 0.5,
     };
     try {
-      const stored_pg = await storeDecision(supabase, config.org_id, raw, d.author, 'seed');
+      const stored_pg = await storeDecision(supabase, config.org_id, raw, d.author, 'seed', { status });
       await upsertDecision(qdrant, config.org_id, stored_pg.id, raw, d.author, {
         project_id: projectId ?? undefined,
+        status,
+        source: 'seed',
       });
       stored++;
+      if (status === 'proposed') storedProposed++;
       if (stored % 10 === 0 || stored === drafts.length) {
         console.log(pc.dim(`  stored ${stored}/${drafts.length}`));
       }
@@ -445,6 +486,14 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   }
 
   console.log();
+  const activeCount = stored - storedProposed;
   console.log(pc.green(`✓ Stored ${stored} decision(s)`));
+  if (storedProposed > 0) {
+    console.log(
+      pc.dim(`    ${activeCount} active (typed via filename prefix), `) +
+        pc.yellow(`${storedProposed} proposed`) +
+        pc.dim(' (drafts — review in dashboard before promote)'),
+    );
+  }
   if (failed > 0) console.log(pc.red(`✗ ${failed} failed`));
 }

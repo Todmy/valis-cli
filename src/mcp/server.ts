@@ -354,7 +354,7 @@ so the team retains this knowledge.
 
 function createBaseServer(): McpServer {
   return new McpServer(
-    { name: 'valis', version: '0.1.6' },
+    { name: 'valis', version: '0.1.7' },
     {
       capabilities: {
         tools: {},

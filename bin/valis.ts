@@ -43,7 +43,7 @@ program
       'Cursor, Codex, Aider, Cline, Goose, OpenCode, Gemini CLI). Captures,\n' +
       'searches, and enforces architectural decisions across sessions.',
   )
-  .version('0.1.6')
+  .version('0.1.7')
   .option('--json', 'Emit machine-readable JSON output (auto-enabled when stdout is not a TTY)')
   .option('--agent-mode', 'Alias for --json. Disables TTY heuristics; always structured output');
 

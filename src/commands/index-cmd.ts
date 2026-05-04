@@ -674,14 +674,27 @@ async function storeDraftsHosted(
   const apiUrl = resolveApiUrl(config.supabase_url, isHosted);
   const seedUrl = resolveApiPath(apiUrl, 'seed');
 
-  const BATCH_SIZE = 100;
+  // Batch size 25 (was 100): keeps each round-trip <15s on prod /api/seed
+  // (per-decision SHA-256 + Postgres insert + Qdrant managed-inference upsert
+  // run sequentially server-side). With 25/batch, the user sees per-batch
+  // progress every ~10s instead of one long silence.
+  const BATCH_SIZE = 25;
   let stored = 0;
   let storedProposed = 0;
   let failed = 0;
   const storedIds: string[] = [];
+  const totalBatches = Math.ceil(drafts.length / BATCH_SIZE);
+
+  console.log(
+    pc.bold(
+      `\nStoring ${drafts.length} draft(s) in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`,
+    ),
+  );
 
   for (let i = 0; i < drafts.length; i += BATCH_SIZE) {
     const batch = drafts.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+
     const payload = {
       project_id: projectId,
       decisions: batch.map((d) => ({
@@ -696,6 +709,14 @@ async function storeDraftsHosted(
       })),
     };
 
+    // Pre-fetch progress line so the user knows the round-trip is in flight
+    // (not frozen). Plain stdout write so we don't add a newline; we'll
+    // overwrite with the result line after fetch returns.
+    process.stdout.write(
+      pc.dim(`  batch ${batchNum}/${totalBatches} — sending ${batch.length} draft(s)... `),
+    );
+    const startedAt = Date.now();
+
     let res: Response;
     try {
       res = await fetch(seedUrl, {
@@ -708,13 +729,17 @@ async function storeDraftsHosted(
       });
     } catch (err) {
       failed += batch.length;
-      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} network error: ${(err as Error).message}`));
+      process.stdout.write('\n');
+      console.error(pc.red(`  batch ${batchNum}/${totalBatches} network error: ${(err as Error).message}`));
       continue;
     }
 
+    const elapsedMs = Date.now() - startedAt;
+
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} HTTP ${res.status}: ${body}`));
+      process.stdout.write('\n');
+      console.error(pc.red(`  batch ${batchNum}/${totalBatches} HTTP ${res.status} (${elapsedMs}ms): ${body}`));
       failed += batch.length;
       continue;
     }
@@ -737,11 +762,13 @@ async function storeDraftsHosted(
     const batchProposedSucceeded = Math.min(batchProposed, json.stored);
     storedProposed += batchProposedSucceeded;
 
-    if ((i + BATCH_SIZE) % 100 === 0 || i + BATCH_SIZE >= drafts.length) {
-      console.log(
-        pc.dim(`  stored ${Math.min(i + BATCH_SIZE, drafts.length)}/${drafts.length}`),
-      );
-    }
+    // Per-batch result line: stored count + skipped + elapsed time so the
+    // user can spot a slow batch (e.g. Qdrant inference cold-start).
+    process.stdout.write(
+      pc.green(
+        `done (${json.stored} stored, ${json.skipped} skipped, ${(elapsedMs / 1000).toFixed(1)}s) `,
+      ) + pc.dim(`[${stored}/${drafts.length}]\n`),
+    );
   }
 
   return { stored, storedProposed, failed, storedIds };

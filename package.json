@@ -1,6 +1,6 @@
 {
   "name": "valis-cli",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Shared decision intelligence for AI-augmented engineering teams",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -45,9 +45,9 @@
     "dist/"
   ],
   "dependencies": {
-    "@inquirer/input": "^5.0.10",
-    "@inquirer/password": "^5.0.10",
-    "@inquirer/select": "^5.1.2",
+    "@inquirer/input": "^4.2.4",
+    "@inquirer/password": "^4.0.21",
+    "@inquirer/select": "^4.4.2",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@qdrant/js-client-rest": "^1.13.0",
     "@supabase/supabase-js": "^2.49.4",

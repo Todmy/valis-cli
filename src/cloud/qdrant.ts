@@ -561,9 +561,17 @@ export async function hybridSearch(
   qdrant: QdrantClient,
   orgId: string,
   query: string,
-  options: { type?: string; limit?: number; projectId?: string; legacyFallback?: boolean } = {},
+  options: {
+    type?: string;
+    limit?: number;
+    projectId?: string;
+    legacyFallback?: boolean;
+    /** BUG #161: 'siblings' (default) returns matched chunk + ±1 context;
+     * 'chunk' returns matched chunk only; 'full' returns whole decision body. */
+    expand?: import('../types.js').SearchExpand;
+  } = {},
 ): Promise<SearchResult[]> {
-  const { type, limit = 10, projectId, legacyFallback } = options;
+  const { type, limit = 10, projectId, legacyFallback, expand = 'siblings' } = options;
 
   // FR-013a: short-circuit empty queries before any inference call to avoid
   // wasting embedding tokens on no-op requests.
@@ -642,7 +650,8 @@ export async function hybridSearch(
     });
 
     const mapped = results.points.map((point) => mapPointToSearchResult(point, 0));
-    return dedupByDecisionId(mapped, limit);
+    const dedup = dedupByDecisionId(mapped, limit);
+    return await applyExpand(qdrant, dedup, expand);
   }
 }
 
@@ -659,12 +668,17 @@ function mapPointToSearchResult(
   // Parent decision id falls back to the point id for legacy single-point
   // (pre-019/US4) records that don't carry a chunk payload.
   const parentId = (payload.decision_id as string) ?? (point.id as string);
+  // 0.1.7-dev / BUG #161: chunk_text is the matched window; payload.detail
+  // is the full decision body (duplicated across chunks today, separate
+  // cleanup tracked). Default detail to chunk_text — full body is opt-in.
+  const fullDetail = (payload.detail as string) ?? '';
+  const chunkText = (payload.chunk_text as string) ?? fullDetail;
   return {
     id: parentId,
     score,
     type: payload.type as DecisionType,
     summary: (payload.summary as string) || null,
-    detail: payload.detail as string,
+    detail: chunkText,
     author: payload.author as string,
     affects: (payload.affects as string[]) || [],
     created_at: payload.created_at as string,
@@ -679,6 +693,11 @@ function mapPointToSearchResult(
     // 0.1.3: surface origin so UI can show "imported via valis index" badge,
     // and so search filters can target organically-captured vs bulk-seeded.
     source: (payload.source as import('../types.js').DecisionSource) ?? undefined,
+    // 0.1.7-dev / BUG #161: chunk metadata so the search-side enricher can
+    // fetch siblings (or the agent can re-query for full=true).
+    chunk_index: (payload.chunk_index as number) ?? 0,
+    total_chunks: (payload.total_chunks as number) ?? 1,
+    detail_scope: 'chunk',
   };
 }
 
@@ -707,6 +726,147 @@ function dedupByDecisionId(
 }
 
 /**
+ * 0.1.7-dev / BUG #161: enrich dedup'd results with sibling chunks so the
+ * agent gets ±1-chunk context around the matched window. Single Qdrant
+ * scroll round-trip per call (regardless of result count).
+ *
+ * - For each result with chunk_index > 0, the prior chunk gets prepended.
+ * - For each result with chunk_index < total-1, the next chunk gets appended.
+ * - Joined with the original chunk_text using a clear separator so the agent
+ *   can detect chunk boundaries if it cares (e.g. for citation precision).
+ *
+ * Stale or missing siblings (e.g. parent decision was edited mid-search)
+ * degrade gracefully — we just skip the missing slot and return what we
+ * have. detail_scope is updated to 'siblings' to signal the result shape.
+ */
+async function enrichWithSiblings(
+  qdrant: QdrantClient,
+  results: SearchResult[],
+): Promise<SearchResult[]> {
+  if (results.length === 0) return results;
+
+  // Build a single filter that matches any (decision_id, chunk_index) pair
+  // we need. `should: [must:[A,B], must:[C,D]...]` is OR-of-ANDs.
+  type Need = { decisionId: string; chunkIndex: number };
+  const needs: Need[] = [];
+  for (const r of results) {
+    const ci = r.chunk_index ?? 0;
+    const total = r.total_chunks ?? 1;
+    if (total <= 1) continue; // no siblings exist
+    if (ci > 0) needs.push({ decisionId: r.id, chunkIndex: ci - 1 });
+    if (ci < total - 1) needs.push({ decisionId: r.id, chunkIndex: ci + 1 });
+  }
+  if (needs.length === 0) {
+    return results.map((r) => ({ ...r, detail_scope: 'siblings' as const }));
+  }
+
+  let scrollResult;
+  try {
+    scrollResult = await qdrant.scroll(COLLECTION_NAME, {
+      filter: {
+        should: needs.map((n) => ({
+          must: [
+            { key: 'decision_id', match: { value: n.decisionId } },
+            { key: 'chunk_index', match: { value: n.chunkIndex } },
+          ],
+        })),
+      },
+      limit: needs.length,
+      with_payload: true,
+    });
+  } catch {
+    // Sibling fetch is best-effort — on Qdrant error fall back to chunk-only.
+    return results.map((r) => ({ ...r, detail_scope: 'chunk' as const }));
+  }
+
+  // Index siblings by (decision_id, chunk_index) for O(1) lookup.
+  const siblings = new Map<string, string>();
+  for (const point of scrollResult.points) {
+    const payload = (point.payload ?? {}) as Record<string, unknown>;
+    const did = payload.decision_id as string | undefined;
+    const ci = payload.chunk_index as number | undefined;
+    const text = payload.chunk_text as string | undefined;
+    if (did && typeof ci === 'number' && text) {
+      siblings.set(`${did}:${ci}`, text);
+    }
+  }
+
+  return results.map((r) => {
+    const ci = r.chunk_index ?? 0;
+    const total = r.total_chunks ?? 1;
+    if (total <= 1) {
+      return { ...r, detail_scope: 'siblings' as const };
+    }
+    const prev = ci > 0 ? siblings.get(`${r.id}:${ci - 1}`) : undefined;
+    const next = ci < total - 1 ? siblings.get(`${r.id}:${ci + 1}`) : undefined;
+    const stitched = [prev, r.detail, next].filter(Boolean).join('\n\n…\n\n');
+    return { ...r, detail: stitched, detail_scope: 'siblings' as const };
+  });
+}
+
+/**
+ * Replace each result's `detail` (currently chunk_text) with the parent
+ * decision's full body fetched once per unique decision_id from chunk 0
+ * payload. Used when the caller asked `expand: 'full'`.
+ */
+async function enrichWithFullDetail(
+  qdrant: QdrantClient,
+  results: SearchResult[],
+): Promise<SearchResult[]> {
+  if (results.length === 0) return results;
+
+  const decisionIds = Array.from(new Set(results.map((r) => r.id)));
+
+  let scrollResult;
+  try {
+    scrollResult = await qdrant.scroll(COLLECTION_NAME, {
+      filter: {
+        should: decisionIds.map((id) => ({
+          must: [
+            { key: 'decision_id', match: { value: id } },
+            { key: 'chunk_index', match: { value: 0 } },
+          ],
+        })),
+      },
+      limit: decisionIds.length,
+      with_payload: true,
+    });
+  } catch {
+    return results.map((r) => ({ ...r, detail_scope: 'chunk' as const }));
+  }
+
+  const fullByDecision = new Map<string, string>();
+  for (const point of scrollResult.points) {
+    const payload = (point.payload ?? {}) as Record<string, unknown>;
+    const did = payload.decision_id as string | undefined;
+    const detail = payload.detail as string | undefined;
+    if (did && detail) fullByDecision.set(did, detail);
+  }
+
+  return results.map((r) => {
+    const full = fullByDecision.get(r.id);
+    return full
+      ? { ...r, detail: full, detail_scope: 'full' as const }
+      : { ...r, detail_scope: 'chunk' as const };
+  });
+}
+
+/**
+ * Apply the requested return granularity per BUG #161.
+ * Default ('siblings') gives the matched chunk plus ±1 context — best balance
+ * of token economy vs context completeness for typical agent queries.
+ */
+async function applyExpand(
+  qdrant: QdrantClient,
+  results: SearchResult[],
+  expand: import('../types.js').SearchExpand,
+): Promise<SearchResult[]> {
+  if (expand === 'chunk') return results; // already chunk_text
+  if (expand === 'full') return enrichWithFullDetail(qdrant, results);
+  return enrichWithSiblings(qdrant, results);
+}
+
+/**
  * T019: Cross-project search across multiple accessible projects.
  *
  * Used by --all-projects mode. Accepts an array of project IDs the
@@ -717,9 +877,14 @@ export async function hybridSearchAllProjects(
   orgId: string,
   query: string,
   projectIds: string[],
-  options: { type?: string; limit?: number } = {},
+  options: {
+    type?: string;
+    limit?: number;
+    /** BUG #161: see hybridSearch.expand. */
+    expand?: import('../types.js').SearchExpand;
+  } = {},
 ): Promise<SearchResult[]> {
-  const { type, limit = 10 } = options;
+  const { type, limit = 10, expand = 'siblings' } = options;
 
   // FR-013a: short-circuit empty queries before any inference call.
   if (query.trim().length === 0) {
@@ -778,7 +943,8 @@ export async function hybridSearchAllProjects(
 
     logSearchScores(mode, results.points);
     const mapped = results.points.map((point) => mapPointToSearchResult(point, point.score || 0));
-    return dedupByDecisionId(mapped, limit);
+    const dedup = dedupByDecisionId(mapped, limit);
+    return await applyExpand(qdrant, dedup, expand);
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
     if (quota) throw quota;
@@ -791,7 +957,8 @@ export async function hybridSearchAllProjects(
     });
 
     const mapped = results.points.map((point) => mapPointToSearchResult(point, 0));
-    return dedupByDecisionId(mapped, limit);
+    const dedup = dedupByDecisionId(mapped, limit);
+    return await applyExpand(qdrant, dedup, expand);
   }
 }
 

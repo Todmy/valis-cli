@@ -7,7 +7,7 @@ import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { incrementUsage } from '../../billing/usage.js';
-import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
+import type { SearchResponse, SearchResult, RerankedResult, DecisionStatus, ServerConfig, ValisConfig, SearchExpand } from '../../types.js';
 
 interface SearchArgs {
   query: string;
@@ -15,6 +15,8 @@ interface SearchArgs {
   limit?: number;
   /** T021: When true, search across all projects the member has access to. */
   all_projects?: boolean;
+  /** BUG #161: control return granularity per result. Default 'siblings'. */
+  expand?: SearchExpand;
 }
 
 /** Status priority for ranking: lower = higher priority. */
@@ -134,12 +136,14 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
         rawResults = await hybridSearchAllProjects(qdrant, config.org_id, args.query, projectIds, {
           type: args.type,
           limit: 50,
+          expand: args.expand,
         });
       } else {
         // Fallback: search org-wide (no project filter)
         rawResults = await hybridSearch(qdrant, config.org_id, args.query, {
           type: args.type,
           limit: 50,
+          expand: args.expand,
         });
       }
     } else {
@@ -148,6 +152,7 @@ export async function handleSearch(args: SearchArgs, configOverride?: ServerConf
         type: args.type,
         limit: 50,
         projectId,
+        expand: args.expand,
       });
     }
 

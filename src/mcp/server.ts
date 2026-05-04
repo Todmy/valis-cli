@@ -85,6 +85,18 @@ const TOOL_DEFS = {
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Filter by type'),
       limit: z.number().int().min(1).max(50).default(10).optional().describe('Max results'),
       all_projects: z.boolean().optional().describe('Search across all accessible projects instead of just the active one'),
+      // 0.1.7-dev / BUG #161: control how much of each matched decision is
+      // returned. Default ('siblings') gives the matched chunk plus ±1
+      // adjacent chunks for context — best balance of relevance vs token
+      // budget. 'chunk' returns just the matched window. 'full' returns
+      // the whole decision body (expensive for long docs; opt-in when the
+      // agent knows it needs the complete document).
+      expand: z
+        .enum(['chunk', 'siblings', 'full'])
+        .optional()
+        .describe(
+          "Return granularity. 'siblings' (default): matched chunk + ±1 context. 'chunk': matched chunk only. 'full': whole decision body (expensive for long docs).",
+        ),
     },
   },
   valis_context: {

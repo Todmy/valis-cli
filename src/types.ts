@@ -406,7 +406,23 @@ export interface SearchResult {
   violation_count?: number;
   /** Timestamp of most recent violation event (Phase 018 — FR-010). */
   last_violated_at?: string | null;
+  /**
+   * 0.1.7-dev / BUG #161: which slice of the parent decision text is in
+   * `detail`. 'chunk' = matched chunk only; 'siblings' = matched chunk
+   * with adjacent ±1 chunks for context (default); 'full' = whole decision
+   * detail (opt-in, expensive for long docs).
+   */
+  detail_scope?: 'chunk' | 'siblings' | 'full';
+  /** Index of the matched chunk within the parent decision (0-based). */
+  chunk_index?: number;
+  /** Total chunks the parent decision was split into. >1 means the matched
+   * detail in this result is partial; agent can request expand=full to get
+   * the rest. */
+  total_chunks?: number;
 }
+
+/** Search return granularity (BUG #161 fix). */
+export type SearchExpand = 'chunk' | 'siblings' | 'full';
 
 // ---------------------------------------------------------------------------
 // Signal Weights & Reranked Results (Phase 3 — Search Intelligence)

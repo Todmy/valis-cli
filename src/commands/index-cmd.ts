@@ -557,48 +557,54 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
     }
   }
 
-  const supabase = getSupabaseClient(
-    config.supabase_url ?? '',
-    config.supabase_service_role_key ?? '',
-  );
-  const qdrant = getQdrantClient(config.qdrant_url ?? '', config.qdrant_api_key ?? '');
-
+  // 0.1.6 / BUG #154: hosted users don't have service_role_key in local
+  // config (that's the whole point of hosted mode — server holds the keys).
+  // Switch storage path on auth_mode: hosted → POST /api/seed via member
+  // api_key; community → direct Supabase + Qdrant write.
   let stored = 0;
   let storedProposed = 0;
   let failed = 0;
   const storedIds: string[] = [];
-  for (const d of drafts) {
-    // 0.1.3: files with a recognized prefix (`decision-/pattern-/...`) get
-    // typed + active status; files without one get `status: 'proposed'` so
-    // they sit in the drafts queue for triage rather than polluting the
-    // active set.
-    const status: 'active' | 'proposed' = d.typeFromPrefix ? 'active' : 'proposed';
-    const raw: RawDecision = {
-      text: d.detail,
-      type: d.type,
-      summary: d.summary,
-      affects: d.affects,
-      project_id: projectId ?? undefined,
-      // Lower confidence on auto-classified untyped imports so the
-      // reranker doesn't promote them above organically-captured items.
-      confidence: d.typeFromPrefix ? undefined : 0.5,
-    };
-    try {
-      const stored_pg = await storeDecision(supabase, config.org_id, raw, d.author, 'seed', { status });
-      await upsertDecision(qdrant, config.org_id, stored_pg.id, raw, d.author, {
+
+  if (hostedJwt) {
+    const result = await storeDraftsHosted(config, projectId ?? null, drafts);
+    stored = result.stored;
+    storedProposed = result.storedProposed;
+    failed = result.failed;
+    storedIds.push(...result.storedIds);
+  } else {
+    const supabase = getSupabaseClient(
+      config.supabase_url ?? '',
+      config.supabase_service_role_key ?? '',
+    );
+    const qdrant = getQdrantClient(config.qdrant_url ?? '', config.qdrant_api_key ?? '');
+    for (const d of drafts) {
+      const status: 'active' | 'proposed' = d.typeFromPrefix ? 'active' : 'proposed';
+      const raw: RawDecision = {
+        text: d.detail,
+        type: d.type,
+        summary: d.summary,
+        affects: d.affects,
         project_id: projectId ?? undefined,
-        status,
-        source: 'seed',
-      });
-      stored++;
-      storedIds.push(stored_pg.id);
-      if (status === 'proposed') storedProposed++;
-      if (stored % 10 === 0 || stored === drafts.length) {
-        console.log(pc.dim(`  stored ${stored}/${drafts.length}`));
+        confidence: d.typeFromPrefix ? undefined : 0.5,
+      };
+      try {
+        const stored_pg = await storeDecision(supabase, config.org_id, raw, d.author, 'seed', { status });
+        await upsertDecision(qdrant, config.org_id, stored_pg.id, raw, d.author, {
+          project_id: projectId ?? undefined,
+          status,
+          source: 'seed',
+        });
+        stored++;
+        storedIds.push(stored_pg.id);
+        if (status === 'proposed') storedProposed++;
+        if (stored % 10 === 0 || stored === drafts.length) {
+          console.log(pc.dim(`  stored ${stored}/${drafts.length}`));
+        }
+      } catch (err) {
+        failed++;
+        console.error(pc.red(`  failed ${d.relativePath}: ${(err as Error).message}`));
       }
-    } catch (err) {
-      failed++;
-      console.error(pc.red(`  failed ${d.relativePath}: ${(err as Error).message}`));
     }
   }
 
@@ -640,6 +646,105 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
       ),
     );
   }
+}
+
+/**
+ * 0.1.6 / BUG #154: hosted-mode storage path. POSTs drafts to /api/seed
+ * (which already runs server-side with the service_role_key) using the
+ * member api_key from config. /api/seed caps at 100 decisions per call,
+ * so we batch. Returns the same shape the community-mode loop produces.
+ */
+async function storeDraftsHosted(
+  config: import('../types.js').ValisConfig,
+  projectId: string | null,
+  drafts: DraftDecision[],
+): Promise<{ stored: number; storedProposed: number; failed: number; storedIds: string[] }> {
+  const apiKey = config.member_api_key ?? config.api_key;
+  if (!apiKey || !projectId) {
+    console.error(
+      pc.red(
+        'Hosted mode requires member_api_key + project_id in config. ' +
+          'Run `valis init` then `valis switch --project <name>`.',
+      ),
+    );
+    return { stored: 0, storedProposed: 0, failed: drafts.length, storedIds: [] };
+  }
+
+  const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
+  const apiUrl = resolveApiUrl(config.supabase_url, isHosted);
+  const seedUrl = resolveApiPath(apiUrl, 'seed');
+
+  const BATCH_SIZE = 100;
+  let stored = 0;
+  let storedProposed = 0;
+  let failed = 0;
+  const storedIds: string[] = [];
+
+  for (let i = 0; i < drafts.length; i += BATCH_SIZE) {
+    const batch = drafts.slice(i, i + BATCH_SIZE);
+    const payload = {
+      project_id: projectId,
+      decisions: batch.map((d) => ({
+        text: d.detail,
+        type: d.type,
+        summary: d.summary,
+        affects: d.affects,
+        status: d.typeFromPrefix ? 'active' : 'proposed',
+        // Lower confidence on auto-classified untyped imports so the
+        // reranker doesn't promote them above organic captures.
+        confidence: d.typeFromPrefix ? undefined : 0.5,
+      })),
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(seedUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      failed += batch.length;
+      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} network error: ${(err as Error).message}`));
+      continue;
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} HTTP ${res.status}: ${body}`));
+      failed += batch.length;
+      continue;
+    }
+
+    const json = (await res.json()) as {
+      stored: number;
+      skipped: number;
+      total: number;
+      decision_ids: string[];
+    };
+
+    stored += json.stored;
+    failed += json.skipped;
+    storedIds.push(...(json.decision_ids ?? []));
+
+    // Track proposed count from the batch slice — server doesn't return it
+    // explicitly, but we know the input shape so we can attribute correctly:
+    // proposed = drafts in this batch with !typeFromPrefix that succeeded.
+    const batchProposed = batch.filter((d) => !d.typeFromPrefix).length;
+    const batchProposedSucceeded = Math.min(batchProposed, json.stored);
+    storedProposed += batchProposedSucceeded;
+
+    if ((i + BATCH_SIZE) % 100 === 0 || i + BATCH_SIZE >= drafts.length) {
+      console.log(
+        pc.dim(`  stored ${Math.min(i + BATCH_SIZE, drafts.length)}/${drafts.length}`),
+      );
+    }
+  }
+
+  return { stored, storedProposed, failed, storedIds };
 }
 
 /**

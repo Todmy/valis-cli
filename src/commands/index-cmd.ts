@@ -1,13 +1,16 @@
 /**
  * `valis index <folder>` — bulk-import markdown documentation as decisions.
  *
- * Interactive by default: only the folder is required. Strategy, git
- * metadata, default type, and affects-tags are asked one prompt at a time.
- * Any of those answers can be pre-filled (and the prompt skipped) by
- * passing the corresponding flag — same way `git commit` skips its editor
- * if `-m` is given. `--yes` short-circuits both the per-question prompts
- * (defaults applied: strategy=file, useGit=false, type=decision, affects=[])
- * and the final confirmation.
+ * 0.1.5: simplified to interactive prompts only. Two questions:
+ *   1) Mode: quick (one decision per file) | detailed (one per H2 heading) |
+ *      smart (heuristic — file for short, section for long/multi-H2)
+ *   2) Run LLM enrichment after import? (yes/no — token estimate + $ shown)
+ *
+ * Both decisions are orthogonal: mode = how to split, enrich = whether to
+ * pay tokens for type-classification + 'affects' extraction. Quick is the
+ * cheapest path. Detailed is the same cost as Quick (regex split, no LLM).
+ * Smart adds zero LLM cost but auto-decides the split per-file based on
+ * H2 count and content size. LLM enrichment is opt-in regardless of mode.
  *
  * Walks the folder for `.md` / `.markdown` files, optionally splits each by
  * H2 sections, optionally pulls git blame for author + first-commit-time,
@@ -20,17 +23,20 @@
  *     architectural notes. Index in one shot instead of typing each one.
  *   - Migrating from another knowledge tool (Notion export → markdown).
  *
- * Flag overrides (all optional; missing ones are prompted for):
- *   --strategy file|section
- *   --use-git                 (truthy override; for "no", answer the prompt or use --yes)
+ * Flag overrides (all optional; missing ones are prompted for; intended for
+ * scripted runs — interactive users should ignore):
+ *   --mode quick|detailed|smart   (preferred)
+ *   --strategy file|section       (deprecated 0.1.5 alias for quick/detailed)
+ *   --enrich                      (run LLM enrichment after import; default off)
+ *   --use-git                     (truthy override; for "no", answer the prompt or use --yes)
  *   --type <decision|pattern|constraint|lesson>
- *   --affects <a,b,c>         (comma-separated tags applied to all)
- *   --dry-run                 (preview only, no writes)
- *   --yes                     (skip prompts AND final confirmation)
+ *   --affects <a,b,c>             (comma-separated tags applied to all)
+ *   --dry-run                     (preview only, no writes)
+ *   --yes                         (skip prompts AND final confirmation)
  *
  * Examples:
  *   valis index ./docs                                  # fully interactive
- *   valis index ./docs --strategy section --use-git     # those two skipped
+ *   valis index ./specs --mode smart --enrich           # CI-style scripted
  *   valis index ./docs --yes                            # all defaults, no prompts
  */
 
@@ -39,24 +45,85 @@ import { join, extname, relative, basename, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import select from '@inquirer/select';
-import input from '@inquirer/input';
 import pc from 'picocolors';
 
 import { loadConfig } from '../config/store.js';
 import { resolveConfig } from '../config/project.js';
 import { getSupabaseClient, storeDecision } from '../cloud/supabase.js';
 import { getQdrantClient, upsertDecision } from '../cloud/qdrant.js';
+import { isHostedMode, resolveApiUrl, resolveApiPath } from '../cloud/api-url.js';
+import { getToken } from '../auth/jwt.js';
+import { HOSTED_SUPABASE_URL } from '../types.js';
 import type { RawDecision, DecisionType } from '../types.js';
 
 type ImportableType = Exclude<DecisionType, 'pending'>;
 
+type IndexMode = 'quick' | 'detailed' | 'smart';
+
 interface IndexOptions {
+  mode?: IndexMode;
+  /** @deprecated 0.1.5 — use --mode. Mapped: file→quick, section→detailed. */
   strategy?: 'file' | 'section';
+  enrich?: boolean;
   useGit?: boolean;
   type?: string;
   affects?: string;
   dryRun?: boolean;
   yes?: boolean;
+}
+
+/**
+ * Heuristic: a file with ≥ MIN_H2_FOR_SECTION H2 headings OR larger than
+ * MIN_BYTES_FOR_SECTION bytes is treated as multi-decision (split on H2).
+ * Below either threshold = single decision per file. Tuned against typical
+ * `specs/NNN-feature/spec.md` files (large + many H2 → section) versus
+ * `decisions/decision-NNN.md` ADRs (small + few H2 → file).
+ */
+const SMART_MIN_H2_FOR_SECTION = 3;
+const SMART_MIN_BYTES_FOR_SECTION = 5_000;
+
+/** ~4 chars per token is the standard rough approximation across tokenizers. */
+function estimateTokensFromText(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Pricing snapshot 2026-05-04 for anthropic/claude-haiku-4.5 from packages/web/src/lib/llm.ts. */
+const HAIKU_PRICING_USD_PER_MTOK = { input: 1.0, output: 5.0 };
+/** Heuristic: enrichment system prompt + JSON envelope + classification reply. */
+const ENRICH_OUTPUT_TOKENS_PER_DRAFT = 80;
+/** Per-call overhead for the enrichment system prompt (sent once per decision). */
+const ENRICH_INPUT_OVERHEAD_PER_DRAFT = 200;
+
+interface EnrichmentEstimate {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+function estimateEnrichmentCost(drafts: { detail: string }[]): EnrichmentEstimate {
+  let inputTokens = 0;
+  for (const d of drafts) {
+    inputTokens += estimateTokensFromText(d.detail) + ENRICH_INPUT_OVERHEAD_PER_DRAFT;
+  }
+  const outputTokens = drafts.length * ENRICH_OUTPUT_TOKENS_PER_DRAFT;
+  const costUsd =
+    (inputTokens * HAIKU_PRICING_USD_PER_MTOK.input +
+      outputTokens * HAIKU_PRICING_USD_PER_MTOK.output) /
+    1_000_000;
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, costUsd };
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return `${n}`;
+}
+
+function formatCostUsd(usd: number): string {
+  if (usd < 0.01) return `<$0.01`;
+  if (usd < 1) return `~$${usd.toFixed(2)}`;
+  return `~$${usd.toFixed(2)}`;
 }
 
 interface DraftDecision {
@@ -186,8 +253,17 @@ function inferTypeFromFilename(
   return { type: fallback, fromPrefix: false };
 }
 
+function shouldSplitFileSmart(content: string): boolean {
+  // Cheap byte-size gate first — large files are almost always multi-decision.
+  if (content.length >= SMART_MIN_BYTES_FOR_SECTION) return true;
+  // Otherwise count H2 markers; ≥ N means it's structured as a multi-section doc.
+  const h2Count = (content.match(/^##\s+/gm) ?? []).length;
+  return h2Count >= SMART_MIN_H2_FOR_SECTION;
+}
+
 async function buildDrafts(
   folder: string,
+  mode: IndexMode,
   options: IndexOptions,
   defaults: { author: string; affects: string[]; type: ImportableType },
 ): Promise<DraftDecision[]> {
@@ -209,7 +285,12 @@ async function buildDrafts(
     const typeFromPrefix = inferred.fromPrefix;
     const relativePath = relative(folder, filePath);
 
-    if (options.strategy === 'section') {
+    // Mode resolution per file: 'quick' = always file; 'detailed' = always
+    // section; 'smart' = file unless heuristic says otherwise.
+    const useSection: boolean =
+      mode === 'detailed' || (mode === 'smart' && shouldSplitFileSmart(content));
+
+    if (useSection) {
       const fileH1 = extractH1(content);
       const sections = splitOnH2(content);
       if (sections.length === 0) {
@@ -309,41 +390,56 @@ async function confirm(message: string): Promise<boolean> {
  * caller doesn't re-parse strings.
  */
 interface ResolvedOptions extends IndexOptions {
-  strategy: 'file' | 'section';
+  mode: IndexMode;
   useGit: boolean;
   type: ImportableType;
   affectsList: string[];
+}
+
+/**
+ * Map the deprecated --strategy alias to the new --mode space.
+ * file → quick, section → detailed. Kept so 0.1.3+ scripts don't break.
+ */
+function strategyToMode(strategy: 'file' | 'section'): IndexMode {
+  return strategy === 'section' ? 'detailed' : 'quick';
 }
 
 async function resolveInteractiveOptions(options: IndexOptions): Promise<ResolvedOptions> {
   const yes = options.yes === true;
   const interactive = !yes;
 
-  const strategy: 'file' | 'section' =
-    options.strategy ??
-    (interactive
-      ? await select({
-          message: 'How should each markdown file map to decisions?',
-          choices: [
-            { name: 'file — one decision per file (good for short notes)', value: 'file' },
-            { name: 'section — one decision per H2 heading (good for long docs)', value: 'section' },
-          ],
-          default: 'file',
-        })
-      : 'file');
+  // Mode: prefer --mode, fall back to legacy --strategy mapping, otherwise prompt.
+  const explicitMode: IndexMode | undefined =
+    options.mode ?? (options.strategy ? strategyToMode(options.strategy) : undefined);
 
-  const useGit: boolean =
-    options.useGit ??
-    (interactive
+  const mode: IndexMode = explicitMode
+    ? explicitMode
+    : interactive
       ? await select({
-          message: 'Pull author + first-commit date from git log?',
+          message: 'Choose import mode:',
           choices: [
-            { name: 'no — use current user / now()', value: false },
-            { name: 'yes — git log (folder must be in a git repo)', value: true },
+            {
+              name: 'Quick     — one decision per file (best for short ADRs)',
+              value: 'quick' as IndexMode,
+            },
+            {
+              name: 'Detailed  — one decision per H2 heading (best for long specs)',
+              value: 'detailed' as IndexMode,
+            },
+            {
+              name: 'Smart     — auto: file for short, section for long/multi-H2 docs',
+              value: 'smart' as IndexMode,
+            },
           ],
-          default: false,
+          default: 'quick',
         })
-      : false);
+      : 'quick';
+
+  // 0.1.5: dropped the interactive useGit prompt. Default off — git lookup
+  // is slow on large repos and the value (better author attribution) is
+  // marginal compared to the friction it adds at the prompt. Use --use-git
+  // explicitly when scripted runs need attribution.
+  const useGit: boolean = options.useGit ?? false;
 
   // 0.1.3: dropped the interactive type prompt entirely. Files with a
   // `decision-/pattern-/constraint-/lesson-/postmortem-` prefix get their
@@ -354,14 +450,11 @@ async function resolveInteractiveOptions(options: IndexOptions): Promise<Resolve
   const type: ImportableType =
     (options.type as ImportableType | undefined) ?? 'decision';
 
-  const affectsRaw =
-    options.affects ??
-    (interactive
-      ? await input({
-          message: 'Affects tags applied to every decision (comma-separated, leave blank for none):',
-          default: '',
-        })
-      : '');
+  // 0.1.5: dropped the interactive affects prompt. A single global tag
+  // applied to every decision is rarely the right call; per-file affects
+  // is what users actually want, and that lands with --enrich (LLM
+  // extraction) or via per-file frontmatter (deferred per BACKLOG #147 E).
+  const affectsRaw = options.affects ?? '';
   const affectsList = affectsRaw
     .split(',')
     .map((s) => s.trim())
@@ -369,7 +462,7 @@ async function resolveInteractiveOptions(options: IndexOptions): Promise<Resolve
 
   return {
     ...options,
-    strategy,
+    mode,
     useGit,
     type,
     affects: affectsRaw || undefined,
@@ -416,7 +509,7 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   const author = config.member_id ?? 'cli-import';
 
   console.log(pc.bold(`\nScanning ${absFolder}...`));
-  const drafts = await buildDrafts(absFolder, resolved_opts, {
+  const drafts = await buildDrafts(absFolder, resolved_opts.mode, resolved_opts, {
     author,
     affects: resolved_opts.affectsList,
     type: resolved_opts.type,
@@ -428,6 +521,28 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   }
 
   renderPreview(drafts);
+
+  // 0.1.5: ask about LLM enrichment AFTER preview (so token estimate uses
+  // real draft sizes) but BEFORE confirmation (so user accepts both at once).
+  // Hosted-mode only: community users have to run `valis enrich` separately.
+  const hostedJwt = config.auth_mode === 'jwt' && isHostedMode(config);
+  let runEnrich = options.enrich === true;
+  if (!options.yes && options.enrich === undefined && hostedJwt) {
+    const est = estimateEnrichmentCost(drafts);
+    runEnrich = await select({
+      message: 'After import, also run LLM enrichment? (classifies type + extracts affects tags)',
+      choices: [
+        { name: 'no  — skip enrichment (free)', value: false },
+        {
+          name:
+            `yes — ~${formatTokens(est.inputTokens)} input + ~${formatTokens(est.outputTokens)} output tokens, ` +
+            `${formatCostUsd(est.costUsd)} with Anthropic Haiku (current model)`,
+          value: true,
+        },
+      ],
+      default: false,
+    });
+  }
 
   if (options.dryRun) {
     console.log(pc.dim('\n(--dry-run; no decisions written)'));
@@ -451,6 +566,7 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   let stored = 0;
   let storedProposed = 0;
   let failed = 0;
+  const storedIds: string[] = [];
   for (const d of drafts) {
     // 0.1.3: files with a recognized prefix (`decision-/pattern-/...`) get
     // typed + active status; files without one get `status: 'proposed'` so
@@ -475,6 +591,7 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
         source: 'seed',
       });
       stored++;
+      storedIds.push(stored_pg.id);
       if (status === 'proposed') storedProposed++;
       if (stored % 10 === 0 || stored === drafts.length) {
         console.log(pc.dim(`  stored ${stored}/${drafts.length}`));
@@ -496,4 +613,121 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
     );
   }
   if (failed > 0) console.log(pc.red(`✗ ${failed} failed`));
+
+  // 0.1.5: post-import enrichment. Hosted JWT users get server-side
+  // /api/enrich which carries the daily-budget gate ($1/day default) and
+  // surfaces real input/output token counts back to the CLI for honest
+  // cost reporting. Community users see a hint to run `valis enrich`
+  // locally with their own ANTHROPIC_API_KEY.
+  if (runEnrich && stored > 0) {
+    if (!hostedJwt) {
+      console.log(
+        pc.dim(
+          '\nTip: --enrich requires hosted mode. Community users can run ' +
+            '`ANTHROPIC_API_KEY=sk-... valis enrich` separately.',
+        ),
+      );
+    } else {
+      await runHostedEnrichmentBatched(config, storedIds);
+    }
+  } else if (storedProposed > 0 && hostedJwt) {
+    // Even when the user said no to enrichment, leave a low-key pointer so
+    // the proposed-drafts pile doesn't sit indefinitely without triage.
+    console.log(
+      pc.dim(
+        `\nTip: ${storedProposed} drafts are unclassified. ` +
+          `Run \`valis enrich\` later (~${formatCostUsd(estimateEnrichmentCost(drafts.filter((d) => !d.typeFromPrefix)).costUsd)}) to classify them.`,
+      ),
+    );
+  }
+}
+
+/**
+ * Call /api/enrich in batches of 20 (the route's hard cap from T032).
+ * Surfaces real token+cost back to the user — the *advertised* preview was
+ * an estimate; this is what the LLM actually consumed.
+ */
+async function runHostedEnrichmentBatched(
+  config: import('../types.js').ValisConfig,
+  decisionIds: string[],
+): Promise<void> {
+  const apiKey = config.member_api_key ?? config.api_key;
+  const projectId = config.project_id ?? undefined;
+  const tokenCache = await getToken(config.supabase_url, apiKey, projectId);
+  if (!tokenCache) {
+    console.error(pc.red('Could not obtain auth token for enrichment. Skipped.'));
+    return;
+  }
+
+  const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
+  const apiUrl = resolveApiUrl(config.supabase_url, isHosted);
+  const enrichUrl = resolveApiPath(apiUrl, 'enrich');
+
+  const BATCH_SIZE = 20;
+  let totalEnriched = 0;
+  let totalSkipped = 0;
+  let totalCostCents = 0;
+  let totalTokens = 0;
+
+  console.log(pc.bold(`\nRunning LLM enrichment on ${decisionIds.length} draft(s)...`));
+
+  for (let i = 0; i < decisionIds.length; i += BATCH_SIZE) {
+    const batch = decisionIds.slice(i, i + BATCH_SIZE);
+    let res: Response;
+    try {
+      res = await fetch(enrichUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${tokenCache.jwt.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ decision_ids: batch }),
+      });
+    } catch (err) {
+      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} network error: ${(err as Error).message}`));
+      continue;
+    }
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        console.log(
+          pc.yellow(
+            `\n  Daily enrichment budget exhausted at draft ${i}. ` +
+              `Remaining drafts kept as proposed; rerun \`valis enrich\` tomorrow to continue.`,
+          ),
+        );
+        break;
+      }
+      const body = await res.text().catch(() => '');
+      console.error(pc.red(`  batch ${i / BATCH_SIZE + 1} HTTP ${res.status}: ${body}`));
+      continue;
+    }
+
+    const json = (await res.json()) as {
+      enriched: Array<{ tokens_used: number; cost_cents: number }>;
+      skipped: string[];
+      total_cost_cents: number;
+    };
+    totalEnriched += json.enriched.length;
+    totalSkipped += json.skipped.length;
+    totalCostCents += json.total_cost_cents;
+    for (const e of json.enriched) totalTokens += e.tokens_used;
+    console.log(
+      pc.dim(
+        `  batch ${i / BATCH_SIZE + 1}: ${json.enriched.length} enriched, ${json.skipped.length} skipped`,
+      ),
+    );
+  }
+
+  console.log();
+  console.log(pc.green(`✓ Enriched ${totalEnriched} decision(s)`));
+  console.log(
+    pc.dim(
+      `    Tokens used: ${formatTokens(totalTokens)} (input + output combined). ` +
+        `Cost: ${formatCostUsd(totalCostCents / 100)} actual.`,
+    ),
+  );
+  if (totalSkipped > 0) {
+    console.log(pc.yellow(`    ${totalSkipped} skipped (already enriched or budget hit)`));
+  }
 }

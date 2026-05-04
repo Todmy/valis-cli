@@ -43,7 +43,7 @@ program
       'Cursor, Codex, Aider, Cline, Goose, OpenCode, Gemini CLI). Captures,\n' +
       'searches, and enforces architectural decisions across sessions.',
   )
-  .version('0.1.4')
+  .version('0.1.5')
   .option('--json', 'Emit machine-readable JSON output (auto-enabled when stdout is not a TTY)')
   .option('--agent-mode', 'Alias for --json. Disables TTY heuristics; always structured output');
 
@@ -158,12 +158,16 @@ program
 program
   .command('index <folder>')
   .description('Bulk-import markdown documentation as decisions (interactive)')
-  .option('--strategy <mode>', 'file | section (skip the strategy prompt)')
+  // 0.1.5: --mode replaces the older file/section binary. quick=file, detailed=section,
+  // smart=heuristic per-file split. --strategy is kept as an alias for scripted use.
+  .option('--mode <mode>', 'quick | detailed | smart (skip the mode prompt)')
+  .option('--strategy <mode>', '[deprecated 0.1.5; use --mode] file | section')
+  .option('--enrich', 'After import, also run LLM enrichment (~$0.18 per 1k drafts with Haiku)')
   .option('--use-git', 'Extract author + first-commit-time from git log (skip prompt)')
   .option('--type <type>', 'Default decision type when filename prefix is missing (skip prompt)')
   .option('--affects <tags>', 'Comma-separated tags applied to every decision (skip prompt)')
   .option('--dry-run', 'Preview only, no writes')
-  .option('--yes', 'Skip ALL prompts; use defaults (file / no-git / decision / no-affects)')
+  .option('--yes', 'Skip ALL prompts; use defaults (quick / no-enrich / no-git / decision / no-affects)')
   .action(async (folder, options) => {
     try {
       await indexCommand(folder, options);

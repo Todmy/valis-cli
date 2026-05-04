@@ -29,13 +29,63 @@ import { wakeUpCommand } from '../src/commands/wake-up.js';
 import { hookSessionStartCommand } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
+import { schemaCommand } from '../src/commands/schema-cmd.js';
+import { helpTopicCommand } from '../src/commands/help-topics.js';
 
 const program = new Command();
 
 program
   .name('valis')
-  .description('Shared decision intelligence for AI-augmented engineering teams')
-  .version('0.1.3');
+  .description(
+    'Shared decision intelligence for AI-augmented engineering teams.\n' +
+      '\n' +
+      'Universal CLI — works alongside any AI coding agent (Claude Code,\n' +
+      'Cursor, Codex, Aider, Cline, Goose, OpenCode, Gemini CLI). Captures,\n' +
+      'searches, and enforces architectural decisions across sessions.',
+  )
+  .version('0.1.4')
+  .option('--json', 'Emit machine-readable JSON output (auto-enabled when stdout is not a TTY)')
+  .option('--agent-mode', 'Alias for --json. Disables TTY heuristics; always structured output');
+
+// 0.1.4: groupings + footer for `valis --help`. Per BACKLOG #149.
+//
+// Commander's flat command listing is alphabetic by registration order
+// and not navigable for agents skimming `--help`. `.addHelpText('after', ...)`
+// appends a phase-grouped catalog AFTER the alphabetic list — agents and
+// humans both can scan groups instead of 21 commands in one column.
+program.addHelpText(
+  'after',
+  `
+
+GROUPED BY PHASE
+  Onboarding       init · login · switch · whoami
+  Daily use        search · index · status · sync · wake-up
+  Lifecycle        (use the MCP tools or the dashboard for promote/deprecate/pin)
+  Infrastructure   serve · dashboard
+  Plan & billing   upgrade
+  Configuration    config get/set · add-command · uninstall
+  Operator         enrich · admin · migrate-auth
+
+GETTING STARTED
+  $ valis init                        # first time: create or join an org
+  $ valis index ./docs                # then: bulk-import existing markdown
+  $ valis search "postgres"           # then: query the team brain
+
+AGENT INTEGRATION
+  $ valis schema --json               # machine-readable command catalog
+  $ valis --agent-mode <command>      # structured JSON output for any cmd
+  $ valis mcp                         # how CLI commands map to MCP tools
+  $ valis workflows                   # canonical multi-step flows
+
+  Cross-harness adapter: any agent harness can shell out to the CLI and
+  parse \`valis schema --json\` to discover commands. The plugin (Claude
+  Code marketplace) is the convenience layer — CLI is the substrate.
+
+NEXT
+  valis help <command>                # detailed help + examples per command
+  https://valis.krukit.co/docs        # full documentation
+`,
+);
 
 program
   .command('init')
@@ -425,6 +475,44 @@ program
   .action(async (name) => {
     try {
       await addCommandCommand(name);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// 0.1.4: agent-discovery primitives. Per BACKLOG #149.
+program
+  .command('schema')
+  .description('Emit a machine-readable JSON catalog of every CLI command (for harness adapters)')
+  .option('--format <fmt>', 'Output format. Currently only json is supported.', 'json')
+  .action(async (options) => {
+    try {
+      await schemaCommand(program, { format: options.format });
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('workflows')
+  .description('Show canonical multi-step flows (onboarding, capture loop, lifecycle, ...)')
+  .action(async () => {
+    try {
+      await helpTopicCommand('workflows');
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('mcp')
+  .description('Show CLI ↔ MCP tool mapping and how harnesses pick CLI vs MCP')
+  .action(async () => {
+    try {
+      await helpTopicCommand('mcp');
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

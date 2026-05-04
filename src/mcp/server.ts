@@ -19,10 +19,34 @@ import type { ServerConfig, ValisConfig } from '../types.js';
 // Shared tool definitions — reused by both local and proxy servers
 // ---------------------------------------------------------------------------
 
+// 0.1.4: MCP tool annotations per spec 2025-03-26+. Per BACKLOG #149.
+//
+// Annotations are advisory hints for harnesses — agents can use them to
+// gate destructive ops behind user confirmation, rank read-only tools
+// for free use, etc. Per the MCP team's own guidance hints are NOT a
+// security boundary, so the runtime behavior of the handlers is
+// identical regardless of annotation. They make sense as discovery
+// metadata only.
+
+interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+  title?: string;
+}
+
 const TOOL_DEFS = {
   valis_store: {
     description:
       'Store a team decision, constraint, pattern, or lesson into the shared team brain. Call this whenever an important technical decision is made. Use status: "proposed" for decisions that need team review before becoming active.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Store a team decision',
+    } as ToolAnnotations,
     schema: {
       text: z.string().min(10).describe('Full decision text (min 10 chars)'),
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Decision classification'),
@@ -39,6 +63,12 @@ const TOOL_DEFS = {
   valis_search: {
     description:
       "Search the team's shared decision history. Use before making architectural decisions to check what the team already decided. Results are scoped to the active project by default. Set all_projects to search across all accessible projects.",
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'Search team decisions',
+    } as ToolAnnotations,
     schema: {
       query: z.string().min(1).describe('Search query text'),
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Filter by type'),
@@ -49,6 +79,12 @@ const TOOL_DEFS = {
   valis_context: {
     description:
       'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases. Results are scoped to the active project by default.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'Load task-relevant team context',
+    } as ToolAnnotations,
     schema: {
       task_description: z.string().min(1).describe('What you are working on'),
       files: z.array(z.string()).optional().describe('File paths being worked on'),
@@ -58,6 +94,13 @@ const TOOL_DEFS = {
   valis_lifecycle: {
     description:
       'Manage decision lifecycle: deprecate outdated decisions, promote proposed ones to active, pin/unpin decisions, or view status change history.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Change decision lifecycle status',
+    } as ToolAnnotations,
     schema: {
       action: z.enum(['deprecate', 'promote', 'history', 'pin', 'unpin']).describe('Lifecycle action to perform'),
       decision_id: z.string().describe('UUID of the target decision'),
@@ -67,6 +110,12 @@ const TOOL_DEFS = {
   valis_check_duplicate: {
     description:
       'Check for similar existing decisions before storing a new one. Returns semantically similar matches above a threshold. Informational only — never blocks storage.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'Find similar existing decisions',
+    } as ToolAnnotations,
     schema: {
       text: z.string().min(1).describe('Decision text to check for duplicates'),
       threshold: z.number().min(0).max(1).optional().describe('Similarity threshold 0.0-1.0 (default 0.85)'),
@@ -75,16 +124,35 @@ const TOOL_DEFS = {
   valis_get_taxonomy_spec: {
     description:
       'Get the Valis taxonomy specification — data types, statuses, naming conventions, and tool usage guidance.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: 'Get taxonomy specification',
+    } as ToolAnnotations,
     schema: {},
   },
   valis_list_projects: {
     description:
       'List every project the authenticated member has access to, with role and decision count. Use this before /valis:init or when the user asks which projects they can connect to.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'List accessible projects',
+    } as ToolAnnotations,
     schema: {},
   },
   valis_create_project: {
     description:
       "Create a new project in the authenticated member's org and assign them as project_admin. Use when the user wants to connect a repo to a project that doesn't exist yet (e.g. during /valis:init after they chose 'create new'). Optionally seed it from a constitution template ('ts-saas', 'fintech', 'ai-agent') — fintech requires the 'pro' plan or higher.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Create a new project',
+    } as ToolAnnotations,
     schema: {
       project_name: z.string().min(1).max(100).describe('Name of the new project (1-100 chars)'),
       org_id: z.string().uuid().optional().describe("Org UUID — defaults to the authenticated member's org"),
@@ -275,7 +343,7 @@ so the team retains this knowledge.
 
 function createBaseServer(): McpServer {
   return new McpServer(
-    { name: 'valis', version: '0.1.3' },
+    { name: 'valis', version: '0.1.4' },
     {
       capabilities: {
         tools: {},
@@ -284,6 +352,39 @@ function createBaseServer(): McpServer {
       },
       instructions: VALIS_INSTRUCTIONS,
     },
+  );
+}
+
+/**
+ * 0.1.4: helper that wires a tool definition (description + schema +
+ * annotations) into the new `server.registerTool` API. Replaces the
+ * deprecated `server.tool(name, desc, schema, cb)` overload and ensures
+ * annotations actually reach `tools/list` responses (where harnesses
+ * read them for capability inference).
+ */
+function registerToolFromDef<Name extends keyof typeof TOOL_DEFS>(
+  server: McpServer,
+  name: Name,
+  cb: (args: never) => Promise<{ content: { type: 'text'; text: string }[] }>,
+): void {
+  const def = TOOL_DEFS[name];
+  const config: {
+    title?: string;
+    description: string;
+    inputSchema: unknown;
+    annotations?: ToolAnnotations;
+  } = {
+    title: (def as { annotations?: ToolAnnotations }).annotations?.title,
+    description: def.description,
+    inputSchema: def.schema,
+    annotations: (def as { annotations?: ToolAnnotations }).annotations,
+  };
+  // Cast through unknown to avoid the SDK's tight Zod-shape coupling here;
+  // each call site below passes a typed handler that matches its def.
+  (server.registerTool as unknown as (n: string, c: typeof config, h: typeof cb) => void)(
+    name,
+    config,
+    cb,
   );
 }
 
@@ -304,108 +405,56 @@ function registerPrompts(server: McpServer): void {
 export function createMcpServer(configOverride?: ServerConfig): McpServer {
   const server = createBaseServer();
 
-  // valis_store
-  server.tool(
-    'valis_store',
-    TOOL_DEFS.valis_store.description,
-    TOOL_DEFS.valis_store.schema,
-    async (args) => {
-      const result = await handleStore(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  // 0.1.4: registerToolFromDef wires description + schema + annotations
+  // through the new server.registerTool API so harnesses see the
+  // readOnlyHint/destructiveHint/idempotentHint annotations on tools/list.
+  registerToolFromDef(server, 'valis_store', async (args) => {
+    const result = await handleStore(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_search — T024: add all_projects parameter for cross-project search
-  server.tool(
-    'valis_search',
-    TOOL_DEFS.valis_search.description,
-    TOOL_DEFS.valis_search.schema,
-    async (args) => {
-      const result = await handleSearch(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_search', async (args) => {
+    const result = await handleSearch(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_context — T024: add all_projects parameter for cross-project context
-  server.tool(
-    'valis_context',
-    TOOL_DEFS.valis_context.description,
-    TOOL_DEFS.valis_context.schema,
-    async (args) => {
-      const result = await handleContext(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_context', async (args) => {
+    const result = await handleContext(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_lifecycle
-  server.tool(
-    'valis_lifecycle',
-    TOOL_DEFS.valis_lifecycle.description,
-    TOOL_DEFS.valis_lifecycle.schema,
-    async (args) => {
-      const result = await handleLifecycle(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_lifecycle', async (args) => {
+    const result = await handleLifecycle(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_check_duplicate
-  server.tool(
-    'valis_check_duplicate',
-    TOOL_DEFS.valis_check_duplicate.description,
-    TOOL_DEFS.valis_check_duplicate.schema,
-    async (args) => {
-      const result = await handleCheckDuplicate(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_check_duplicate', async (args) => {
+    const result = await handleCheckDuplicate(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_get_taxonomy_spec
-  server.tool(
-    'valis_get_taxonomy_spec',
-    TOOL_DEFS.valis_get_taxonomy_spec.description,
-    TOOL_DEFS.valis_get_taxonomy_spec.schema,
-    async () => {
-      const result = await handleTaxonomy({});
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_get_taxonomy_spec', async () => {
+    const result = await handleTaxonomy({});
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_list_projects — enumerates projects accessible to the authenticated
-  // member. Used by /valis:init to present choices without an anonymous HTTP fetch.
-  server.tool(
-    'valis_list_projects',
-    TOOL_DEFS.valis_list_projects.description,
-    TOOL_DEFS.valis_list_projects.schema,
-    async () => {
-      const result = await handleListProjects(configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_list_projects', async () => {
+    const result = await handleListProjects(configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // valis_create_project — creates a new project and registers the caller as
-  // project_admin. Companion to valis_list_projects for /valis:init "create new" flow.
-  server.tool(
-    'valis_create_project',
-    TOOL_DEFS.valis_create_project.description,
-    TOOL_DEFS.valis_create_project.schema,
-    async (args) => {
-      const result = await handleCreateProject(args, configOverride);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    },
-  );
+  registerToolFromDef(server, 'valis_create_project', async (args) => {
+    const result = await handleCreateProject(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
 
-  // 019/US2: valis_check_diff — shift-left enforcement against working-tree diff.
-  // Returns one summary block + one per-violation block (already human-readable),
-  // so we forward the content directly instead of re-stringifying as JSON.
-  server.tool(
-    'valis_check_diff',
-    TOOL_DEFS.valis_check_diff.description,
-    TOOL_DEFS.valis_check_diff.schema,
-    async (args) => {
-      const result = await handleCheckDiff(args, configOverride);
-      return result;
-    },
-  );
+  // 019/US2: check_diff returns pre-formatted human-readable content blocks
+  // instead of JSON. Forward as-is (the helper's stringify-wrapping path is
+  // wrong for this one tool).
+  registerToolFromDef(server, 'valis_check_diff', async (args) => {
+    const result = await handleCheckDiff(args as never, configOverride);
+    return result as { content: { type: 'text'; text: string }[] };
+  });
 
   registerPrompts(server);
   return server;

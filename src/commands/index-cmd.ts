@@ -1,43 +1,42 @@
 /**
  * `valis index <folder>` — bulk-import markdown documentation as decisions.
  *
- * 0.1.5: simplified to interactive prompts only. Two questions:
- *   1) Mode: quick (one decision per file) | detailed (one per H2 heading) |
- *      smart (heuristic — file for short, section for long/multi-H2)
- *   2) Run LLM enrichment after import? (yes/no — token estimate + $ shown)
+ * 0.1.10: dropped the mode prompt entirely (BACKLOG #162). Every markdown
+ * file becomes one decision with the file's H1 as summary and the full
+ * body as detail. The body is then chunked by Qdrant ingestion (1500 chars
+ * + 200 overlap, paragraph→sentence→hard-slice) so retrieval still hits
+ * sub-document chunks via expand='siblings'. Per-H2 splitting at the
+ * Postgres level was redundant after the chunking fix landed — agents
+ * reason at the decision level, search returns at the chunk level, and
+ * the user thinks at the file level. Three-mode prompt was friction
+ * without a real use case.
  *
- * Both decisions are orthogonal: mode = how to split, enrich = whether to
- * pay tokens for type-classification + 'affects' extraction. Quick is the
- * cheapest path. Detailed is the same cost as Quick (regex split, no LLM).
- * Smart adds zero LLM cost but auto-decides the split per-file based on
- * H2 count and content size. LLM enrichment is opt-in regardless of mode.
+ * Single optional question: run LLM enrichment after import? Token
+ * estimate + $ shown so the user sees the cost before opting in.
  *
- * Walks the folder for `.md` / `.markdown` files, optionally splits each by
- * H2 sections, optionally pulls git blame for author + first-commit-time,
- * shows a preview table, asks for confirmation, then stores each draft via
- * the same path used by `valis_store` (Postgres source-of-truth + Qdrant
- * upsert with chunking + e5-small managed inference).
+ * Walks the folder for `.md` / `.markdown` files, optionally pulls git
+ * blame for author + first-commit-time, shows a preview, asks for
+ * confirmation, then stores each draft via the same path used by
+ * `valis_store` (Postgres source-of-truth + Qdrant upsert with chunking +
+ * e5-small managed inference).
  *
  * Use cases:
  *   - First-time onboarding: an existing repo with `docs/` directory of
  *     architectural notes. Index in one shot instead of typing each one.
  *   - Migrating from another knowledge tool (Notion export → markdown).
  *
- * Flag overrides (all optional; missing ones are prompted for; intended for
- * scripted runs — interactive users should ignore):
- *   --mode quick|detailed|smart   (preferred)
- *   --strategy file|section       (deprecated 0.1.5 alias for quick/detailed)
+ * Flag overrides (intended for scripted runs):
  *   --enrich                      (run LLM enrichment after import; default off)
- *   --use-git                     (truthy override; for "no", answer the prompt or use --yes)
- *   --type <decision|pattern|constraint|lesson>
+ *   --use-git                     (extract author + created_at from git log)
+ *   --type <decision|pattern|constraint|lesson>  (default fallback when filename has no prefix)
  *   --affects <a,b,c>             (comma-separated tags applied to all)
  *   --dry-run                     (preview only, no writes)
  *   --yes                         (skip prompts AND final confirmation)
  *
  * Examples:
- *   valis index ./docs                                  # fully interactive
- *   valis index ./specs --mode smart --enrich           # CI-style scripted
- *   valis index ./docs --yes                            # all defaults, no prompts
+ *   valis index ./docs                       # interactive (one prompt: enrich?)
+ *   valis index ./specs --enrich --yes       # scripted with enrichment
+ *   valis index ./docs --yes                 # all defaults, no prompts
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -58,12 +57,7 @@ import type { RawDecision, DecisionType } from '../types.js';
 
 type ImportableType = Exclude<DecisionType, 'pending'>;
 
-type IndexMode = 'quick' | 'detailed' | 'smart';
-
 interface IndexOptions {
-  mode?: IndexMode;
-  /** @deprecated 0.1.5 — use --mode. Mapped: file→quick, section→detailed. */
-  strategy?: 'file' | 'section';
   enrich?: boolean;
   useGit?: boolean;
   type?: string;
@@ -71,16 +65,6 @@ interface IndexOptions {
   dryRun?: boolean;
   yes?: boolean;
 }
-
-/**
- * Heuristic: a file with ≥ MIN_H2_FOR_SECTION H2 headings OR larger than
- * MIN_BYTES_FOR_SECTION bytes is treated as multi-decision (split on H2).
- * Below either threshold = single decision per file. Tuned against typical
- * `specs/NNN-feature/spec.md` files (large + many H2 → section) versus
- * `decisions/decision-NNN.md` ADRs (small + few H2 → file).
- */
-const SMART_MIN_H2_FOR_SECTION = 3;
-const SMART_MIN_BYTES_FOR_SECTION = 5_000;
 
 /** ~4 chars per token is the standard rough approximation across tokenizers. */
 function estimateTokensFromText(text: string): number {
@@ -129,7 +113,6 @@ function formatCostUsd(usd: number): string {
 interface DraftDecision {
   filePath: string;
   relativePath: string;
-  sectionTitle: string | null;
   summary: string;
   detail: string;
   author: string;
@@ -160,30 +143,6 @@ async function* walkMarkdown(dir: string): AsyncIterable<string> {
       if (ext === '.md' || ext === '.markdown') yield full;
     }
   }
-}
-
-function splitOnH2(content: string): { sectionTitle: string; body: string }[] {
-  const lines = content.split('\n');
-  const sections: { sectionTitle: string; body: string }[] = [];
-  let currentTitle: string | null = null;
-  let currentBody: string[] = [];
-
-  for (const line of lines) {
-    const m = line.match(/^##\s+(.+?)\s*#*\s*$/);
-    if (m) {
-      if (currentTitle !== null) {
-        sections.push({ sectionTitle: currentTitle, body: currentBody.join('\n').trim() });
-      }
-      currentTitle = m[1].trim();
-      currentBody = [];
-    } else if (currentTitle !== null) {
-      currentBody.push(line);
-    }
-  }
-  if (currentTitle !== null) {
-    sections.push({ sectionTitle: currentTitle, body: currentBody.join('\n').trim() });
-  }
-  return sections.filter((s) => s.body.length > 0);
 }
 
 function extractH1(content: string): string | null {
@@ -253,17 +212,8 @@ function inferTypeFromFilename(
   return { type: fallback, fromPrefix: false };
 }
 
-function shouldSplitFileSmart(content: string): boolean {
-  // Cheap byte-size gate first — large files are almost always multi-decision.
-  if (content.length >= SMART_MIN_BYTES_FOR_SECTION) return true;
-  // Otherwise count H2 markers; ≥ N means it's structured as a multi-section doc.
-  const h2Count = (content.match(/^##\s+/gm) ?? []).length;
-  return h2Count >= SMART_MIN_H2_FOR_SECTION;
-}
-
 async function buildDrafts(
   folder: string,
-  mode: IndexMode,
   options: IndexOptions,
   defaults: { author: string; affects: string[]; type: ImportableType },
 ): Promise<DraftDecision[]> {
@@ -285,59 +235,21 @@ async function buildDrafts(
     const typeFromPrefix = inferred.fromPrefix;
     const relativePath = relative(folder, filePath);
 
-    // Mode resolution per file: 'quick' = always file; 'detailed' = always
-    // section; 'smart' = file unless heuristic says otherwise.
-    const useSection: boolean =
-      mode === 'detailed' || (mode === 'smart' && shouldSplitFileSmart(content));
-
-    if (useSection) {
-      const fileH1 = extractH1(content);
-      const sections = splitOnH2(content);
-      if (sections.length === 0) {
-        drafts.push({
-          filePath,
-          relativePath,
-          sectionTitle: null,
-          summary: summarize(fileH1 ?? basename(filePath, extname(filePath))),
-          detail: content.trim(),
-          author,
-          createdAt,
-          type: fileType,
-          affects: defaults.affects,
-          typeFromPrefix,
-        });
-        continue;
-      }
-      for (const sec of sections) {
-        const summaryPrefix = fileH1 ? `${fileH1} — ${sec.sectionTitle}` : sec.sectionTitle;
-        drafts.push({
-          filePath,
-          relativePath,
-          sectionTitle: sec.sectionTitle,
-          summary: summarize(summaryPrefix),
-          detail: sec.body,
-          author,
-          createdAt,
-          type: fileType,
-          affects: defaults.affects,
-          typeFromPrefix,
-        });
-      }
-    } else {
-      const h1 = extractH1(content);
-      drafts.push({
-        filePath,
-        relativePath,
-        sectionTitle: null,
-        summary: summarize(h1 ?? basename(filePath, extname(filePath))),
-        detail: content.trim(),
-        author,
-        createdAt,
-        type: fileType,
-        affects: defaults.affects,
-        typeFromPrefix,
-      });
-    }
+    // One file → one decision. The body is chunked by Qdrant ingestion at
+    // store time so retrieval still hits sub-document chunks via siblings
+    // expand. See header docstring for the rationale.
+    const h1 = extractH1(content);
+    drafts.push({
+      filePath,
+      relativePath,
+      summary: summarize(h1 ?? basename(filePath, extname(filePath))),
+      detail: content.trim(),
+      author,
+      createdAt,
+      type: fileType,
+      affects: defaults.affects,
+      typeFromPrefix,
+    });
   }
 
   return drafts;
@@ -361,10 +273,9 @@ function renderPreview(drafts: DraftDecision[]): void {
   const rows = drafts.slice(0, maxRows);
   for (let i = 0; i < rows.length; i++) {
     const d = rows[i];
-    const sec = d.sectionTitle ? pc.dim(` [${d.sectionTitle}]`) : '';
     const author = pc.dim(`(${d.author}, ${d.createdAt.slice(0, 10)})`);
     const type = d.typeFromPrefix ? pc.cyan(`[${d.type}]`) : pc.yellow(`[${d.type} • draft]`);
-    console.log(`  ${pc.gray(`${i + 1}.`)} ${type} ${pc.bold(d.summary)}${sec}`);
+    console.log(`  ${pc.gray(`${i + 1}.`)} ${type} ${pc.bold(d.summary)}`);
     console.log(`     ${pc.gray(d.relativePath)} ${author}`);
   }
   if (drafts.length > maxRows) {
@@ -390,50 +301,16 @@ async function confirm(message: string): Promise<boolean> {
  * caller doesn't re-parse strings.
  */
 interface ResolvedOptions extends IndexOptions {
-  mode: IndexMode;
   useGit: boolean;
   type: ImportableType;
   affectsList: string[];
 }
 
-/**
- * Map the deprecated --strategy alias to the new --mode space.
- * file → quick, section → detailed. Kept so 0.1.3+ scripts don't break.
- */
-function strategyToMode(strategy: 'file' | 'section'): IndexMode {
-  return strategy === 'section' ? 'detailed' : 'quick';
-}
-
 async function resolveInteractiveOptions(options: IndexOptions): Promise<ResolvedOptions> {
-  const yes = options.yes === true;
-  const interactive = !yes;
-
-  // Mode: prefer --mode, fall back to legacy --strategy mapping, otherwise prompt.
-  const explicitMode: IndexMode | undefined =
-    options.mode ?? (options.strategy ? strategyToMode(options.strategy) : undefined);
-
-  const mode: IndexMode = explicitMode
-    ? explicitMode
-    : interactive
-      ? await select({
-          message: 'Choose import mode:',
-          choices: [
-            {
-              name: 'Quick     — one decision per file (best for short ADRs)',
-              value: 'quick' as IndexMode,
-            },
-            {
-              name: 'Detailed  — one decision per H2 heading (best for long specs)',
-              value: 'detailed' as IndexMode,
-            },
-            {
-              name: 'Smart     — auto: file for short, section for long/multi-H2 docs',
-              value: 'smart' as IndexMode,
-            },
-          ],
-          default: 'quick',
-        })
-      : 'quick';
+  // 0.1.10: dropped the mode prompt entirely (BACKLOG #162). One file →
+  // one decision is the only mode now. Body chunking happens server-side
+  // at Qdrant ingestion, so per-H2 split at the Postgres level was
+  // redundant. See header docstring.
 
   // 0.1.5: dropped the interactive useGit prompt. Default off — git lookup
   // is slow on large repos and the value (better author attribution) is
@@ -462,7 +339,6 @@ async function resolveInteractiveOptions(options: IndexOptions): Promise<Resolve
 
   return {
     ...options,
-    mode,
     useGit,
     type,
     affects: affectsRaw || undefined,
@@ -509,7 +385,7 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   const author = config.member_id ?? 'cli-import';
 
   console.log(pc.bold(`\nScanning ${absFolder}...`));
-  const drafts = await buildDrafts(absFolder, resolved_opts.mode, resolved_opts, {
+  const drafts = await buildDrafts(absFolder, resolved_opts, {
     author,
     affects: resolved_opts.affectsList,
     type: resolved_opts.type,

@@ -3,6 +3,8 @@
  * endpoint. Uses native fetch — no extra dependencies.
  */
 
+import { VERSION } from '../index.js';
+
 let requestId = 0;
 
 export class ProxyError extends Error {
@@ -67,7 +69,7 @@ export async function initializeProxy(
   const res = await rpc(mcpEndpoint, bearerToken, 'initialize', {
     protocolVersion: '2025-03-26',
     capabilities: {},
-    clientInfo: { name: 'valis-cli', version: '0.1.7' },
+    clientInfo: { name: 'valis-cli', version: VERSION },
   });
   return (res.result ?? {}) as Record<string, unknown>;
 }

@@ -13,6 +13,7 @@ import { handleCheckDiff } from './tools/check-diff.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
+import { VERSION } from '../index.js';
 import type { ServerConfig, ValisConfig } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -366,7 +367,7 @@ so the team retains this knowledge.
 
 function createBaseServer(): McpServer {
   return new McpServer(
-    { name: 'valis', version: '0.1.7' },
+    { name: 'valis', version: VERSION },
     {
       capabilities: {
         tools: {},

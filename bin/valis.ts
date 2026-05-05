@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import { VERSION } from '../src/index.js';
 import { initCommand } from '../src/commands/init.js';
 import { serveCommand } from '../src/commands/serve.js';
 import { statusCommand } from '../src/commands/status.js';
@@ -43,7 +44,7 @@ program
       'Cursor, Codex, Aider, Cline, Goose, OpenCode, Gemini CLI). Captures,\n' +
       'searches, and enforces architectural decisions across sessions.',
   )
-  .version('0.1.7')
+  .version(VERSION)
   .option('--json', 'Emit machine-readable JSON output (auto-enabled when stdout is not a TTY)')
   .option('--agent-mode', 'Alias for --json. Disables TTY heuristics; always structured output');
 

@@ -156,20 +156,38 @@ function installSessionHook(settings: Record<string, unknown>): void {
     );
   }
 
-  // Install SessionStart hook
-  if (!hooks.SessionStart) hooks.SessionStart = [];
-  const sessionCommand = 'valis hook session-start';
-  const hasSessionHook = hooks.SessionStart.some(
-    (e) => e.hooks?.some((h) => h.command === sessionCommand),
-  );
-  if (!hasSessionHook) {
-    hooks.SessionStart.push({
-      matcher: '',
-      hooks: [{ type: 'command', command: sessionCommand, timeout: 10 }],
-    });
-  }
+  // Feature 023 Phase A: SessionStart + UserPromptSubmit + PostToolUse are
+  // active hooks; PreToolUse / PreCompact / Stop register silent stubs so
+  // plugin scripts always have something to delegate to (FR-029).
+  upsertHook(hooks, 'SessionStart', 'valis hook session-start', 10);
+  upsertHook(hooks, 'UserPromptSubmit', 'valis hook user-prompt-submit', 5);
+  upsertHook(hooks, 'PostToolUse', 'valis hook post-tool-use', 5);
+  upsertHook(hooks, 'PreToolUse', 'valis hook pre-tool-use', 5);
+  upsertHook(hooks, 'PreCompact', 'valis hook pre-compact', 5);
+  upsertHook(hooks, 'Stop', 'valis hook stop', 5);
 
   settings.hooks = hooks;
+}
+
+/**
+ * Insert a Valis hook entry under `event` in settings.hooks if not already
+ * present. Substring-matches the existing entries so re-runs don't duplicate.
+ */
+function upsertHook(
+  hooks: Record<string, HookEntry[]>,
+  event: string,
+  command: string,
+  timeoutSeconds: number,
+): void {
+  if (!hooks[event]) hooks[event] = [];
+  const present = hooks[event].some(
+    (e) => e.hooks?.some((h) => h.command === command),
+  );
+  if (present) return;
+  hooks[event].push({
+    matcher: '',
+    hooks: [{ type: 'command', command, timeout: timeoutSeconds }],
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,14 @@ import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
 import { wakeUpCommand } from '../src/commands/wake-up.js';
-import { hookSessionStartCommand } from '../src/commands/hook.js';
+import {
+  hookSessionStartCommand,
+  hookUserPromptSubmitCommand,
+  hookPostToolUseCommand,
+  hookPreToolUseCommand,
+  hookPreCompactCommand,
+  hookStopCommand,
+} from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
 import { schemaCommand } from '../src/commands/schema-cmd.js';
@@ -468,6 +475,61 @@ hookCmd
       await hookSessionStartCommand();
     } catch {
       // Hooks must never crash — silent exit on any error
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('user-prompt-submit')
+  .description('UserPromptSubmit hook: always-inject per-prompt augmentation (Phase A US2)')
+  .action(async () => {
+    try {
+      await hookUserPromptSubmitCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('post-tool-use')
+  .description('PostToolUse hook: own-write cache invalidation (Phase A FR-006a)')
+  .action(async () => {
+    try {
+      await hookPostToolUseCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('pre-tool-use')
+  .description('PreToolUse hook: silent stub (Phase B FR-040 — telemetry-gated)')
+  .action(async () => {
+    try {
+      await hookPreToolUseCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('pre-compact')
+  .description('PreCompact hook: silent stub (Phase B FR-042 — telemetry-gated)')
+  .action(async () => {
+    try {
+      await hookPreCompactCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('stop')
+  .description('Stop hook: silent stub (Phase B FR-042 — telemetry-gated)')
+  .action(async () => {
+    try {
+      await hookStopCommand();
+    } catch {
       process.exit(0);
     }
   });

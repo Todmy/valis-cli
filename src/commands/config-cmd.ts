@@ -1,8 +1,20 @@
 import pc from 'picocolors';
 import { loadConfig, updateConfig } from '../config/store.js';
 import type { ValisConfig } from '../types.js';
+import {
+  loadConsent,
+  saveConsent,
+  transitionConsent,
+} from '../hooks/consent.js';
 
-const WRITABLE_KEYS = ['api-key', 'author-name'] as const;
+const WRITABLE_KEYS = [
+  'api-key',
+  'author-name',
+  'telemetry',
+  'per_prompt_threshold',
+  'per_prompt_budget',
+  'per_prompt_augmentation',
+] as const;
 const READ_ONLY_KEYS = ['org-id'] as const;
 const ALL_KEYS = [...WRITABLE_KEYS, ...READ_ONLY_KEYS] as const;
 
@@ -44,6 +56,52 @@ export async function configSetCommand(key: string, value: string): Promise<void
       console.error(`Unknown key: ${key}. Writable keys: ${WRITABLE_KEYS.join(', ')}`);
     }
     process.exit(1);
+  }
+
+  // Telemetry toggle is the consent state machine, not a free-form config field.
+  if (key === 'telemetry') {
+    const v = value.toLowerCase();
+    if (v !== 'on' && v !== 'off') {
+      console.error('Usage: valis config set telemetry on|off');
+      process.exit(1);
+    }
+    const current = await loadConsent();
+    if (!current) {
+      console.error('No consent record found. Run `valis init` first.');
+      process.exit(1);
+    }
+    const next = transitionConsent(current, v === 'on' ? 'config_set_on' : 'config_set_off');
+    await saveConsent(next);
+    console.log(pc.green(`\u2713 telemetry ${v} (state: ${next.consent_state})`));
+    return;
+  }
+
+  // Per-prompt augmentation toggles live in ~/.valis/config.json directly.
+  if (key === 'per_prompt_augmentation') {
+    const v = value.toLowerCase();
+    if (v !== 'on' && v !== 'off') {
+      console.error('Usage: valis config set per_prompt_augmentation on|off');
+      process.exit(1);
+    }
+    await updateConfig({
+      per_prompt_augmentation: v === 'on',
+    } as unknown as Partial<ValisConfig>);
+    console.log(pc.green(`\u2713 per_prompt_augmentation ${v}`));
+    return;
+  }
+  if (key === 'per_prompt_threshold' || key === 'per_prompt_budget') {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) {
+      console.error(`Usage: valis config set ${key} <non-negative number>`);
+      process.exit(1);
+    }
+    if (key === 'per_prompt_threshold' && (n < 0 || n > 1)) {
+      console.error('per_prompt_threshold must be in [0, 1]');
+      process.exit(1);
+    }
+    await updateConfig({ [key]: n } as unknown as Partial<ValisConfig>);
+    console.log(pc.green(`\u2713 ${key} set to ${n}`));
+    return;
   }
 
   const field = KEY_TO_FIELD[key];

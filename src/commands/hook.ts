@@ -13,6 +13,7 @@
 export { hookSessionStartCommand } from '../hooks/session-start-handler.js';
 export { hookUserPromptSubmitCommand } from '../hooks/user-prompt-submit-handler.js';
 export { hookPostToolUseCommand } from '../hooks/post-tool-use-handler.js';
+export { hookFlushTelemetryCommand } from '../hooks/flush-telemetry-handler.js';
 
 /** Phase B silent-skip stubs. Registered for plugin compatibility (FR-029). */
 export async function hookPreToolUseCommand(): Promise<void> {

@@ -4,6 +4,7 @@ import { resolveConfig } from '../config/project.js';
 import { getSupabaseClient, healthCheck as supabaseHealth, getOrgInfo, getProjectDecisionCount } from '../cloud/supabase.js';
 import { getQdrantClient, healthCheck as qdrantHealth } from '../cloud/qdrant.js';
 import { getCount as getQueueCount } from '../offline/queue.js';
+import { loadConsent } from '../hooks/consent.js';
 import type { AuthMode } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -37,7 +38,18 @@ export function setRealtimeProject(projectName: string | null): void {
 // Status command
 // ---------------------------------------------------------------------------
 
-export async function statusCommand(): Promise<void> {
+export interface StatusOptions {
+  telemetry?: boolean;
+}
+
+export async function statusCommand(options: StatusOptions = {}): Promise<void> {
+  // Feature 023 US4: --telemetry flag short-circuits to consent + transmission
+  // visibility. Engineer-facing audit surface.
+  if (options.telemetry) {
+    await statusTelemetryCommand();
+    return;
+  }
+
   // T034: Resolve both global and project config
   const resolved = await resolveConfig();
   const config = resolved.global;
@@ -203,4 +215,71 @@ export async function statusCommand(): Promise<void> {
   }
 
   console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Feature 023 US4 — `valis status --telemetry`
+// ---------------------------------------------------------------------------
+
+async function statusTelemetryCommand(): Promise<void> {
+  console.log(pc.bold('\nValis Telemetry Status\n'));
+  const consent = await loadConsent();
+  if (!consent) {
+    console.log(`  ${pc.yellow('No consent record yet.')}`);
+    console.log(pc.dim('  Run `valis init` to set up telemetry consent.\n'));
+    return;
+  }
+  console.log(`  installation_id      ${consent.installation_id}`);
+  console.log(
+    `  consent_state        ${stateColor(consent.consent_state)}${consent.consent_state}${pc.reset('')}`,
+  );
+  console.log(`  transmission_active  ${consent.transmission_active ? pc.green('yes') : pc.red('no')}`);
+  console.log(`  is_self_hosted       ${consent.is_self_hosted ? 'yes' : 'no'}`);
+  console.log(`  consent_decided_at   ${consent.consent_decided_at}`);
+  console.log(`  day_30_anniversary   ${consent.day_30_anniversary}`);
+  const days =
+    (Date.parse(consent.day_30_anniversary) - Date.now()) / (24 * 3600 * 1000);
+  if (consent.consent_state === 'accepted_30day_window') {
+    if (days > 0) {
+      console.log(pc.dim(`  ${Math.ceil(days)} day(s) until day-30 prompt fires.`));
+    } else {
+      console.log(pc.yellow('  Day-30 anniversary reached — next CLI invocation will prompt.'));
+    }
+  }
+
+  // Feature 023 US3 (T039) — migration audit summary for the active project.
+  await reportMigrationStatus();
+
+  console.log(pc.dim('\n  Toggle: `valis config set telemetry on|off`\n'));
+}
+
+async function reportMigrationStatus(): Promise<void> {
+  const { resolveConfig } = await import('../config/project.js');
+  const { loadManifest } = await import('../hooks/migration.js');
+  const resolved = await resolveConfig();
+  const project = resolved.project;
+  if (!project?.project_id) return;
+
+  try {
+    const manifest = await loadManifest(project.project_id);
+    const migrated = manifest.migrations.length;
+    const declined = manifest.decline_history.length;
+    if (migrated === 0 && declined === 0) return;
+    console.log('');
+    console.log(`  Migration (${project.project_name})`);
+    console.log(`    accepted    ${migrated} entr${migrated === 1 ? 'y' : 'ies'}`);
+    console.log(`    declined    ${declined} entr${declined === 1 ? 'y' : 'ies'}`);
+    if (manifest.migrations.length > 0) {
+      const last = manifest.migrations[manifest.migrations.length - 1];
+      console.log(pc.dim(`    last        ${last.migrated_at} (${last.source_path})`));
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+function stateColor(state: string): string {
+  if (state.startsWith('accepted_')) return pc.green('');
+  if (state === 'pending') return pc.yellow('');
+  return pc.red('');
 }

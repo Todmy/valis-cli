@@ -102,7 +102,9 @@ afterEach(async () => {
   else process.env.CLAUDE_PROJECT_DIR = prevClaudeProjectDir;
   if (prevClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
   else process.env.CLAUDE_SESSION_ID = prevClaudeSessionId;
-  if (prevFetch) globalThis.fetch = prevFetch;
+  // Always restore fetch — `prevFetch` is captured before any test mocks
+  // so this unconditionally reverts to the native value.
+  globalThis.fetch = prevFetch as typeof globalThis.fetch;
   await rm(tempHome, { recursive: true, force: true });
   await rm(projectDir, { recursive: true, force: true });
 });

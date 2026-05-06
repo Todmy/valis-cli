@@ -949,6 +949,160 @@ export async function initCommand(options: { join?: string }): Promise<void> {
     }
   }
 
+  // Feature 023 US4 — telemetry consent dialog (idempotent: silent if
+  // already decided). Self-hosted detection from supabase_url; per FR-022
+  // self-hosted defaults to local recording without transmission.
+  await runTelemetryConsent(config.supabase_url);
+
+  // Feature 023 US3 — Memory.md migration prompt. Idempotent via
+  // SHA-256 source-dedup hash; declined entries are suppressed for 30 days.
+  await runMemoryMigration(process.cwd(), projectConfig.project_id);
+
   // Print final summary
   await printSummary(config, projectConfig, false);
+}
+
+/**
+ * Memory.md migration flow (T036). Detects candidates, prompts engineer,
+ * on accept performs backup + stub-replace + manifest record. Skipped
+ * silently in non-interactive sessions (CI, scripted installs).
+ *
+ * Note: Phase A ships the detection + backup + stub. Auto-import of
+ * candidate entries into Valis decisions is deferred to a follow-up that
+ * extends the seed pipeline; backed-up content is preserved verbatim under
+ * ~/.valis/migrate-backup/<project_id>/<timestamp>/ and the engineer can
+ * surface the most important entries via valis_store on demand.
+ */
+async function runMemoryMigration(projectDir: string, projectId: string): Promise<void> {
+  if (!process.stdin.isTTY) return;
+
+  const migration = await import('../hooks/migration.js');
+  const telemetry = await import('../hooks/telemetry.js');
+
+  const candidates = await migration.detectCandidates(projectDir);
+  if (candidates.length === 0) return;
+
+  const manifest = await migration.loadManifest(projectId);
+  manifest.project_name = manifest.project_name || projectId;
+  const fresh = candidates.filter(
+    (c) =>
+      !migration.isAlreadyMigrated(c, manifest) &&
+      !migration.isDeclineSuppressed(c, manifest),
+  );
+  if (fresh.length === 0) return;
+
+  console.log('\n' + pc.cyan('Memory.md migration'));
+  console.log(migration.renderPreview(fresh));
+
+  void telemetry.record('migration_offered', { project_id: projectId });
+  const accept = await ynPrompt('\nMigrate to Valis? [y/N]', false);
+  if (!accept) {
+    for (const c of fresh) await migration.recordDecline(manifest, c);
+    void telemetry.record('migration_declined', { project_id: projectId });
+    console.log(pc.dim('  Skipped. Re-prompt suppressed for 30 days.'));
+    return;
+  }
+
+  void telemetry.record('migration_accepted', { project_id: projectId });
+  let succeeded = 0;
+  for (const c of fresh) {
+    try {
+      const backupPath = await migration.backupAndStub(c, projectId);
+      await migration.recordMigration(manifest, {
+        candidate: c,
+        backupPath,
+        decisionIds: [], // Phase A: backup + stub only; entries not auto-stored
+        migratedAt: new Date().toISOString(),
+      });
+      succeeded++;
+      console.log(pc.green(`  ✓ Backed up ${c.path} → ${backupPath}`));
+    } catch (err) {
+      void telemetry.record('migration_failed', {
+        project_id: projectId,
+        error_message: (err as Error).message,
+      });
+      console.log(pc.yellow(`  ⚠ Failed: ${c.path} (${(err as Error).message})`));
+    }
+  }
+  void telemetry.record('migration_completed', {
+    project_id: projectId,
+    metadata: { entries_migrated: succeeded },
+  });
+  console.log(
+    pc.dim(
+      `  Originals preserved under ~/.valis/migrate-backup/${projectId}/. ` +
+        `Use \`valis_store\` to import the most important entries on demand.`,
+    ),
+  );
+}
+
+async function ynPrompt(question: string, defaultValue: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    process.stdout.write(question + ' ');
+    let buf = '';
+    const onData = (chunk: Buffer) => {
+      buf += chunk.toString('utf-8');
+      if (buf.includes('\n')) {
+        process.stdin.removeListener('data', onData);
+        const reply = buf.trim().toLowerCase();
+        if (!reply) resolve(defaultValue);
+        else if (reply.startsWith('y')) resolve(true);
+        else if (reply.startsWith('n')) resolve(false);
+        else resolve(defaultValue);
+      }
+    };
+    process.stdin.on('data', onData);
+  });
+}
+
+/**
+ * Wrapper around runConsentDialog using stdin/stdout for the prompt.
+ * Skipped silently when stdin isn't a TTY (CI, scripted installs) — in
+ * that case we auto-accept the default for hosted, decline for self-hosted.
+ */
+async function runTelemetryConsent(supabaseUrl: string | undefined): Promise<void> {
+  const { runConsentDialog, detectSelfHosted, transitionConsent, saveConsent, loadConsent } =
+    await import('../hooks/consent.js');
+  const isSelfHosted = detectSelfHosted(supabaseUrl);
+
+  // Non-interactive auto-decision: skip the prompt, write the default record.
+  if (!process.stdin.isTTY) {
+    const existing = await loadConsent();
+    if (existing && existing.consent_state !== 'pending') return;
+    const next = transitionConsent(
+      existing,
+      isSelfHosted ? 'decline' : 'accept_default',
+      { isSelfHosted },
+    );
+    await saveConsent(next);
+    return;
+  }
+
+  await runConsentDialog(
+    {
+      show: (text: string) => {
+        console.log('\n' + pc.cyan('Telemetry consent'));
+        console.log(text + '\n');
+      },
+      ask: async (question: string, defaultValue: boolean): Promise<boolean> => {
+        return new Promise((resolve) => {
+          process.stdout.write(question + ' ');
+          let buf = '';
+          const onData = (chunk: Buffer) => {
+            buf += chunk.toString('utf-8');
+            if (buf.includes('\n')) {
+              process.stdin.removeListener('data', onData);
+              const reply = buf.trim().toLowerCase();
+              if (!reply) resolve(defaultValue);
+              else if (reply.startsWith('y')) resolve(true);
+              else if (reply.startsWith('n')) resolve(false);
+              else resolve(defaultValue);
+            }
+          };
+          process.stdin.on('data', onData);
+        });
+      },
+    },
+    { isSelfHosted },
+  );
 }

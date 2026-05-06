@@ -34,11 +34,13 @@ import {
   hookPreToolUseCommand,
   hookPreCompactCommand,
   hookStopCommand,
+  hookFlushTelemetryCommand,
 } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
 import { schemaCommand } from '../src/commands/schema-cmd.js';
 import { helpTopicCommand } from '../src/commands/help-topics.js';
+import { maybeFireDay30 } from '../src/hooks/consent.js';
 
 const program = new Command();
 
@@ -142,9 +144,10 @@ program
 program
   .command('status')
   .description('Show system health and org info')
-  .action(async () => {
+  .option('--telemetry', 'Show telemetry consent + transmission state (feature 023)')
+  .action(async (options: { telemetry?: boolean }) => {
     try {
-      await statusCommand();
+      await statusCommand({ telemetry: options.telemetry });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -534,6 +537,17 @@ hookCmd
     }
   });
 
+hookCmd
+  .command('flush-telemetry')
+  .description('Batch-transmit local telemetry to backend metrics endpoint (T047)')
+  .action(async () => {
+    try {
+      await hookFlushTelemetryCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
 program
   .command('add-command [name]')
   .description('Create a custom /valis-* slash command')
@@ -583,5 +597,13 @@ program
       process.exit(1);
     }
   });
+
+// Feature 023 US4 — fire the day-30 anniversary transition silently before
+// processing the command, but only for non-hook surfaces (hooks must stay
+// strictly non-blocking and the day-30 logic writes the consent file).
+const argvSubcommand = process.argv[2];
+if (argvSubcommand !== 'hook') {
+  void maybeFireDay30();
+}
 
 program.parse();

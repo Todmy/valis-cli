@@ -36,6 +36,9 @@ export type TelemetryEvent =
   | 'telemetry_day_30_stopped'
   | 'config_drift_repaired'
   | 'config_drift_user_customized'
+  | 'qdrant_index_repaired'
+  | 'mcp_entry_repaired'
+  | 'installation_id_recovered'
   | 'hook_failure';
 
 export interface TelemetryRecord {

@@ -214,6 +214,93 @@ describe('self-heal — canonical hash stability', () => {
   });
 });
 
+describe('self-heal — MCP entry in ~/.claude.json', () => {
+  beforeEach(() => {
+    process.env.CLAUDE_HOME_OVERRIDE = claudeHomeDir;
+  });
+  afterEach(() => {
+    delete process.env.CLAUDE_HOME_OVERRIDE;
+  });
+
+  it('skipped when ~/.claude.json absent', async () => {
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('mcpServers.valis'))?.outcome).toBe('skipped');
+  });
+
+  it('repaired when valis MCP entry missing', async () => {
+    await mkdir(claudeHomeDir, { recursive: true });
+    await writeFile(
+      join(claudeHomeDir, '.claude.json'),
+      JSON.stringify({ mcpServers: { other: { command: 'something' } } }),
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('mcpServers.valis'))?.outcome).toBe('repaired');
+
+    const after = JSON.parse(await readFile(join(claudeHomeDir, '.claude.json'), 'utf-8'));
+    expect(after.mcpServers.valis.command).toBe('valis');
+    expect(after.mcpServers.valis.args).toEqual(['serve']);
+    expect(after.mcpServers.other).toBeTruthy();
+  });
+
+  it('fresh when valis MCP entry already correct', async () => {
+    await mkdir(claudeHomeDir, { recursive: true });
+    await writeFile(
+      join(claudeHomeDir, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { valis: { command: 'valis', args: ['serve'], env: {} } },
+      }),
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('mcpServers.valis'))?.outcome).toBe('fresh');
+  });
+
+  it('skipped on malformed JSON', async () => {
+    await mkdir(claudeHomeDir, { recursive: true });
+    await writeFile(join(claudeHomeDir, '.claude.json'), '{not valid');
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('mcpServers.valis'))?.outcome).toBe('skipped');
+  });
+});
+
+describe('self-heal — installation_id recovery', () => {
+  it('writes a UUID when file is absent', async () => {
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const inst = reports.find((r) => r.target.includes('installation-id'));
+    expect(inst?.outcome).toBe('repaired');
+    const id = (await readFile(join(tempHome, 'installation-id'), 'utf-8')).trim();
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it('preserves an existing valid UUID across runs', async () => {
+    await mkdir(tempHome, { recursive: true });
+    const original = '11111111-2222-3333-4444-555555555555';
+    await writeFile(join(tempHome, 'installation-id'), original);
+
+    await runSelfHeal({ projectDir, silent: true });
+    const after = (await readFile(join(tempHome, 'installation-id'), 'utf-8')).trim();
+    expect(after).toBe(original);
+  });
+
+  it('overwrites garbled content but backs up first', async () => {
+    await mkdir(tempHome, { recursive: true });
+    await writeFile(join(tempHome, 'installation-id'), 'definitely-not-a-uuid\n');
+
+    await runSelfHeal({ projectDir, silent: true });
+    const after = (await readFile(join(tempHome, 'installation-id'), 'utf-8')).trim();
+    expect(after).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(after).not.toBe('definitely-not-a-uuid');
+
+    // Backup written.
+    const { readdirSync } = await import('node:fs');
+    const root = join(tempHome, 'migrate-backup', 'self-heal', 'installation-id');
+    expect(readdirSync(root).length).toBeGreaterThan(0);
+  });
+});
+
 describe('self-heal — performance smoke', () => {
   it('fresh-state path completes under 50ms (substring probes only)', async () => {
     await writeGlobalClaudeMd('# Top\n\n' + canonicalGlobalKrBlock() + '\n');
@@ -236,10 +323,29 @@ describe('self-heal — performance smoke', () => {
       }),
     );
 
+    // Pre-seed the new heal targets so this run truly is "everything fresh".
+    await mkdir(claudeHomeDir, { recursive: true });
+    await writeFile(
+      join(claudeHomeDir, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { valis: { command: 'valis', args: ['serve'], env: {} } },
+      }),
+    );
+    await writeFile(
+      join(tempHome, 'installation-id'),
+      '11111111-2222-3333-4444-555555555555',
+    );
+    process.env.CLAUDE_HOME_OVERRIDE = claudeHomeDir;
+
     const t0 = performance.now();
     const reports = await runSelfHeal({ projectDir, silent: true });
     const elapsed = performance.now() - t0;
-    expect(reports.every((r) => r.outcome === 'fresh')).toBe(true);
+    delete process.env.CLAUDE_HOME_OVERRIDE;
+
+    // Local-fs heals (3 claude/settings + 2 mcp/installation) all fresh.
+    // Qdrant report = no_creds (no QDRANT_URL in this test) — expected.
+    const localReports = reports.filter((r) => !r.target.startsWith('qdrant:'));
+    expect(localReports.every((r) => r.outcome === 'fresh')).toBe(true);
     expect(elapsed).toBeLessThan(50);
   });
 });

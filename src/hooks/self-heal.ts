@@ -26,8 +26,14 @@
 import { readFile, writeFile, mkdir, chmod, rename, copyFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
-import { configPath, migrationBackupRoot, claudeHome } from './paths.js';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import {
+  configPath,
+  migrationBackupRoot,
+  claudeHome,
+  installationIdPath,
+} from './paths.js';
 import { record as recordTelemetry } from './telemetry.js';
 import {
   GLOBAL_KR_START,
@@ -187,6 +193,91 @@ async function healProjectClaudeMd(projectDir: string): Promise<HealReport> {
   return { target, outcome: 'repaired' };
 }
 
+// ---------------------------------------------------------------------------
+// Heal target #4 — MCP server entry in ~/.claude.json
+//
+// `~/.claude.json` lives in $HOME (sibling to ~/.claude/, not inside),
+// so we resolve it via homedir() rather than claudeHome() which targets
+// the directory. Same env override convention: $CLAUDE_HOME_OVERRIDE.
+// ---------------------------------------------------------------------------
+
+function claudeJsonPath(): string {
+  // The CLAUDE_HOME_OVERRIDE escape hatch lets tests redirect the file.
+  // Production resolves to ~/.claude.json.
+  if (process.env.CLAUDE_HOME_OVERRIDE) {
+    return join(process.env.CLAUDE_HOME_OVERRIDE, '.claude.json');
+  }
+  return join(homedir(), '.claude.json');
+}
+
+async function healMcpEntry(): Promise<HealReport> {
+  const target = '~/.claude.json (mcpServers.valis)';
+  const path = claudeJsonPath();
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch {
+    return { target, outcome: 'skipped', notes: 'claude.json absent' };
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { target, outcome: 'skipped', notes: 'claude.json malformed' };
+  }
+
+  const servers = (parsed.mcpServers ?? {}) as Record<string, unknown>;
+  const entry = servers.valis as
+    | { command?: string; args?: string[] }
+    | undefined;
+  const isPresent =
+    entry &&
+    entry.command === 'valis' &&
+    Array.isArray(entry.args) &&
+    entry.args[0] === 'serve';
+  if (isPresent) return { target, outcome: 'fresh' };
+
+  await backupOriginal(path, 'claude-json');
+  servers.valis = { command: 'valis', args: ['serve'], env: {} };
+  parsed.mcpServers = servers;
+  await atomicWrite(path, JSON.stringify(parsed, null, 2) + '\n');
+  void recordTelemetry('mcp_entry_repaired', { metadata: { target } });
+  return { target, outcome: 'repaired' };
+}
+
+// ---------------------------------------------------------------------------
+// Heal target #5 — installation_id recovery
+//
+// File at ~/.valis/installation-id is a single UUID line. If absent, write
+// a new one. Critical: never REWRITE an existing valid UUID — that would
+// orphan all prior telemetry attributed to the old installation.
+// ---------------------------------------------------------------------------
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function healInstallationId(): Promise<HealReport> {
+  const target = '~/.valis/installation-id';
+  const path = installationIdPath();
+  try {
+    const raw = (await readFile(path, 'utf-8')).trim();
+    if (UUID_RE.test(raw)) return { target, outcome: 'fresh' };
+    // File present but garbled — overwrite with a fresh UUID + backup.
+    await backupOriginal(path, 'installation-id');
+  } catch {
+    /* missing — fall through to write */
+  }
+  const newId = randomUUID();
+  await atomicWrite(path, newId);
+  try {
+    await chmod(path, 0o600);
+  } catch {
+    /* non-POSIX */
+  }
+  void recordTelemetry('installation_id_recovered', { metadata: { target } });
+  return { target, outcome: 'repaired', notes: `wrote ${newId}` };
+}
+
 async function healSettingsHooks(): Promise<HealReport> {
   const target = '~/.claude/settings.json (valis hooks)';
   const settingsPath = join(claudeHome(), 'settings.json');
@@ -226,7 +317,7 @@ export async function runSelfHeal(options: SelfHealOptions = {}): Promise<HealRe
 
   const projectDir = options.projectDir ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 
-  const [global, project, settings] = await Promise.all([
+  const [global, project, settings, mcp, installation] = await Promise.all([
     healGlobalClaudeMd().catch((err) => ({
       target: '~/.claude/CLAUDE.md',
       outcome: 'skipped' as HealOutcome,
@@ -242,8 +333,44 @@ export async function runSelfHeal(options: SelfHealOptions = {}): Promise<HealRe
       outcome: 'skipped' as HealOutcome,
       notes: `error: ${(err as Error).message}`,
     })),
+    healMcpEntry().catch((err) => ({
+      target: '~/.claude.json',
+      outcome: 'skipped' as HealOutcome,
+      notes: `error: ${(err as Error).message}`,
+    })),
+    healInstallationId().catch((err) => ({
+      target: '~/.valis/installation-id',
+      outcome: 'skipped' as HealOutcome,
+      notes: `error: ${(err as Error).message}`,
+    })),
   ]);
-  const reports: HealReport[] = [global, project, settings];
+  const reports: HealReport[] = [global, project, settings, mcp, installation];
+
+  // Qdrant heal lives in its own module to keep network IO isolated. It
+  // honors a 24h cooldown internally and silently skips if Qdrant creds
+  // are absent (hosted-mode CLI).
+  try {
+    const { runQdrantHeal } = await import('./qdrant-self-heal.js');
+    const qdrantReports = await runQdrantHeal();
+    for (const r of qdrantReports) {
+      reports.push({
+        target: `qdrant:${r.collection}`,
+        outcome:
+          r.outcome === 'repaired'
+            ? 'repaired'
+            : r.outcome === 'fresh'
+              ? 'fresh'
+              : 'skipped',
+        notes: r.repaired_fields ? `fields: ${r.repaired_fields.join(', ')}` : r.notes,
+      });
+    }
+  } catch (err) {
+    reports.push({
+      target: 'qdrant',
+      outcome: 'skipped',
+      notes: `qdrant heal error: ${(err as Error).message}`,
+    });
+  }
 
   if (!options.silent) {
     for (const r of reports) {

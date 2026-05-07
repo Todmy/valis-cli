@@ -465,9 +465,27 @@ program
     }
   });
 
-// Internal hook subcommands — called by Claude Code hooks, not user-facing
+// Internal hook subcommands — called by Claude Code hooks, not user-facing.
+//
+// Forward-compatibility: when settings.json references a hook event the
+// current `valis` binary does not yet implement, we silent-exit instead of
+// crashing the session. Without this, any future-event drift between the
+// installed CLI version and the most-recent settings.json would surface
+// in Claude Code as a non-blocking error banner. Constitution III: hook
+// failures must never block; an unknown subcommand qualifies.
 const hookCmd = new Command('hook')
-  .description('Internal hook commands (used by Claude Code)');
+  .description('Internal hook commands (used by Claude Code)')
+  .allowUnknownOption(true)
+  .exitOverride((err) => {
+    if (
+      err.code === 'commander.unknownCommand' ||
+      err.code === 'commander.help' ||
+      err.code === 'commander.helpDisplayed'
+    ) {
+      process.exit(0);
+    }
+    throw err;
+  });
 program.addCommand(hookCmd, { hidden: true });
 
 hookCmd

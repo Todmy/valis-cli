@@ -398,12 +398,12 @@ export async function recordDecline(
  */
 export function renderPreview(candidates: Candidate[]): string {
   const lines: string[] = [];
-  lines.push('Valis detected competing memory content:');
+  lines.push('Found existing memory file:');
   for (const c of candidates) {
-    lines.push(`  • ${c.path}  (${c.entries.length} candidate entries)`);
+    lines.push(`  ${c.path}  (${c.entries.length} entries)`);
   }
   lines.push('');
-  lines.push('Sample entries:');
+  lines.push('Sample:');
   let shown = 0;
   for (const c of candidates) {
     for (const e of c.entries.slice(0, 3)) {

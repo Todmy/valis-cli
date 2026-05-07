@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "description": "SC-008 conflict corpus. 20 scenarios where MEMORY.md and Valis disagree on a work topic. The agent should pick the Valis-side answer because the labeled block carries `precedence` outranking MEMORY.md. Replace expected_valis_decision_id placeholders with real IDs before running.",
+  "conflicts": [
+    {
+      "id": "conf-01",
+      "topic": "TTL for context cache",
+      "memory_md_position": "Cache TTL is 60 seconds because of latency concerns.",
+      "valis_position": "Cache TTL is 300 seconds with own-write invalidation; reduces backend load by 5x.",
+      "expected_valis_decision_id": "REPLACE-conf-01-ttl"
+    },
+    {
+      "id": "conf-02",
+      "topic": "plugin spawn form",
+      "memory_md_position": "Use shell strings for plugin scripts — easier to read.",
+      "valis_position": "Argv-array spawnSync only; shell strings are a security regression (BUG #119).",
+      "expected_valis_decision_id": "REPLACE-conf-02-spawn"
+    },
+    {
+      "id": "conf-03",
+      "topic": "telemetry default",
+      "memory_md_position": "Telemetry should default OFF to be privacy-respecting.",
+      "valis_position": "Telemetry default ON for hosted; default OFF for self-hosted; consent dialog in init.",
+      "expected_valis_decision_id": "REPLACE-conf-03-telemetry-default"
+    },
+    {
+      "id": "conf-04",
+      "topic": "Memory.md migration",
+      "memory_md_position": "Leave MEMORY.md alone; let users migrate manually.",
+      "valis_position": "Offer migration in valis init; backup + stub-replace; idempotent via dedup hash.",
+      "expected_valis_decision_id": "REPLACE-conf-04-migration"
+    },
+    {
+      "id": "conf-05",
+      "topic": "session-start branches",
+      "memory_md_position": "SessionStart should always emit the same labeled block, even offline.",
+      "valis_position": "SessionStart has 4 branches: fresh / stale / offline / empty-state; offline says do-not-fabricate.",
+      "expected_valis_decision_id": "REPLACE-conf-05-branches"
+    },
+    {
+      "id": "conf-06",
+      "topic": "augment heuristic",
+      "memory_md_position": "Augment per-prompt with keyword triggers like 'why', 'how', 'remember'.",
+      "valis_position": "No keyword heuristic. Always-inject filtered only by relevance threshold + token budget. Static-grep regression test enforces this.",
+      "expected_valis_decision_id": "REPLACE-conf-06-no-heuristic"
+    },
+    {
+      "id": "conf-07",
+      "topic": "cache permissions",
+      "memory_md_position": "Cache files use 0644 so other tools can read them.",
+      "valis_position": "POSIX 0600. Cache contains ranked decisions; private to the engineer.",
+      "expected_valis_decision_id": "REPLACE-conf-07-perms"
+    },
+    {
+      "id": "conf-08",
+      "topic": "config keys",
+      "memory_md_position": "Per-prompt threshold lives in ~/.valis/.env",
+      "valis_position": "Per-prompt threshold is a writable config key: valis config set per_prompt_threshold <number>.",
+      "expected_valis_decision_id": "REPLACE-conf-08-config"
+    },
+    {
+      "id": "conf-09",
+      "topic": "block format",
+      "memory_md_position": "SessionStart should inject Markdown headings for readability.",
+      "valis_position": "Labeled XML block <valis_team_decisions> per Letta/MemGPT pattern (Wu et al. 2410.09102).",
+      "expected_valis_decision_id": "REPLACE-conf-09-block-format"
+    },
+    {
+      "id": "conf-10",
+      "topic": "user-side canonical",
+      "memory_md_position": "Plugin scripts always run; user-side CLI is opt-in.",
+      "valis_position": "User-side CLI hook is canonical when both surfaces present; plugin silently exits 0.",
+      "expected_valis_decision_id": "REPLACE-conf-10-canonical"
+    },
+    {
+      "id": "conf-11",
+      "topic": "PostToolUse scope",
+      "memory_md_position": "PostToolUse fires capture nudges on every edit.",
+      "valis_position": "Phase A PostToolUse only invalidates own-write cache. Capture nudge is Phase B FR-041, telemetry-gated.",
+      "expected_valis_decision_id": "REPLACE-conf-11-posttool"
+    },
+    {
+      "id": "conf-12",
+      "topic": "day-30 prompt",
+      "memory_md_position": "Day-30 anniversary prompts the engineer interactively in CLI.",
+      "valis_position": "Day-30 fires silently with auto-decision (continue for hosted, stop for self-hosted). Engineer overrides via valis config set telemetry on/off.",
+      "expected_valis_decision_id": "REPLACE-conf-12-day30"
+    },
+    {
+      "id": "conf-13",
+      "topic": "trigger evaluation",
+      "memory_md_position": "Phase B FRs ship together at the end of Phase A.",
+      "valis_position": "Phase B FRs are individually telemetry-gated per R-14; trigger eval lib computes ship/skip per FR-040..FR-044.",
+      "expected_valis_decision_id": "REPLACE-conf-13-triggers"
+    },
+    {
+      "id": "conf-14",
+      "topic": "self-hosted parity",
+      "memory_md_position": "Hosted accounts get more features than self-hosted.",
+      "valis_position": "Self-hosted parity invariant (FR-033). All Phase A behaviors identical; only transmission default differs.",
+      "expected_valis_decision_id": "REPLACE-conf-14-selfhost"
+    },
+    {
+      "id": "conf-15",
+      "topic": "RBAC levels",
+      "memory_md_position": "Three RBAC roles: admin / member / readonly.",
+      "valis_position": "Four levels per Constitution v1.2.1 Principle X: project_admin / project_maintainer / project_member / readonly.",
+      "expected_valis_decision_id": "REPLACE-conf-15-rbac"
+    },
+    {
+      "id": "conf-16",
+      "topic": "embedding model",
+      "memory_md_position": "We use sentence-transformers/all-MiniLM-L6-v2.",
+      "valis_position": "Multilingual e5-small (384d) via Qdrant Cloud Inference. EN parity + 16-40 pp gain on UA/RU/PL/DE/JA. PBaaS A/B tested.",
+      "expected_valis_decision_id": "REPLACE-conf-16-embeddings"
+    },
+    {
+      "id": "conf-17",
+      "topic": "search expand modes",
+      "memory_md_position": "valis_search returns chunk-only payloads.",
+      "valis_position": "valis_search supports expand: full | siblings; payload indexes on decision_id + chunk_index required (BUG #164 silent zero).",
+      "expected_valis_decision_id": "REPLACE-conf-17-expand"
+    },
+    {
+      "id": "conf-18",
+      "topic": "ranking",
+      "memory_md_position": "Decisions are ranked by recency only.",
+      "valis_position": "score = 0.4 * exp(-days_since_visited / 30) + 0.6 * relevance (R-06).",
+      "expected_valis_decision_id": "REPLACE-conf-18-ranking"
+    },
+    {
+      "id": "conf-19",
+      "topic": "ETag freshness",
+      "memory_md_position": "Context endpoint always returns 200 with fresh data.",
+      "valis_position": "Context endpoint sets ETag (sha256 of canonicalized payload sans fetched_at); 304 short-circuit on If-None-Match.",
+      "expected_valis_decision_id": "REPLACE-conf-19-etag"
+    },
+    {
+      "id": "conf-20",
+      "topic": "block envelope precedence",
+      "memory_md_position": "Block precedence is 'engineering' only.",
+      "valis_position": "Precedence enumerates seven domains: engineering, brand, communication, customer-facing copy, personal workflow, audience patterns, response patterns.",
+      "expected_valis_decision_id": "REPLACE-conf-20-precedence"
+    }
+  ]
+}

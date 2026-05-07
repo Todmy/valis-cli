@@ -995,11 +995,14 @@ async function runMemoryMigration(projectDir: string, projectId: string): Promis
   console.log(migration.renderPreview(fresh));
 
   void telemetry.record('migration_offered', { project_id: projectId });
-  const accept = await ynPrompt('\nMigrate to Valis? [y/N]', false);
+  const accept = await ynPrompt(
+    '\nImport into Valis? Original is backed up, replaced with a pointer.\nSkip to ask again in 30 days.\n[y/N]',
+    false,
+  );
   if (!accept) {
     for (const c of fresh) await migration.recordDecline(manifest, c);
     void telemetry.record('migration_declined', { project_id: projectId });
-    console.log(pc.dim('  Skipped. Re-prompt suppressed for 30 days.'));
+    console.log(pc.dim('  Skipped.'));
     return;
   }
 

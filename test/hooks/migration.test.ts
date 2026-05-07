@@ -240,7 +240,7 @@ describe('hooks/migration — renderPreview', () => {
     );
     const candidates = await detectCandidates(projectDir);
     const out = renderPreview(candidates);
-    expect(out).toContain('Valis detected competing memory content');
+    expect(out).toContain('Found existing memory file');
     expect(out).toContain('MEMORY.md');
     expect(out).toMatch(/\[(decision|pattern|lesson|constraint)\]/);
   });

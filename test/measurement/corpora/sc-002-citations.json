@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "SC-002 multi-domain citation corpus. 30 questions across engineering / brand / communication / personal_workflow domains. Each question has an expected Valis decision_id; the harness asks each question against a freshly-installed Phase A configuration and counts answers where the agent cites the expected decision in its first turn.",
+  "decision_id_note": "expected_decision_id values are placeholders. Replace with real IDs from your project's decisions table before running the harness.",
+  "questions": [
+    { "id": "eng-01", "domain": "engineering", "question": "How do we cache decisions in the SessionStart hook?", "expected_decision_id": "REPLACE-eng-cache-ttl" },
+    { "id": "eng-02", "domain": "engineering", "question": "Why don't plugin scripts use shell-string spawning?", "expected_decision_id": "REPLACE-eng-spawn-argv" },
+    { "id": "eng-03", "domain": "engineering", "question": "What's the per-prompt augmentation token budget?", "expected_decision_id": "REPLACE-eng-prompt-budget" },
+    { "id": "eng-04", "domain": "engineering", "question": "Where does the migration backup live on disk?", "expected_decision_id": "REPLACE-eng-migrate-backup-path" },
+    { "id": "eng-05", "domain": "engineering", "question": "Why is the user-side CLI hook canonical when both plugin and CLI are registered?", "expected_decision_id": "REPLACE-eng-canonical-cli" },
+    { "id": "eng-06", "domain": "engineering", "question": "What permission do we set on cache files?", "expected_decision_id": "REPLACE-eng-posix-0600" },
+    { "id": "eng-07", "domain": "engineering", "question": "How do we invalidate the context cache after a Valis write?", "expected_decision_id": "REPLACE-eng-own-write-invalidate" },
+    { "id": "eng-08", "domain": "engineering", "question": "What's the SessionStart fetch timeout?", "expected_decision_id": "REPLACE-eng-fetch-timeout" },
+    { "id": "eng-09", "domain": "engineering", "question": "How is the prompt-search relevance threshold configured?", "expected_decision_id": "REPLACE-eng-relevance-threshold" },
+    { "id": "eng-10", "domain": "engineering", "question": "What does the labeled-block precedence attribute say?", "expected_decision_id": "REPLACE-eng-precedence-string" },
+    { "id": "eng-11", "domain": "engineering", "question": "Where does the trigger-evaluation library live?", "expected_decision_id": "REPLACE-eng-trigger-eval-path" },
+    { "id": "eng-12", "domain": "engineering", "question": "Which migration adds adoption_metric_events?", "expected_decision_id": "REPLACE-eng-migration-021" },
+
+    { "id": "brand-01", "domain": "brand", "question": "How do we describe Valis to a new user?", "expected_decision_id": "REPLACE-brand-tagline" },
+    { "id": "brand-02", "domain": "brand", "question": "What's our positioning vs Hindsight?", "expected_decision_id": "REPLACE-brand-vs-hindsight" },
+    { "id": "brand-03", "domain": "brand", "question": "What tone do we use in marketing copy?", "expected_decision_id": "REPLACE-brand-tone" },
+    { "id": "brand-04", "domain": "brand", "question": "Do we say AI agent or AI assistant?", "expected_decision_id": "REPLACE-brand-agent-vs-assistant" },
+    { "id": "brand-05", "domain": "brand", "question": "What's our wedge?", "expected_decision_id": "REPLACE-brand-wedge" },
+    { "id": "brand-06", "domain": "brand", "question": "How do we handle the team brain metaphor?", "expected_decision_id": "REPLACE-brand-team-brain" },
+    { "id": "brand-07", "domain": "brand", "question": "What's our pricing principle?", "expected_decision_id": "REPLACE-brand-pricing" },
+
+    { "id": "comm-01", "domain": "communication", "question": "What's our voice for customer-facing emails?", "expected_decision_id": "REPLACE-comm-email-voice" },
+    { "id": "comm-02", "domain": "communication", "question": "How do we phrase the renewal email subject line?", "expected_decision_id": "REPLACE-comm-renewal-subject" },
+    { "id": "comm-03", "domain": "communication", "question": "Do we use emojis in product copy?", "expected_decision_id": "REPLACE-comm-emoji-policy" },
+    { "id": "comm-04", "domain": "communication", "question": "How do we handle a churn email?", "expected_decision_id": "REPLACE-comm-churn-email" },
+    { "id": "comm-05", "domain": "communication", "question": "What's our answer to a security audit request?", "expected_decision_id": "REPLACE-comm-security-audit" },
+    { "id": "comm-06", "domain": "communication", "question": "How do we phrase a release note?", "expected_decision_id": "REPLACE-comm-release-note" },
+
+    { "id": "pw-01", "domain": "personal_workflow", "question": "What commit-message convention do we use?", "expected_decision_id": "REPLACE-pw-commit-format" },
+    { "id": "pw-02", "domain": "personal_workflow", "question": "How do we handle solo-founder branching?", "expected_decision_id": "REPLACE-pw-solo-branching" },
+    { "id": "pw-03", "domain": "personal_workflow", "question": "When do we run /ultrareview?", "expected_decision_id": "REPLACE-pw-ultrareview" },
+    { "id": "pw-04", "domain": "personal_workflow", "question": "How do we capture insights across sessions?", "expected_decision_id": "REPLACE-pw-insight-capture" },
+    { "id": "pw-05", "domain": "personal_workflow", "question": "When do we /clear vs /compact?", "expected_decision_id": "REPLACE-pw-clear-vs-compact" }
+  ]
+}

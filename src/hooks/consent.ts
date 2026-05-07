@@ -215,27 +215,16 @@ export interface ConsentDialogIO {
   ask: (question: string, defaultValue: boolean) => Promise<boolean>;
 }
 
-export const CONSENT_DISCLOSURE = `Valis collects local telemetry to improve adherence and surface adoption metrics.
+export const CONSENT_DISCLOSURE = `Valis records local counters so you can see whether the team actually
+uses captured decisions.
 
-What is collected:
-  • Counters per event type (session starts, search hits/misses, captures stored)
-  • Latency buckets (p50, p95)
-  • Cache hit/miss rates
+Collected:     event counts, latency p50/p95, cache hit rate
+Not collected: prompt text, decision IDs, per-engineer data
 
-What is NOT collected:
-  • Your prompt content
-  • Decision identifiers
-  • Per-engineer breakdown
+Hosted:        ON for 30 days, then ON indefinitely unless you opt out.
+Self-hosted:   local recording only, no transmission.
 
-Window:
-  • Default ON for the first 30 days post-install on hosted accounts.
-  • Day-30 anniversary will silently transition you to indefinite (hosted)
-    or stop transmission (self-hosted). Override anytime:
-      valis config set telemetry on
-      valis config set telemetry off
-
-For self-hosted installs, default for transmission is OFF; local recording
-is unaffected.`;
+Change anytime:  valis config set telemetry {on|off}`;
 
 export async function runConsentDialog(
   io: ConsentDialogIO,
@@ -250,8 +239,8 @@ export async function runConsentDialog(
 
   const accepted = await io.ask(
     options.isSelfHosted
-      ? 'Accept telemetry consent (transmission OFF for self-hosted)? [Y/n]'
-      : 'Accept default-ON for 30 days? [Y/n]',
+      ? 'Accept? (self-hosted: transmission OFF) [Y/n]'
+      : 'Accept? [Y/n]',
     true,
   );
 

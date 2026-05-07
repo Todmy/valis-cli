@@ -72,7 +72,10 @@ export async function hookSessionStartCommand(): Promise<void> {
   // Constitution III: any failure here must NOT block the session.
   try {
     const { runSelfHeal } = await import('./self-heal.js');
-    await runSelfHeal({ projectDir: marker.projectDir });
+    await runSelfHeal({
+      projectDir: marker.projectDir,
+      projectId: marker.projectId,
+    });
   } catch {
     /* heal failures are silent by design */
   }

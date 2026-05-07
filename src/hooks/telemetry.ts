@@ -39,6 +39,9 @@ export type TelemetryEvent =
   | 'qdrant_index_repaired'
   | 'mcp_entry_repaired'
   | 'installation_id_recovered'
+  | 'auto_memory_drift_detected'
+  | 'gitignore_blocking_marker'
+  | 'cursor_mcp_repaired'
   | 'hook_failure';
 
 export interface TelemetryRecord {

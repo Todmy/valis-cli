@@ -256,6 +256,189 @@ async function healMcpEntry(): Promise<HealReport> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ---------------------------------------------------------------------------
+// Heal target #6 — auto-memory MEMORY.md drift detection
+//
+// Claude Code maintains a per-project auto-memory at
+//   <claudeHome>/projects/<encoded-cwd>/memory/MEMORY.md
+// where <encoded-cwd> = absolute path with `/` replaced by `-` (e.g.
+// `/Users/dev/x` -> `-Users-dev-x`). This is parallel to (and competing
+// with) Valis project content. Once an engineer accepts migration via
+// `valis init`, the migration manifest records the SHA-256 hash of the
+// MEMORY.md content at that point. If the file later drifts (Claude Code
+// auto-memory grew, or the engineer hand-edited it), we want to surface
+// that signal so the engineer can decide whether to re-migrate.
+//
+// We do NOT auto-overwrite — auto-memory is meant to be auto-grown.
+// The heal is purely diagnostic: telemetry + visibility via
+// `valis status --telemetry`.
+// ---------------------------------------------------------------------------
+
+function encodeProjectDir(absDir: string): string {
+  // Match Claude Code's encoding: leading `-`, slashes -> `-`.
+  return absDir.replace(/\//g, '-');
+}
+
+async function healAutoMemoryDrift(
+  projectDir: string,
+  projectId: string | undefined,
+): Promise<HealReport> {
+  const target = '~/.claude/projects/<cwd>/memory/MEMORY.md (drift)';
+  if (!projectId) {
+    return { target, outcome: 'skipped', notes: 'no project_id resolved' };
+  }
+  const encoded = encodeProjectDir(projectDir);
+  const autoPath = join(claudeHome(), 'projects', encoded, 'memory', 'MEMORY.md');
+
+  let content: string;
+  try {
+    content = await readFile(autoPath, 'utf-8');
+  } catch {
+    return { target, outcome: 'skipped', notes: 'auto-memory file absent' };
+  }
+  const currentHash = createHash('sha256').update(content).digest('hex');
+
+  // Read migration manifest to compare against most recent migration.
+  const { migrationManifestPath } = await import('./paths.js');
+  let manifestRaw: string;
+  try {
+    manifestRaw = await readFile(migrationManifestPath(projectId), 'utf-8');
+  } catch {
+    // No manifest = never migrated. Drift signal is the existence itself.
+    void recordTelemetry('auto_memory_drift_detected', {
+      project_id: projectId,
+      metadata: { state: 'never_migrated', size_bytes: content.length },
+    });
+    return {
+      target,
+      outcome: 'repaired',
+      notes: `never migrated (${content.length} bytes pending)`,
+    };
+  }
+
+  const manifest = JSON.parse(manifestRaw) as {
+    migrations: Array<{ source_path: string; source_dedup_hash: string; migrated_at: string }>;
+  };
+  const lastMatch = [...manifest.migrations]
+    .reverse()
+    .find((m) => m.source_path.endsWith('MEMORY.md'));
+  if (!lastMatch) {
+    void recordTelemetry('auto_memory_drift_detected', {
+      project_id: projectId,
+      metadata: { state: 'never_migrated_memory_md' },
+    });
+    return { target, outcome: 'repaired', notes: 'never migrated (auto-memory)' };
+  }
+
+  if (lastMatch.source_dedup_hash === currentHash) {
+    return { target, outcome: 'fresh' };
+  }
+
+  void recordTelemetry('auto_memory_drift_detected', {
+    project_id: projectId,
+    metadata: {
+      state: 'drifted_since_migration',
+      last_migration_at: lastMatch.migrated_at,
+      drift_hash: currentHash.slice(0, 16),
+    },
+  });
+  return {
+    target,
+    outcome: 'repaired',
+    notes: `drifted since ${lastMatch.migrated_at} — re-run \`valis init\` to re-migrate`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Heal target #7 — .gitignore blocking the .valis.json marker
+//
+// `.valis.json` is the project marker; it must be committed for team
+// members to inherit the project_id. If a project's `.gitignore` matches
+// `.valis.json` (e.g. an over-broad `*.json` rule), team members who clone
+// won't have the marker — Valis can't bind to a project. Detection is
+// best-effort gitignore matching (we don't pull in a full parser); we
+// look for the obvious patterns and warn via telemetry.
+// ---------------------------------------------------------------------------
+
+const GITIGNORE_DANGER_PATTERNS = [
+  /^\s*\.valis\.json\s*$/m,
+  /^\s*\*\.json\s*$/m,
+  /^\s*\*\s*$/m,
+];
+
+async function healGitignoreMarker(projectDir: string): Promise<HealReport> {
+  const target = `${projectDir}/.gitignore (.valis.json visibility)`;
+  const giPath = join(projectDir, '.gitignore');
+  let content: string;
+  try {
+    content = await readFile(giPath, 'utf-8');
+  } catch {
+    return { target, outcome: 'skipped', notes: '.gitignore absent' };
+  }
+
+  const matched = GITIGNORE_DANGER_PATTERNS.find((re) => re.test(content));
+  if (!matched) return { target, outcome: 'fresh' };
+
+  void recordTelemetry('gitignore_blocking_marker', {
+    metadata: { matched_pattern: String(matched), file: giPath },
+  });
+  return {
+    target,
+    outcome: 'user_customized',
+    notes: `pattern ${String(matched)} ignores .valis.json — team members will not see the project marker after clone`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Heal target #8 — Cursor IDE MCP server entry
+//
+// Cursor: ~/.cursor/mcp.json holds `mcpServers.valis`. If user runs
+// `valis init` and Cursor is configured, this entry is written. If it
+// drifts (manual edit, Cursor reset), self-heal restores it.
+// Codex: similar story under ~/.codex/config.toml (TOML, different
+// surface — skipped here; can be added later via TOML probe).
+//
+// Symmetric to healMcpEntry for ~/.claude.json.
+// ---------------------------------------------------------------------------
+
+function cursorHome(): string {
+  return process.env.CURSOR_HOME_OVERRIDE ?? join(homedir(), '.cursor');
+}
+
+async function healCursorMcp(): Promise<HealReport> {
+  const target = '~/.cursor/mcp.json (mcpServers.valis)';
+  const path = join(cursorHome(), 'mcp.json');
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch {
+    return { target, outcome: 'skipped', notes: 'cursor mcp.json absent' };
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { target, outcome: 'skipped', notes: 'cursor mcp.json malformed' };
+  }
+
+  const servers = (parsed.mcpServers ?? {}) as Record<string, unknown>;
+  const entry = servers.valis as { command?: string; args?: string[] } | undefined;
+  const isPresent =
+    entry &&
+    entry.command === 'valis' &&
+    Array.isArray(entry.args) &&
+    entry.args[0] === 'serve';
+  if (isPresent) return { target, outcome: 'fresh' };
+
+  await backupOriginal(path, 'cursor-mcp-json');
+  servers.valis = { command: 'valis', args: ['serve'] };
+  parsed.mcpServers = servers;
+  await atomicWrite(path, JSON.stringify(parsed, null, 2) + '\n');
+  void recordTelemetry('cursor_mcp_repaired', { metadata: { target } });
+  return { target, outcome: 'repaired' };
+}
+
 async function healInstallationId(): Promise<HealReport> {
   const target = '~/.valis/installation-id';
   const path = installationIdPath();
@@ -298,6 +481,8 @@ async function healSettingsHooks(): Promise<HealReport> {
 
 export interface SelfHealOptions {
   projectDir?: string;
+  /** Optional project_id; required only for the auto-memory drift heal. */
+  projectId?: string;
   silent?: boolean;
 }
 
@@ -317,7 +502,7 @@ export async function runSelfHeal(options: SelfHealOptions = {}): Promise<HealRe
 
   const projectDir = options.projectDir ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 
-  const [global, project, settings, mcp, installation] = await Promise.all([
+  const [global, project, settings, mcp, installation, autoMemoryDrift, gitignore, cursor] = await Promise.all([
     healGlobalClaudeMd().catch((err) => ({
       target: '~/.claude/CLAUDE.md',
       outcome: 'skipped' as HealOutcome,
@@ -343,8 +528,26 @@ export async function runSelfHeal(options: SelfHealOptions = {}): Promise<HealRe
       outcome: 'skipped' as HealOutcome,
       notes: `error: ${(err as Error).message}`,
     })),
+    healAutoMemoryDrift(projectDir, options.projectId).catch((err) => ({
+      target: '~/.claude/projects/<cwd>/memory/MEMORY.md',
+      outcome: 'skipped' as HealOutcome,
+      notes: `error: ${(err as Error).message}`,
+    })),
+    healGitignoreMarker(projectDir).catch((err) => ({
+      target: `${projectDir}/.gitignore`,
+      outcome: 'skipped' as HealOutcome,
+      notes: `error: ${(err as Error).message}`,
+    })),
+    healCursorMcp().catch((err) => ({
+      target: '~/.cursor/mcp.json',
+      outcome: 'skipped' as HealOutcome,
+      notes: `error: ${(err as Error).message}`,
+    })),
   ]);
-  const reports: HealReport[] = [global, project, settings, mcp, installation];
+  const reports: HealReport[] = [
+    global, project, settings, mcp, installation,
+    autoMemoryDrift, gitignore, cursor,
+  ];
 
   // Qdrant heal lives in its own module to keep network IO isolated. It
   // honors a 24h cooldown internally and silently skips if Qdrant creds

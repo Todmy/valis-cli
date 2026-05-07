@@ -301,6 +301,194 @@ describe('self-heal — installation_id recovery', () => {
   });
 });
 
+describe('self-heal — auto-memory MEMORY.md drift (D)', () => {
+  const PROJECT_ID = '11111111-1111-1111-1111-111111111111';
+
+  function autoMemoryPath(): string {
+    const encoded = projectDir.replace(/\//g, '-');
+    return join(claudeHomeDir, 'projects', encoded, 'memory', 'MEMORY.md');
+  }
+
+  it('skipped when auto-memory file does not exist', async () => {
+    const reports = await runSelfHeal({ projectDir, projectId: PROJECT_ID, silent: true });
+    const r = reports.find((x) => x.target.includes('memory/MEMORY.md'));
+    expect(r?.outcome).toBe('skipped');
+  });
+
+  it('reports never_migrated when auto-memory exists but no manifest', async () => {
+    const path = autoMemoryPath();
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, '## Notes\n- foo\n- bar\n');
+
+    const reports = await runSelfHeal({ projectDir, projectId: PROJECT_ID, silent: true });
+    const r = reports.find((x) => x.target.includes('memory/MEMORY.md'));
+    expect(r?.outcome).toBe('repaired');
+    expect(r?.notes).toMatch(/never migrated/);
+  });
+
+  it('reports fresh when manifest hash matches current file', async () => {
+    const path = autoMemoryPath();
+    const content = '## Notes\n- foo\n- bar\n';
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, content);
+
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update(content).digest('hex');
+
+    const manifestDir = join(tempHome, 'migrate-backup', PROJECT_ID);
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      join(manifestDir, 'manifest.json'),
+      JSON.stringify({
+        manifest_version: 1,
+        project_id: PROJECT_ID,
+        project_name: 'x',
+        migrations: [
+          {
+            migrated_at: '2026-05-01T00:00:00Z',
+            source_path: path,
+            source_dedup_hash: hash,
+            backup_path: '/tmp/x',
+            entries_migrated: 2,
+            decision_ids: [],
+          },
+        ],
+        decline_history: [],
+      }),
+    );
+
+    const reports = await runSelfHeal({ projectDir, projectId: PROJECT_ID, silent: true });
+    const r = reports.find((x) => x.target.includes('memory/MEMORY.md'));
+    expect(r?.outcome).toBe('fresh');
+  });
+
+  it('reports drifted when manifest hash differs from current file', async () => {
+    const path = autoMemoryPath();
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, '## Notes\n- new entry that postdates migration\n');
+
+    const manifestDir = join(tempHome, 'migrate-backup', PROJECT_ID);
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      join(manifestDir, 'manifest.json'),
+      JSON.stringify({
+        manifest_version: 1,
+        project_id: PROJECT_ID,
+        project_name: 'x',
+        migrations: [
+          {
+            migrated_at: '2026-05-01T00:00:00Z',
+            source_path: path,
+            source_dedup_hash: 'OLDHASH'.padEnd(64, '0'),
+            backup_path: '/tmp/x',
+            entries_migrated: 1,
+            decision_ids: [],
+          },
+        ],
+        decline_history: [],
+      }),
+    );
+
+    const reports = await runSelfHeal({ projectDir, projectId: PROJECT_ID, silent: true });
+    const r = reports.find((x) => x.target.includes('memory/MEMORY.md'));
+    expect(r?.outcome).toBe('repaired');
+    expect(r?.notes).toMatch(/drifted since/);
+  });
+
+  it('skipped when projectId is not provided', async () => {
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('memory/MEMORY.md'));
+    expect(r?.outcome).toBe('skipped');
+    expect(r?.notes).toMatch(/no project_id/);
+  });
+});
+
+describe('self-heal — .gitignore marker visibility (E)', () => {
+  it('skipped when .gitignore absent', async () => {
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('.gitignore'));
+    expect(r?.outcome).toBe('skipped');
+  });
+
+  it('fresh when .gitignore does not block .valis.json', async () => {
+    await writeFile(
+      join(projectDir, '.gitignore'),
+      'node_modules/\ndist/\n.env*\n',
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('.gitignore'));
+    expect(r?.outcome).toBe('fresh');
+  });
+
+  it('flags user_customized when .gitignore explicitly ignores .valis.json', async () => {
+    await writeFile(
+      join(projectDir, '.gitignore'),
+      'node_modules/\n.valis.json\ndist/\n',
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('.gitignore'));
+    expect(r?.outcome).toBe('user_customized');
+    expect(r?.notes).toMatch(/team members will not see/);
+  });
+
+  it('flags user_customized on over-broad *.json rule', async () => {
+    await writeFile(join(projectDir, '.gitignore'), '*.json\n');
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('.gitignore'));
+    expect(r?.outcome).toBe('user_customized');
+  });
+});
+
+describe('self-heal — Cursor MCP entry (F)', () => {
+  let cursorHomeDir: string;
+  let prevCursorHome: string | undefined;
+
+  beforeEach(async () => {
+    cursorHomeDir = await mkdtemp(join(tmpdir(), 'valis-cursor-'));
+    prevCursorHome = process.env.CURSOR_HOME_OVERRIDE;
+    process.env.CURSOR_HOME_OVERRIDE = cursorHomeDir;
+  });
+
+  afterEach(async () => {
+    if (prevCursorHome === undefined) delete process.env.CURSOR_HOME_OVERRIDE;
+    else process.env.CURSOR_HOME_OVERRIDE = prevCursorHome;
+    await rm(cursorHomeDir, { recursive: true, force: true });
+  });
+
+  it('skipped when ~/.cursor/mcp.json absent', async () => {
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('cursor/mcp.json'));
+    expect(r?.outcome).toBe('skipped');
+  });
+
+  it('repaired when valis MCP entry missing', async () => {
+    await writeFile(
+      join(cursorHomeDir, 'mcp.json'),
+      JSON.stringify({ mcpServers: { other: { command: 'something' } } }),
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('cursor/mcp.json'));
+    expect(r?.outcome).toBe('repaired');
+
+    const after = JSON.parse(await readFile(join(cursorHomeDir, 'mcp.json'), 'utf-8'));
+    expect(after.mcpServers.valis.command).toBe('valis');
+    expect(after.mcpServers.valis.args).toEqual(['serve']);
+    expect(after.mcpServers.other).toBeTruthy();
+  });
+
+  it('fresh when valis MCP entry already correct', async () => {
+    await writeFile(
+      join(cursorHomeDir, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: { valis: { command: 'valis', args: ['serve'] } },
+      }),
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    const r = reports.find((x) => x.target.includes('cursor/mcp.json'));
+    expect(r?.outcome).toBe('fresh');
+  });
+});
+
 describe('self-heal — performance smoke', () => {
   it('fresh-state path completes under 50ms (substring probes only)', async () => {
     await writeGlobalClaudeMd('# Top\n\n' + canonicalGlobalKrBlock() + '\n');
@@ -342,10 +530,22 @@ describe('self-heal — performance smoke', () => {
     const elapsed = performance.now() - t0;
     delete process.env.CLAUDE_HOME_OVERRIDE;
 
-    // Local-fs heals (3 claude/settings + 2 mcp/installation) all fresh.
-    // Qdrant report = no_creds (no QDRANT_URL in this test) — expected.
-    const localReports = reports.filter((r) => !r.target.startsWith('qdrant:'));
-    expect(localReports.every((r) => r.outcome === 'fresh')).toBe(true);
+    // Latency budget is the load-bearing assertion. Outcomes vary by which
+    // optional surfaces are pre-seeded; we only require the seeded ones
+    // (Knowledge Retention, project markers, settings hooks, MCP entry,
+    // installation_id) to be `fresh`. Auto-memory / gitignore / cursor
+    // heals legitimately return `skipped` when those surfaces are absent.
+    const seeded = reports.filter((r) =>
+      [
+        'Knowledge Retention',
+        'valis:start markers',
+        'valis hooks',
+        'mcpServers.valis',
+        'installation-id',
+      ].some((needle) => r.target.includes(needle)),
+    );
+    expect(seeded.length).toBeGreaterThanOrEqual(5);
+    expect(seeded.every((r) => r.outcome === 'fresh')).toBe(true);
     expect(elapsed).toBeLessThan(50);
   });
 });

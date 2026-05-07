@@ -12,6 +12,14 @@ export function valisHome(): string {
   return process.env.VALIS_HOME ?? join(homedir(), '.valis');
 }
 
+/**
+ * Resolve `~/.claude` with a `CLAUDE_CONFIG_HOME` env override for tests.
+ * Default: `<homedir>/.claude` — Claude Code's well-known config dir.
+ */
+export function claudeHome(): string {
+  return process.env.CLAUDE_CONFIG_HOME ?? join(homedir(), '.claude');
+}
+
 export function cachePath(orgId: string, projectId: string): string {
   return join(valisHome(), 'cache', orgId, `${projectId}.json`);
 }

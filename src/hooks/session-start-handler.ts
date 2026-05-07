@@ -66,6 +66,17 @@ export async function hookSessionStartCommand(): Promise<void> {
     return; // empty stdout
   }
 
+  // Self-heal pass — best-effort, runs before context fetch. Detects
+  // drift in Valis-managed surfaces and re-applies canonical templates.
+  // Honors `auto_heal: false` opt-out in ~/.valis/config.json.
+  // Constitution III: any failure here must NOT block the session.
+  try {
+    const { runSelfHeal } = await import('./self-heal.js');
+    await runSelfHeal({ projectDir: marker.projectDir });
+  } catch {
+    /* heal failures are silent by design */
+  }
+
   const cfg = await loadGlobalConfig();
   if (!cfg || !cfg.org_id) {
     // Without org_id we can't read the cache. Treat as "no context, configured".

@@ -34,6 +34,8 @@ export type TelemetryEvent =
   | 'telemetry_consent_declined'
   | 'telemetry_day_30_continued'
   | 'telemetry_day_30_stopped'
+  | 'config_drift_repaired'
+  | 'config_drift_user_customized'
   | 'hook_failure';
 
 export interface TelemetryRecord {

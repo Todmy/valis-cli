@@ -11,7 +11,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, parse, dirname } from 'node:path';
+import { join, parse, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { ProjectConfig, ResolvedConfig } from '../types.js';
@@ -170,4 +170,70 @@ export async function detectConfigState(startDir?: string): Promise<ConfigState>
  */
 export async function isLegacyConfig(startDir?: string): Promise<boolean> {
   return (await detectConfigState(startDir)) === 'no-project';
+}
+
+// ---------------------------------------------------------------------------
+// Hook-friendly project marker — preserves raw JSON for arbitrary fields
+// ---------------------------------------------------------------------------
+
+/**
+ * Lenient project marker for hook handlers and other callers that need access
+ * to the raw `.valis.json` JSON (including arbitrary fields like
+ * `per_prompt_augmentation` that are not part of the strict ProjectConfig
+ * schema).
+ *
+ * Distinct from the strict {@link ProjectConfig} returned by
+ * {@link findProjectConfig}: that one rejects invalid UUIDs / empty names,
+ * which is correct for write paths but breaks Constitution III for hooks
+ * (any failure → empty stdout).
+ */
+export interface ProjectMarker {
+  /** Resolved directory containing the marker file (`.valis/config.json` or legacy `.valis.json`). */
+  projectDir: string;
+  /** Project ID from the marker (empty string if missing). */
+  projectId: string;
+  /** Project name from the marker (basename fallback if missing). */
+  projectName: string;
+  /** Raw parsed JSON — caller may read non-schema fields (e.g. per-prompt overrides). */
+  raw: Record<string, unknown>;
+}
+
+function projectDirFromConfigPath(configPath: string): string {
+  const newSuffix = `${sep}.valis${sep}config.json`;
+  if (configPath.endsWith(newSuffix)) {
+    return dirname(dirname(configPath));
+  }
+  return dirname(configPath);
+}
+
+/**
+ * Walk up from `startDir` (or `CLAUDE_PROJECT_DIR` / `process.cwd()` if absent)
+ * to find the nearest `.valis/config.json` or legacy `.valis.json`.
+ *
+ * Returns null on any failure (missing marker, invalid JSON, IO error) so
+ * callers in the hook surface can honour Constitution III.
+ */
+export async function findProjectMarker(startDir?: string): Promise<ProjectMarker | null> {
+  const start = startDir ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const configPath = await findProjectConfigPath(start);
+  if (!configPath) return null;
+
+  let raw: Record<string, unknown>;
+  try {
+    const data = await readFile(configPath, 'utf-8');
+    const parsed: unknown = JSON.parse(data);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  const projectDir = projectDirFromConfigPath(configPath);
+  const projectId = typeof raw.project_id === 'string' ? raw.project_id : '';
+  const projectName =
+    typeof raw.project_name === 'string'
+      ? raw.project_name
+      : projectDir.split(sep).pop() ?? projectDir;
+
+  return { projectDir, projectId, projectName, raw };
 }

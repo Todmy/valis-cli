@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
   findProjectConfig,
   findProjectConfigPath,
+  findProjectMarker,
   loadProjectConfig,
   writeProjectConfig,
   resolveConfig,
@@ -298,5 +299,107 @@ describe('resolveConfig', () => {
 
     const result = await resolveConfig(deepChild);
     expect(result.project).toEqual(config);
+  });
+});
+
+describe('findProjectMarker — lenient walk-up for hooks', () => {
+  beforeEach(async () => {
+    tempRoot = await createTempDir();
+  });
+
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it('returns marker with projectDir set to the directory containing .valis/config.json', async () => {
+    const config = {
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      project_name: 'new-format',
+    };
+    await writeJson(tempRoot, '.valis/config.json', config);
+
+    const result = await findProjectMarker(tempRoot);
+    expect(result).not.toBeNull();
+    expect(result!.projectDir).toBe(tempRoot);
+    expect(result!.projectId).toBe(config.project_id);
+    expect(result!.projectName).toBe(config.project_name);
+    expect(result!.raw).toEqual(config);
+  });
+
+  it('finds legacy .valis.json with projectDir at the marker dir', async () => {
+    const config = {
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      project_name: 'legacy-format',
+    };
+    await writeJson(tempRoot, '.valis.json', config);
+
+    const result = await findProjectMarker(tempRoot);
+    expect(result).not.toBeNull();
+    expect(result!.projectDir).toBe(tempRoot);
+    expect(result!.raw).toEqual(config);
+  });
+
+  it('preserves arbitrary fields in raw (per-prompt overrides etc.)', async () => {
+    const config = {
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      project_name: 'with-overrides',
+      per_prompt_augmentation: false,
+      per_prompt_threshold: 0.6,
+    };
+    await writeJson(tempRoot, '.valis.json', config);
+
+    const result = await findProjectMarker(tempRoot);
+    expect(result!.raw.per_prompt_augmentation).toBe(false);
+    expect(result!.raw.per_prompt_threshold).toBe(0.6);
+  });
+
+  it('walks up from a child directory', async () => {
+    const config = {
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      project_name: 'walk-up',
+    };
+    await writeJson(tempRoot, '.valis/config.json', config);
+    const child = join(tempRoot, 'src', 'a', 'b');
+    await mkdir(child, { recursive: true });
+
+    const result = await findProjectMarker(child);
+    expect(result).not.toBeNull();
+    expect(result!.projectDir).toBe(tempRoot);
+  });
+
+  it('returns null when no marker exists', async () => {
+    const empty = join(tempRoot, 'empty');
+    await mkdir(empty, { recursive: true });
+    const result = await findProjectMarker(empty);
+    expect(result).toBeNull();
+  });
+
+  it('falls back to empty projectId when marker lacks the field (Constitution III lenient)', async () => {
+    await writeJson(tempRoot, '.valis.json', { project_name: 'no-id' });
+    const result = await findProjectMarker(tempRoot);
+    expect(result).not.toBeNull();
+    expect(result!.projectId).toBe('');
+  });
+
+  it('returns null on invalid JSON', async () => {
+    const path = join(tempRoot, '.valis.json');
+    await writeFile(path, '{ not valid json', 'utf-8');
+    const result = await findProjectMarker(tempRoot);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when JSON parses to a non-object', async () => {
+    const path = join(tempRoot, '.valis.json');
+    await writeFile(path, '"just a string"', 'utf-8');
+    const result = await findProjectMarker(tempRoot);
+    expect(result).toBeNull();
+  });
+
+  it('basename fallback for missing project_name', async () => {
+    await writeJson(tempRoot, '.valis.json', {
+      project_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+    });
+    const result = await findProjectMarker(tempRoot);
+    expect(result!.projectName).toBe(tempRoot.split('/').pop());
   });
 });

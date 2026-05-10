@@ -48,9 +48,9 @@ afterEach(async () => {
   else process.env.VALIS_HOME = prevValisHome;
   if (prevClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_HOME;
   else process.env.CLAUDE_CONFIG_HOME = prevClaudeHome;
-  await rm(tempHome, { recursive: true, force: true });
-  await rm(claudeHomeDir, { recursive: true, force: true });
-  await rm(projectDir, { recursive: true, force: true });
+  await rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  await rm(claudeHomeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  await rm(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 async function writeGlobalClaudeMd(content: string): Promise<void> {
@@ -452,7 +452,7 @@ describe('self-heal — Cursor MCP entry (F)', () => {
   afterEach(async () => {
     if (prevCursorHome === undefined) delete process.env.CURSOR_HOME_OVERRIDE;
     else process.env.CURSOR_HOME_OVERRIDE = prevCursorHome;
-    await rm(cursorHomeDir, { recursive: true, force: true });
+    await rm(cursorHomeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   it('skipped when ~/.cursor/mcp.json absent', async () => {

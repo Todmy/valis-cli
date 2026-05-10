@@ -25,7 +25,6 @@ export type TelemetryEvent =
   | 'cache_hit'
   | 'cache_hit_stale'
   | 'cache_miss'
-  | 'cache_invalidate'
   | 'migration_offered'
   | 'migration_accepted'
   | 'migration_declined'

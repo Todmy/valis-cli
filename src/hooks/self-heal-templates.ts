@@ -17,9 +17,9 @@ const KR_LINES = [
   '   future engineers (or future me) need to find by intent. The team brain.',
   '   Tools: `valis_search`, `valis_store`, `valis_context`, `valis_lifecycle`.',
   '   On any project where `valis init` has been run (`.valis.json` present),',
-  '   Valis is the authoritative source — the SessionStart hook injects a',
-  '   labeled `<valis_team_decisions>` block that outranks MEMORY.md and',
-  '   Qdrant for work questions.',
+  '   Valis is the authoritative source. Call `valis_context` (MCP tool) at',
+  '   the start of every new task to load recent team decisions into the',
+  '   conversation — they outrank MEMORY.md and Qdrant for work questions.',
   '',
   '2. **Qdrant (ephemeral)** — short-term working memory. Half-formed thoughts,',
   '   in-flight investigation notes, tactical findings useful during the',
@@ -41,8 +41,8 @@ const KR_LINES = [
   '',
   '## On first message',
   '',
-  '1. If `.valis.json` exists in cwd → SessionStart hook already injected the',
-  '   labeled block; for specific recall use `valis_search`.',
+  '1. If `.valis.json` exists in cwd → call `valis_context` (MCP tool) to',
+  '   load the team decisions; for specific recall use `valis_search`.',
   '2. If no Valis project but Qdrant collection exists → `mcp__qdrant__qdrant-find`',
   '   to pull recent ephemeral context.',
   '',
@@ -63,8 +63,16 @@ export const PROJECT_VALIS_END = '<!-- valis:end -->';
 export const SETTINGS_HOOK_COMMANDS = [
   'valis hook session-start',
   'valis hook user-prompt-submit',
-  'valis hook post-tool-use',
   'valis hook pre-tool-use',
   'valis hook pre-compact',
   'valis hook stop',
+] as const;
+
+/**
+ * Hook commands that earlier versions installed but the current build no
+ * longer wires. self-heal removes any matching entries from the user's
+ * settings.json on the next run so upgraders get a clean state.
+ */
+export const SETTINGS_HOOK_COMMANDS_LEGACY = [
+  'valis hook post-tool-use',
 ] as const;

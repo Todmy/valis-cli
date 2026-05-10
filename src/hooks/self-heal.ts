@@ -42,6 +42,7 @@ import {
   PROJECT_VALIS_START,
   PROJECT_VALIS_END,
   SETTINGS_HOOK_COMMANDS,
+  SETTINGS_HOOK_COMMANDS_LEGACY,
   canonicalGlobalKrBlock,
 } from './self-heal-templates.js';
 
@@ -103,10 +104,13 @@ function extractBetween(haystack: string, start: string, end: string): string {
  * Apply the canonical Knowledge Retention block to a global CLAUDE.md.
  *
  * Strategy:
- *   1. If the existing file has a "# Knowledge Retention" heading, find
- *      that section's bounds (heading -> next top-level heading or EOF) and
- *      replace it with the canonical marker-wrapped block.
- *   2. Otherwise, append the canonical block at the bottom of the file.
+ *   1. If marker delimiters already exist, replace the wrapped block in
+ *      place — preserves whatever location the user moved it to.
+ *   2. Else, if a legacy "# Knowledge Retention" heading exists, replace
+ *      that section in place.
+ *   3. First-time install: prepend at the top of the file. Attention
+ *      gravity: a top-of-file block dominates deeper instructions (see
+ *      lesson d29548c3, 2026-04-08).
  */
 export function applyGlobalKrSection(existing: string): string {
   const canonical = canonicalGlobalKrBlock();
@@ -137,9 +141,14 @@ export function applyGlobalKrSection(existing: string): string {
     return existing.slice(0, startIdx) + canonical + '\n\n' + existing.slice(endIdx);
   }
 
-  // Case 3: no marker, no legacy heading — append at EOF.
-  const sep = existing.endsWith('\n') ? '\n' : '\n\n';
-  return existing + sep + canonical + '\n';
+  // Case 3: first-time install — prepend at top of file for attention weight.
+  // Position is load-bearing per lesson d29548c3: a competing top-of-file
+  // SessionStart hook block dominated Valis's deeper instructions in
+  // dog-food. The user may relocate after first install; subsequent runs
+  // hit Case 1 above and preserve their chosen location idempotently.
+  if (existing.length === 0) return canonical + '\n';
+  const sep = existing.startsWith('\n') ? '' : '\n\n';
+  return canonical + sep + existing;
 }
 
 async function healGlobalClaudeMd(): Promise<HealReport> {
@@ -471,12 +480,17 @@ async function healSettingsHooks(): Promise<HealReport> {
     return { target, outcome: 'skipped', notes: 'settings.json absent' };
   }
   const allPresent = SETTINGS_HOOK_COMMANDS.every((s) => raw.includes(s));
-  if (allPresent) return { target, outcome: 'fresh' };
+  const legacyPresent = SETTINGS_HOOK_COMMANDS_LEGACY.some((s) => raw.includes(s));
+  if (allPresent && !legacyPresent) return { target, outcome: 'fresh' };
 
   await backupOriginal(settingsPath, 'settings-json');
   const { configureClaudeCodeMCP } = await import('../ide/claude-code.js');
   await configureClaudeCodeMCP(process.cwd());
-  return { target, outcome: 'repaired' };
+  return {
+    target,
+    outcome: 'repaired',
+    notes: legacyPresent ? 'cleaned up legacy hook entries' : undefined,
+  };
 }
 
 export interface SelfHealOptions {

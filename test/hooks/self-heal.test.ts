@@ -59,7 +59,7 @@ async function writeGlobalClaudeMd(content: string): Promise<void> {
 }
 
 describe('self-heal — global ~/.claude/CLAUDE.md', () => {
-  it('repairs absent markers by appending canonical block', async () => {
+  it('first-time install prepends the canonical block at the top of the file', async () => {
     await writeGlobalClaudeMd('# Existing user content\n\nSome notes.\n');
 
     const reports = await runSelfHeal({ projectDir, silent: true });
@@ -70,6 +70,38 @@ describe('self-heal — global ~/.claude/CLAUDE.md', () => {
     expect(after).toContain(GLOBAL_KR_START);
     expect(after).toContain(GLOBAL_KR_END);
     expect(after).toContain('Two-layer model');
+    // Position: KR block must precede the pre-existing user content so it
+    // wins attention weight against competing top-of-file hooks (lesson
+    // d29548c3 — Qdrant SessionStart hook dominated Valis at EOF).
+    expect(after.indexOf(GLOBAL_KR_START)).toBeLessThan(
+      after.indexOf('# Existing user content'),
+    );
+  });
+
+  it('first-time install on empty file just writes the block', async () => {
+    await writeGlobalClaudeMd('');
+    await runSelfHeal({ projectDir, silent: true });
+    const after = await readFile(join(claudeHomeDir, 'CLAUDE.md'), 'utf-8');
+    expect(after.startsWith(GLOBAL_KR_START)).toBe(true);
+  });
+
+  it('preserves user-relocated block on subsequent runs (idempotent on position)', async () => {
+    // User does first install (prepend), then manually moves the block to
+    // mid-file because they want their identity content first. Re-running
+    // self-heal MUST NOT yank it back to the top.
+    const userIdentity = '# My Identity\n\nI am Dmytro.\n';
+    const valisBlock = canonicalGlobalKrBlock();
+    const trailing = '\n# Tools\n\nMy tools list.\n';
+    await writeGlobalClaudeMd(userIdentity + '\n' + valisBlock + trailing);
+
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('Knowledge Retention'))?.outcome).toBe('fresh');
+
+    const after = await readFile(join(claudeHomeDir, 'CLAUDE.md'), 'utf-8');
+    // User's identity block stays first.
+    expect(after.indexOf('# My Identity')).toBeLessThan(after.indexOf(GLOBAL_KR_START));
+    // Tools section stays after.
+    expect(after.indexOf('# Tools')).toBeGreaterThan(after.indexOf(GLOBAL_KR_END));
   });
 
   it('replaces an existing "# Knowledge Retention" section in place', async () => {
@@ -503,7 +535,6 @@ describe('self-heal — performance smoke', () => {
         hooks: {
           SessionStart: [{ hooks: [{ type: 'command', command: 'valis hook session-start' }] }],
           UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'valis hook user-prompt-submit' }] }],
-          PostToolUse: [{ hooks: [{ type: 'command', command: 'valis hook post-tool-use' }] }],
           PreToolUse: [{ hooks: [{ type: 'command', command: 'valis hook pre-tool-use' }] }],
           PreCompact: [{ hooks: [{ type: 'command', command: 'valis hook pre-compact' }] }],
           Stop: [{ hooks: [{ type: 'command', command: 'valis hook stop' }] }],

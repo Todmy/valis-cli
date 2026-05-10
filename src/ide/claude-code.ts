@@ -99,14 +99,16 @@ export async function injectClaudeMdMarkers(projectDir: string): Promise<void> {
   const block = `${startMarker}\n${AGENT_INSTRUCTIONS}\n${endMarker}`;
 
   if (content.includes(startMarker) && content.includes(endMarker)) {
-    // Replace existing block
+    // Replace existing block in place — preserves whatever position the
+    // user moved it to after first install (idempotent on subsequent runs).
     const regex = new RegExp(
       `${escapeRegex(startMarker)}[\\s\\S]*?${escapeRegex(endMarker)}`,
     );
     content = content.replace(regex, block);
   } else if (content) {
-    // Append to existing file
-    content = content.trimEnd() + '\n\n' + block + '\n';
+    // First-time install on existing file: prepend for attention weight.
+    // Position is load-bearing — see lesson d29548c3.
+    content = block + '\n\n' + content.trimStart();
   } else {
     // New file
     content = block + '\n';
@@ -126,18 +128,21 @@ interface HookEntry {
 }
 
 /**
- * Install SessionStart hook that injects recent team decisions into the session.
- * Replaces the old PreToolUse/PostToolUse gate approach.
+ * Install Valis hooks into ~/.claude/settings.json.
+ *
+ * Active hooks: SessionStart (self-heal only), UserPromptSubmit
+ * (per-prompt augmentation). Silent-skip stubs: PreToolUse, PreCompact,
+ * Stop — registered for plugin compatibility (FR-029) so future revivals
+ * need no plugin-side change.
  *
  * Also cleans up obsolete hooks from earlier CLI versions:
- * - PreToolUse "valis hook gate" / PostToolUse "valis hook flag" (old gate approach)
- * - PostToolUse "valis hook capture-check" (moved to plugin in 017)
+ * - PreToolUse "valis hook gate" (old gate approach)
+ * - PostToolUse "valis hook flag" / "valis hook capture-check" (gate +
+ *   plugin migration)
+ * - PostToolUse "valis hook post-tool-use" (cache-invalidation, removed
+ *   alongside BACKLOG #172 SessionStart preload deletion)
  *
  * Idempotent — skips if already installed.
- *
- * NOTE: PostToolUse capture-check is now provided by the Claude Code plugin
- * (todmy/valis-plugin) so the CLI does not register it. Keeps responsibilities
- * cleanly split: CLI owns headless / CI surfaces, plugin owns interactive hooks.
  */
 function installSessionHook(settings: Record<string, unknown>): void {
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;
@@ -150,18 +155,20 @@ function installSessionHook(settings: Record<string, unknown>): void {
   }
   if (hooks.PostToolUse) {
     hooks.PostToolUse = hooks.PostToolUse.filter(
-      (e) => !e.hooks?.some((h) =>
-        h.command === 'valis hook flag' || h.command === 'valis hook capture-check'
-      ),
+      (e) =>
+        !e.hooks?.some(
+          (h) =>
+            h.command === 'valis hook flag' ||
+            h.command === 'valis hook capture-check' ||
+            h.command === 'valis hook post-tool-use',
+        ),
     );
+    // Drop the entire PostToolUse array if it ended up empty
+    if (hooks.PostToolUse.length === 0) delete hooks.PostToolUse;
   }
 
-  // Feature 023 Phase A: SessionStart + UserPromptSubmit + PostToolUse are
-  // active hooks; PreToolUse / PreCompact / Stop register silent stubs so
-  // plugin scripts always have something to delegate to (FR-029).
   upsertHook(hooks, 'SessionStart', 'valis hook session-start', 10);
   upsertHook(hooks, 'UserPromptSubmit', 'valis hook user-prompt-submit', 5);
-  upsertHook(hooks, 'PostToolUse', 'valis hook post-tool-use', 5);
   upsertHook(hooks, 'PreToolUse', 'valis hook pre-tool-use', 5);
   upsertHook(hooks, 'PreCompact', 'valis hook pre-compact', 5);
   upsertHook(hooks, 'Stop', 'valis hook stop', 5);

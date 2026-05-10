@@ -4,10 +4,10 @@
   "conflicts": [
     {
       "id": "conf-01",
-      "topic": "TTL for context cache",
-      "memory_md_position": "Cache TTL is 60 seconds because of latency concerns.",
-      "valis_position": "Cache TTL is 300 seconds with own-write invalidation; reduces backend load by 5x.",
-      "expected_valis_decision_id": "REPLACE-conf-01-ttl"
+      "topic": "team context loading mechanism",
+      "memory_md_position": "SessionStart hook preloads ranked team decisions by fetching /api/session-context with the user's API key.",
+      "valis_position": "Post-#172 SessionStart only self-heals locally and emits empty stdout. Agent loads team context on demand via the valis_context MCP tool — Claude Code's OAuth-aware MCP transport handles auth correctly, hook subprocesses cannot (BUG #119/#120).",
+      "expected_valis_decision_id": "REPLACE-conf-01-mcp-load"
     },
     {
       "id": "conf-02",
@@ -32,10 +32,10 @@
     },
     {
       "id": "conf-05",
-      "topic": "session-start branches",
-      "memory_md_position": "SessionStart should always emit the same labeled block, even offline.",
-      "valis_position": "SessionStart has 4 branches: fresh / stale / offline / empty-state; offline says do-not-fabricate.",
-      "expected_valis_decision_id": "REPLACE-conf-05-branches"
+      "topic": "SessionStart hook scope",
+      "memory_md_position": "SessionStart hook injects team decisions as additionalContext at session boot.",
+      "valis_position": "Post-#172 SessionStart emits empty stdout — only self-heal runs locally. Decisions reach the agent through the valis_context MCP tool when CLAUDE.md prompts the first call. Closes the BUG #119 plugin-auth gap architecturally.",
+      "expected_valis_decision_id": "REPLACE-conf-05-self-heal-only"
     },
     {
       "id": "conf-06",
@@ -46,10 +46,10 @@
     },
     {
       "id": "conf-07",
-      "topic": "cache permissions",
-      "memory_md_position": "Cache files use 0644 so other tools can read them.",
-      "valis_position": "POSIX 0600. Cache contains ranked decisions; private to the engineer.",
-      "expected_valis_decision_id": "REPLACE-conf-07-perms"
+      "topic": "MCP project resolution",
+      "memory_md_position": "MCP server falls back to the user's last-active project when args.project_id is missing — convenient default.",
+      "valis_position": "No silent default. Explicit args.project_id wins, then plugin _meta.launch_cwd, then current_cwd with a server warning. Otherwise the agent prompts the user. Silent defaults cause wrong-project writes (BUG #169 root cause).",
+      "expected_valis_decision_id": "REPLACE-conf-07-project-resolution"
     },
     {
       "id": "conf-08",
@@ -60,10 +60,10 @@
     },
     {
       "id": "conf-09",
-      "topic": "block format",
-      "memory_md_position": "SessionStart should inject Markdown headings for readability.",
-      "valis_position": "Labeled XML block <valis_team_decisions> per Letta/MemGPT pattern (Wu et al. 2410.09102).",
-      "expected_valis_decision_id": "REPLACE-conf-09-block-format"
+      "topic": "self-heal injection position",
+      "memory_md_position": "Self-heal appends the Knowledge Retention block at the end of CLAUDE.md so the user's identity content stays first.",
+      "valis_position": "Self-heal prepends the block at the top on first install. Position is attention-load-bearing — competing top-level SessionStart hooks dominated Valis at EOF in dog-food (lesson d29548c3). Marker-replace path preserves the user's chosen position on subsequent runs.",
+      "expected_valis_decision_id": "REPLACE-conf-09-prepend-position"
     },
     {
       "id": "conf-10",
@@ -74,10 +74,10 @@
     },
     {
       "id": "conf-11",
-      "topic": "PostToolUse scope",
-      "memory_md_position": "PostToolUse fires capture nudges on every edit.",
-      "valis_position": "Phase A PostToolUse only invalidates own-write cache. Capture nudge is Phase B FR-041, telemetry-gated.",
-      "expected_valis_decision_id": "REPLACE-conf-11-posttool"
+      "topic": "PostToolUse role",
+      "memory_md_position": "PostToolUse fires capture nudges on every edit so decisions never get lost.",
+      "valis_position": "Post-#172 PostToolUse is a silent-skip stub — the cache infrastructure that consumed it was deleted with the SessionStart preload. Capture nudge would re-use the hook only after Phase B FR-041 telemetry triggers ship. CLI keeps the stub for FR-029 plugin upgrade compat.",
+      "expected_valis_decision_id": "REPLACE-conf-11-posttool-stub"
     },
     {
       "id": "conf-12",

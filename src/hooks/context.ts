@@ -1,34 +1,21 @@
 /**
- * Shared hook bootstrap helpers.
+ * Shared global-config bootstrap for hook handlers.
  *
- * Each hook handler needs the same two pieces of state — the per-directory
- * project marker and the global `~/.valis/config.json` — but in slightly
- * different orders (session-start runs self-heal between them, post-tool-use
- * gates on the tool name first, etc.). So we expose two thin helpers rather
- * than a single fat bundle, letting handlers compose them.
+ * Each handler also resolves a project marker via {@link findProjectMarker}
+ * directly (call site composition — session-start runs self-heal between
+ * marker resolution and global config, user-prompt-submit runs project-
+ * vs-user merge logic, etc.). Splitting marker + global into two helpers
+ * lets each handler order them naturally.
  *
- * Constitution III: every helper returns null on any failure (missing file,
- * invalid JSON, missing org_id) so the calling handler can `return` and emit
- * empty stdout.
+ * Constitution III: every helper returns null on any failure (missing
+ * file, invalid JSON, missing org_id) so the calling handler can `return`
+ * and emit empty stdout.
  */
 
 import { readFile } from 'node:fs/promises';
 import { configPath } from './paths.js';
-import { findProjectMarker } from '../config/project.js';
-import type { ProjectMarker } from '../config/project.js';
 
 export type { ProjectMarker } from '../config/project.js';
-
-/**
- * Resolve the marker file (`.valis/config.json` or legacy `.valis.json`).
- * Walks up from `CLAUDE_PROJECT_DIR` or `process.cwd()`. Returns null when
- * no marker is found, the JSON is invalid, or `project_id` is missing.
- */
-export async function loadHookMarker(): Promise<ProjectMarker | null> {
-  const marker = await findProjectMarker();
-  if (!marker || !marker.projectId) return null;
-  return marker;
-}
 
 const DEFAULT_API_BASE = 'https://valis.krukit.co';
 

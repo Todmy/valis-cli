@@ -19,13 +19,13 @@
  * are silent.
  */
 
-import { loadHookMarker } from './context.js';
+import { findProjectMarker } from '../config/project.js';
 import { record } from './telemetry.js';
 
 export async function hookSessionStartCommand(): Promise<void> {
   const startedAt = Date.now();
 
-  const marker = await loadHookMarker();
+  const marker = await findProjectMarker();
   if (!marker) {
     return; // Not a Valis-configured directory — nothing to heal.
   }

@@ -30,7 +30,6 @@ import {
   chooseSearchTransport,
   createDirectTransport,
   createProxyTransport,
-  rankByStatus,
 } from '../../../src/mcp/tools/search-transport.js';
 import type { ValisConfig, SearchResult } from '../../../src/types.js';
 
@@ -205,24 +204,26 @@ describe('direct transport', () => {
   });
 });
 
-describe('rankByStatus', () => {
-  it('ranks active above proposed above deprecated above superseded at equal score', () => {
-    const input: SearchResult[] = [
+describe('direct transport — status-based ranking (through the port)', () => {
+  it('ranks active above proposed above deprecated above superseded at equal score', async () => {
+    mockHybridSearch.mockResolvedValueOnce([
       { id: 'a', score: 0.5, status: 'deprecated' } as SearchResult,
       { id: 'b', score: 0.5, status: 'active' } as SearchResult,
       { id: 'c', score: 0.5, status: 'superseded' } as SearchResult,
       { id: 'd', score: 0.5, status: 'proposed' } as SearchResult,
-    ];
-    const out = rankByStatus(input);
+    ]);
+    const transport = createDirectTransport(baseConfig);
+    const out = await transport.search('q', {});
     expect(out.map((r) => r.id)).toEqual(['b', 'd', 'a', 'c']);
   });
 
-  it('preserves score-driven order beyond a 0.01 tolerance', () => {
-    const input: SearchResult[] = [
+  it('preserves score-driven order beyond a 0.01 tolerance', async () => {
+    mockHybridSearch.mockResolvedValueOnce([
       { id: 'lo', score: 0.5, status: 'active' } as SearchResult,
       { id: 'hi', score: 0.9, status: 'deprecated' } as SearchResult,
-    ];
-    const out = rankByStatus(input);
+    ]);
+    const transport = createDirectTransport(baseConfig);
+    const out = await transport.search('q', {});
     expect(out[0].id).toBe('hi'); // higher score wins despite worse status
   });
 });

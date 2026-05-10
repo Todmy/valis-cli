@@ -374,11 +374,10 @@ describe('findProjectMarker — lenient walk-up for hooks', () => {
     expect(result).toBeNull();
   });
 
-  it('falls back to empty projectId when marker lacks the field (Constitution III lenient)', async () => {
+  it('returns null when marker lacks project_id (treats missing field as not-configured)', async () => {
     await writeJson(tempRoot, '.valis.json', { project_name: 'no-id' });
     const result = await findProjectMarker(tempRoot);
-    expect(result).not.toBeNull();
-    expect(result!.projectId).toBe('');
+    expect(result).toBeNull();
   });
 
   it('returns null on invalid JSON', async () => {

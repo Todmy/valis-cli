@@ -11,7 +11,8 @@
  * Constitution III: any failure → empty stdout, exit 0.
  */
 
-import { loadHookMarker, loadHookGlobalConfig } from './context.js';
+import { findProjectMarker } from '../config/project.js';
+import { loadHookGlobalConfig } from './context.js';
 import { augment } from './augment.js';
 import { record } from './telemetry.js';
 
@@ -48,7 +49,7 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
   const prompt = process.env.CLAUDE_USER_PROMPT ?? '';
   if (!prompt) return;
 
-  const marker = await loadHookMarker();
+  const marker = await findProjectMarker();
   if (!marker) return;
 
   const cfg = await loadHookGlobalConfig();

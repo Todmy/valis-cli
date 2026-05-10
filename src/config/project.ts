@@ -210,8 +210,11 @@ function projectDirFromConfigPath(configPath: string): string {
  * Walk up from `startDir` (or `CLAUDE_PROJECT_DIR` / `process.cwd()` if absent)
  * to find the nearest `.valis/config.json` or legacy `.valis.json`.
  *
- * Returns null on any failure (missing marker, invalid JSON, IO error) so
- * callers in the hook surface can honour Constitution III.
+ * Returns null on any failure (missing marker, invalid JSON, IO error,
+ * empty `project_id`) so callers in the hook surface can honour
+ * Constitution III. Empty `project_id` is treated as "not configured" —
+ * the marker file exists but lacks the field that uniquely identifies
+ * the project, so it cannot drive cache keys, MCP scopes, or telemetry.
  */
 export async function findProjectMarker(startDir?: string): Promise<ProjectMarker | null> {
   const start = startDir ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
@@ -228,8 +231,10 @@ export async function findProjectMarker(startDir?: string): Promise<ProjectMarke
     return null;
   }
 
-  const projectDir = projectDirFromConfigPath(configPath);
   const projectId = typeof raw.project_id === 'string' ? raw.project_id : '';
+  if (!projectId) return null;
+
+  const projectDir = projectDirFromConfigPath(configPath);
   const projectName =
     typeof raw.project_name === 'string'
       ? raw.project_name

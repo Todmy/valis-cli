@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadHookGlobalConfig, loadHookMarker } from '../../src/hooks/context.js';
+import { loadHookGlobalConfig } from '../../src/hooks/context.js';
+import { findProjectMarker } from '../../src/config/project.js';
 
 let tempHome: string;
 let tempCwd: string;
@@ -103,8 +104,13 @@ describe('loadHookGlobalConfig', () => {
   });
 });
 
-describe('loadHookMarker', () => {
-  it('returns the marker via findProjectMarker', async () => {
+describe('findProjectMarker — hook-side guards', () => {
+  // Hook handlers call findProjectMarker directly; the helper enforces
+  // project_id presence (returns null on empty) so handlers don't have
+  // to repeat the guard. These tests cover that behaviour from the hook
+  // perspective.
+
+  it('returns the marker when project_id is present', async () => {
     await mkdir(join(tempCwd, '.valis'), { recursive: true });
     await writeFile(
       join(tempCwd, '.valis', 'config.json'),
@@ -114,23 +120,23 @@ describe('loadHookMarker', () => {
       }),
       'utf-8',
     );
-    const marker = await loadHookMarker();
+    const marker = await findProjectMarker();
     expect(marker).not.toBeNull();
     expect(marker!.projectId).toBe('a1b2c3d4-e5f6-7890-abcd-ef1234567890');
   });
 
-  it('returns null when no marker', async () => {
-    const marker = await loadHookMarker();
+  it('returns null when no marker file exists', async () => {
+    const marker = await findProjectMarker();
     expect(marker).toBeNull();
   });
 
-  it('returns null when marker has empty project_id', async () => {
+  it('returns null when marker exists but project_id is missing (Constitution III)', async () => {
     await writeFile(
       join(tempCwd, '.valis.json'),
       JSON.stringify({ project_name: 'no-id' }),
       'utf-8',
     );
-    const marker = await loadHookMarker();
+    const marker = await findProjectMarker();
     expect(marker).toBeNull();
   });
 });

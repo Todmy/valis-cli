@@ -210,5 +210,3 @@ export function chooseSearchTransport(
   return createDirectTransport(config, configOverride);
 }
 
-/** Test seam — exposes status-rank for callers that already have enriched rows. */
-export { rankByStatus };

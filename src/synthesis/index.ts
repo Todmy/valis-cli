@@ -11,6 +11,20 @@ export { runSynthesis } from './runner.js';
 export type { SynthesisReport, SynthesisOptions } from './runner.js';
 
 export {
+  createSupabaseSynthesisStore,
+  createInMemorySynthesisStore,
+} from './store.js';
+export type {
+  SynthesisStore,
+  InMemorySynthesisStore,
+  InMemoryStoreSeed,
+  SynthesisPatternRow,
+  DecisionStatusRow,
+  CreatedPattern,
+  AuditPayload,
+} from './store.js';
+
+export {
   cosineSimilarity,
   clusterPoints,
   clusterDecisions,

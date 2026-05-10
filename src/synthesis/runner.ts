@@ -11,16 +11,14 @@
  * 6. Create audit entries and push notifications
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Decision, PatternCandidate } from '../types.js';
+import type { PatternCandidate } from '../types.js';
 import {
   detectPatterns,
   jaccard,
   patternSummary,
-  type ClusterDecision,
 } from './patterns.js';
-import { storeDecision, changeDecisionStatus } from '../cloud/supabase.js';
-import { buildAuditPayload, createAuditEntry } from '../auth/audit.js';
+import type { SynthesisStore } from './store.js';
+import { buildAuditPayload } from '../auth/audit.js';
 
 // ---------------------------------------------------------------------------
 // Synthesis report
@@ -49,60 +47,19 @@ export interface SynthesisOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch active decisions from window
+// Idempotency check (in-process — store provides the rows)
 // ---------------------------------------------------------------------------
 
-async function fetchActiveDecisions(
-  supabase: SupabaseClient,
-  orgId: string,
-  windowDays: number,
-): Promise<ClusterDecision[]> {
-  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-
-  const { data, error } = await supabase
-    .from('decisions')
-    .select('id, affects, summary, type, created_at')
-    .eq('org_id', orgId)
-    .eq('status', 'active')
-    .gte('created_at', since);
-
-  if (error) throw new Error(`Failed to fetch decisions: ${error.message}`);
-  return (data ?? []) as ClusterDecision[];
-}
-
-// ---------------------------------------------------------------------------
-// Idempotency check
-// ---------------------------------------------------------------------------
-
-/**
- * Check if an existing active synthesis pattern already covers this cluster.
- * Returns true if an existing pattern's depends_on has Jaccard > 0.8 overlap
- * with the candidate's decision_ids AND shares overlapping areas.
- */
 async function patternAlreadyExists(
-  supabase: SupabaseClient,
+  store: SynthesisStore,
   orgId: string,
   candidate: PatternCandidate,
 ): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('decisions')
-    .select('id, depends_on, affects')
-    .eq('org_id', orgId)
-    .eq('type', 'pattern')
-    .eq('source', 'synthesis')
-    .eq('status', 'active')
-    .overlaps('affects', candidate.affects);
-
-  if (error || !data || data.length === 0) return false;
-
-  for (const existing of data) {
-    const existingDeps = (existing.depends_on as string[]) ?? [];
-    if (existingDeps.length === 0) continue;
-
-    const overlap = jaccard(existingDeps, candidate.decision_ids);
-    if (overlap > 0.8) return true;
+  const existing = await store.findActiveSynthesisPatterns(orgId, candidate.affects);
+  for (const row of existing) {
+    if (row.depends_on.length === 0) continue;
+    if (jaccard(row.depends_on, candidate.decision_ids) > 0.8) return true;
   }
-
   return false;
 }
 
@@ -110,59 +67,31 @@ async function patternAlreadyExists(
 // Stale pattern deprecation
 // ---------------------------------------------------------------------------
 
-/**
- * Find and deprecate patterns whose source decisions are all deprecated
- * or superseded.
- */
-async function deprecateStalePatterns(
-  supabase: SupabaseClient,
-  orgId: string,
-  memberId: string,
-): Promise<number> {
-  // Fetch all active synthesis patterns
-  const { data: patterns, error } = await supabase
-    .from('decisions')
-    .select('id, depends_on')
-    .eq('org_id', orgId)
-    .eq('type', 'pattern')
-    .eq('source', 'synthesis')
-    .eq('status', 'active');
-
-  if (error || !patterns || patterns.length === 0) return 0;
+async function deprecateStalePatterns(store: SynthesisStore, orgId: string): Promise<number> {
+  const patterns = await store.findActiveSynthesisPatterns(orgId);
+  if (patterns.length === 0) return 0;
 
   let deprecated = 0;
   for (const pattern of patterns) {
-    const dependsOn = (pattern.depends_on as string[]) ?? [];
-    if (dependsOn.length === 0) continue;
-
-    // Check status of all source decisions
-    const { data: sources } = await supabase
-      .from('decisions')
-      .select('id, status')
-      .in('id', dependsOn);
-
-    const allDeprecated = (sources ?? []).every(
-      (s: { status: string }) =>
-        s.status === 'deprecated' || s.status === 'superseded',
+    if (pattern.depends_on.length === 0) continue;
+    const sources = await store.getDecisionStatuses(pattern.depends_on);
+    if (sources.length === 0) continue;
+    const allDeprecated = sources.every(
+      (s) => s.status === 'deprecated' || s.status === 'superseded',
     );
-
-    if (allDeprecated && (sources ?? []).length > 0) {
-      try {
-        await changeDecisionStatus(
-          supabase,
-          orgId,
-          pattern.id as string,
-          'deprecated',
-          'system',
-          'All source decisions deprecated',
-        );
-        deprecated++;
-      } catch {
-        // Best-effort deprecation
-      }
+    if (!allDeprecated) continue;
+    try {
+      await store.changePatternStatus(
+        orgId,
+        pattern.id,
+        'deprecated',
+        'All source decisions deprecated',
+      );
+      deprecated++;
+    } catch {
+      // Best-effort deprecation
     }
   }
-
   return deprecated;
 }
 
@@ -171,7 +100,7 @@ async function deprecateStalePatterns(
 // ---------------------------------------------------------------------------
 
 export async function runSynthesis(
-  supabase: SupabaseClient,
+  store: SynthesisStore,
   options: SynthesisOptions,
 ): Promise<SynthesisReport> {
   const { orgId, windowDays, minCluster, dryRun, memberId } = options;
@@ -187,7 +116,7 @@ export async function runSynthesis(
   };
 
   // 1. Fetch active decisions from time window
-  const decisions = await fetchActiveDecisions(supabase, orgId, windowDays);
+  const decisions = await store.fetchActiveDecisions(orgId, windowDays);
   if (decisions.length === 0) return report;
 
   // 2. Detect pattern candidates
@@ -197,8 +126,7 @@ export async function runSynthesis(
   // 3. For each candidate: idempotency check, then create
   for (const candidate of candidates) {
     try {
-      // Idempotency check
-      const exists = await patternAlreadyExists(supabase, orgId, candidate);
+      const exists = await patternAlreadyExists(store, orgId, candidate);
       if (exists) {
         candidate.already_exists = true;
         report.patterns_skipped_idempotent++;
@@ -210,54 +138,37 @@ export async function runSynthesis(
 
       if (dryRun) continue;
 
-      // Create pattern via normal store pipeline
       const summary = patternSummary(
         candidate.affects,
         candidate.decision_ids.length,
         windowDays,
       );
+      const confidence = Math.min(1.0, candidate.decision_ids.length / decisions.length);
 
-      const confidence = Math.min(
-        1.0,
-        candidate.decision_ids.length / decisions.length,
+      const created = await store.createPattern(
+        orgId,
+        summary,
+        candidate.affects,
+        confidence,
+        candidate.decision_ids,
       );
 
-      const decision = await storeDecision(
-        supabase,
+      const auditPayload = buildAuditPayload(
+        'pattern_synthesized',
+        'decision',
+        created.id,
+        memberId ?? 'system',
         orgId,
         {
-          text: summary,
-          type: 'pattern',
-          summary,
-          affects: candidate.affects,
-          confidence,
-        },
-        'system',
-        'synthesis',
-        { depends_on: candidate.decision_ids },
-      );
-
-      // Create audit entry
-      try {
-        const auditPayload = buildAuditPayload(
-          'pattern_synthesized',
-          'decision',
-          decision.id,
-          memberId ?? 'system',
-          orgId,
-          {
-            newState: {
-              areas: candidate.affects,
-              source_count: candidate.decision_ids.length,
-              cohesion: candidate.cohesion,
-            },
-            reason: `Pattern detected: ${candidate.affects.join(', ')}`,
+          newState: {
+            areas: candidate.affects,
+            source_count: candidate.decision_ids.length,
+            cohesion: candidate.cohesion,
           },
-        );
-        await createAuditEntry(supabase, auditPayload);
-      } catch {
-        // Audit failures are non-fatal
-      }
+          reason: `Pattern detected: ${candidate.affects.join(', ')}`,
+        },
+      );
+      await store.recordAuditEntry(auditPayload);
 
       report.patterns_created++;
     } catch (err) {
@@ -271,11 +182,7 @@ export async function runSynthesis(
   // 4. Deprecate stale patterns (only when applying)
   if (!dryRun) {
     try {
-      report.stale_patterns_deprecated = await deprecateStalePatterns(
-        supabase,
-        orgId,
-        memberId ?? 'system',
-      );
+      report.stale_patterns_deprecated = await deprecateStalePatterns(store, orgId);
     } catch {
       // Best-effort
     }

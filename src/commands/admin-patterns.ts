@@ -9,6 +9,7 @@ import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
 import { getSupabaseClient } from '../cloud/supabase.js';
 import { runSynthesis, type SynthesisReport } from '../synthesis/runner.js';
+import { createSupabaseSynthesisStore } from '../synthesis/store.js';
 
 export interface AdminPatternsOptions {
   window?: string;
@@ -75,8 +76,9 @@ export async function adminPatternsCommand(options: AdminPatternsOptions): Promi
 
   try {
     const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    const store = createSupabaseSynthesisStore(supabase);
 
-    const report = await runSynthesis(supabase, {
+    const report = await runSynthesis(store, {
       orgId: config.org_id,
       windowDays,
       minCluster,

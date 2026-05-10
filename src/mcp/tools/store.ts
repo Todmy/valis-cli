@@ -1,8 +1,29 @@
+/**
+ * `handleStore` — the MCP `valis_store` tool entry point.
+ *
+ * Linear orchestration over four phases:
+ *   1. pre-write validation (secrets, dedup, billing, project resolution)
+ *   2. pre-write conditional checks (replaces RBAC, depends_on existence)
+ *   3. primary write (Postgres `storeDecision` — blocking)
+ *   4. post-write fan-out via the side-effect bus (`store-side-effects.ts`)
+ *
+ * The post-write fan-out used to live inline in this file with 6 nested
+ * try/catch blocks. It now lives behind a single port: every best-effort
+ * adapter implements `StoreSideEffect`, the bus runs them in parallel,
+ * and the handler reads structured output from the result map to build
+ * the response.
+ *
+ * BUG #143 retained: on primary-write failure in CLI-stdio mode the raw
+ * decision is appended to the offline queue. In server mode (configOverride
+ * present, no fs persistence) the error is surfaced as a structured
+ * `infrastructure_error` envelope.
+ */
+
 import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { detectSecrets } from '../../security/secrets.js';
 import { isDuplicate, markAsSeen } from '../../capture/dedup.js';
-import { checkUsageOrProceed, incrementUsage } from '../../billing/usage.js';
+import { checkUsageOrProceed } from '../../billing/usage.js';
 import {
   getSupabaseClient,
   getSupabaseJwtClient,
@@ -11,14 +32,20 @@ import {
   getDecisionsByIds,
 } from '../../cloud/supabase.js';
 import type { StoreExtras } from '../../cloud/supabase.js';
-import { getQdrantClient, upsertDecision } from '../../cloud/qdrant.js';
-import { ClusterRegistry } from '../../synthesis/cluster-registry.js';
+import { getQdrantClient } from '../../cloud/qdrant.js';
 import { appendToQueue } from '../../offline/queue.js';
-import { buildNewDecisionEvent, buildProposedDecisionEvent, buildContradictionEvent } from '../../channel/push.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
-import { detectContradictions } from '../../contradiction/detect.js';
-import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { QdrantClient } from '@qdrant/js-client-rest';
+import {
+  STORE_SIDE_EFFECTS,
+  runStoreSideEffects,
+  sideEffectOutput,
+  type StoreSideEffectContext,
+  type StoreSideEffectResult,
+  type StoreConfig,
+} from './store-side-effects.js';
 import type {
   RawDecision,
   StoreArgs,
@@ -27,75 +54,44 @@ import type {
   StoreSupersededDetail,
   StoreContradictionWarning,
   DecisionStatus,
+  Decision,
   ServerConfig,
 } from '../../types.js';
-import { HOSTED_SUPABASE_URL } from '../../types.js';
-import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
 
 // ---------------------------------------------------------------------------
-// Supersede helper — POST to change-status edge function
+// Auth-mode-aware client + key resolution
 // ---------------------------------------------------------------------------
 
-async function supersedeDecision(
-  supabaseUrl: string,
-  serviceRoleKey: string,
-  decisionId: string,
-  changedBy: string,
-  memberApiKey?: string | null,
-): Promise<{ old_status: DecisionStatus; new_status: 'superseded' }> {
-  // Prefer JWT token (works in hosted mode where serviceRoleKey is empty).
-  // Fall back to serviceRoleKey for community/self-hosted mode.
-  let bearer = '';
-  if (memberApiKey) {
-    try {
-      const tokenCache = await getToken(supabaseUrl, memberApiKey);
-      if (tokenCache) {
-        bearer = tokenCache.jwt.token;
-      }
-    } catch {
-      // Token exchange failed — try serviceRoleKey
-    }
+function pickSupabaseClient(
+  config: StoreConfig,
+  configOverride: ServerConfig | undefined,
+): SupabaseClient {
+  // Server-side (configOverride) has service_role_key — use it directly.
+  // CLI hosted mode uses JWT exchange via getSupabaseJwtClient.
+  if (configOverride && config.supabase_service_role_key) {
+    return getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
   }
-  if (!bearer && serviceRoleKey) {
-    bearer = serviceRoleKey;
-  }
-  if (!bearer) {
-    throw new Error('No valid auth token available for supersede operation');
-  }
-
-  const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
-  const apiBase = resolveApiUrl(supabaseUrl, isHosted);
-  const url = resolveApiPath(apiBase, 'change-status');
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${bearer}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      decision_id: decisionId,
-      new_status: 'superseded',
-      changed_by: changedBy,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(
-      `change-status failed (HTTP ${res.status}): ${body}`,
+  if (config.auth_mode === 'jwt') {
+    return getSupabaseJwtClient(
+      config.supabase_url,
+      config.member_api_key || config.api_key,
     );
   }
-
-  const data = (await res.json()) as {
-    old_status: DecisionStatus;
-    new_status: 'superseded';
-  };
-  return data;
+  return getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 }
 
-// ---------------------------------------------------------------------------
-// Resolve member role — JWT mode returns role, legacy defaults to 'member'
-// ---------------------------------------------------------------------------
+function pickUsageApiKey(
+  config: StoreConfig,
+  configOverride: ServerConfig | undefined,
+): string {
+  if (configOverride && config.supabase_service_role_key) {
+    return config.supabase_service_role_key;
+  }
+  if (config.auth_mode === 'jwt') {
+    return config.member_api_key || config.api_key;
+  }
+  return config.supabase_service_role_key;
+}
 
 async function resolveMemberRole(
   supabaseUrl: string,
@@ -106,8 +102,150 @@ async function resolveMemberRole(
     const cache = await getToken(supabaseUrl, memberApiKey);
     if (cache) return cache.role;
   }
-  // Legacy mode or token unavailable — default to 'member'
   return 'member';
+}
+
+// ---------------------------------------------------------------------------
+// Pre-write conditional checks
+// ---------------------------------------------------------------------------
+
+type PreWriteRejection = { error: string; action: 'blocked' };
+
+interface ReplacesContext {
+  target: { id: string; author: string; status: DecisionStatus };
+}
+
+/**
+ * Validate `args.replaces`: target must exist in the same org AND the caller
+ * must satisfy RBAC (admin OR original author). Returns a rejection envelope
+ * on failure, or the resolved target on success.
+ */
+async function validateReplaces(
+  supabase: SupabaseClient,
+  config: StoreConfig,
+  replacesId: string,
+): Promise<ReplacesContext | PreWriteRejection> {
+  const target = await getDecisionById(supabase, config.org_id, replacesId);
+  if (!target) {
+    return { error: 'replaces_target_not_found', action: 'blocked' };
+  }
+
+  const memberRole = await resolveMemberRole(
+    config.supabase_url,
+    config.member_api_key,
+    config.auth_mode,
+  );
+  if (!canSupersede(memberRole, config.author_name, target.author)) {
+    return { error: 'permission_denied', action: 'blocked' };
+  }
+
+  return {
+    target: { id: target.id, author: target.author, status: target.status },
+  };
+}
+
+async function validateDependsOn(
+  supabase: SupabaseClient,
+  config: StoreConfig,
+  dependsOnIds: string[],
+): Promise<PreWriteRejection | null> {
+  if (dependsOnIds.length === 0) return null;
+  const found = await getDecisionsByIds(supabase, config.org_id, dependsOnIds);
+  const foundIds = new Set(found.map((d) => d.id));
+  const missing = dependsOnIds.filter((id) => !foundIds.has(id));
+  if (missing.length > 0) {
+    return {
+      error: `depends_on_not_found: ${missing.join(', ')}`,
+      action: 'blocked',
+    };
+  }
+  return null;
+}
+
+function buildExtras(args: StoreArgs): StoreExtras {
+  const extras: StoreExtras = {};
+  // FR-018: All decisions default to 'proposed' — active requires explicit review
+  extras.status = args.status ?? 'proposed';
+  if (args.replaces) {
+    extras.replaces = args.replaces;
+  }
+  if (args.depends_on && args.depends_on.length > 0) {
+    extras.depends_on = args.depends_on;
+  }
+  return extras;
+}
+
+// ---------------------------------------------------------------------------
+// Response assembly
+// ---------------------------------------------------------------------------
+
+function assembleResponse(
+  decision: Decision,
+  extras: StoreExtras,
+  sideEffectResults: Map<string, StoreSideEffectResult>,
+): StoreResponse {
+  const response: StoreResponse = {
+    id: decision.id,
+    status: 'stored',
+  };
+  if (extras.status === 'proposed') {
+    response.proposed = true;
+  }
+  const superseded = sideEffectOutput<StoreSupersededDetail>(sideEffectResults, 'supersede');
+  if (superseded) {
+    response.superseded = superseded;
+  }
+  const contradictions = sideEffectOutput<StoreContradictionWarning[]>(
+    sideEffectResults,
+    'contradiction-detect',
+  );
+  if (contradictions && contradictions.length > 0) {
+    response.contradictions = contradictions;
+  }
+  return response;
+}
+
+// ---------------------------------------------------------------------------
+// Primary-write failure handler (BUG #143)
+// ---------------------------------------------------------------------------
+
+async function handlePrimaryWriteFailure(
+  err: unknown,
+  args: StoreArgs,
+  raw: RawDecision,
+  config: StoreConfig,
+  configOverride: ServerConfig | undefined,
+): Promise<StoreErrorResponse | StoreResponse> {
+  const errorMessage = err instanceof Error ? err.message : String(err);
+  console.error(`[store] Backend error: ${errorMessage}`);
+
+  if (configOverride) {
+    // Server mode — no fs persistence. Surface a structured error so the
+    // agent/operator can triage without prod-log access.
+    return {
+      error: 'infrastructure_error',
+      action: 'blocked',
+      error_message: errorMessage,
+    };
+  }
+
+  // CLI-stdio mode — legitimate offline fallback via local queue.
+  try {
+    const id = await appendToQueue(raw, config.author_name, 'mcp_store');
+    markAsSeen(args.text, args.session_id);
+    return {
+      id,
+      status: 'stored',
+      synced: false,
+    };
+  } catch (queueErr) {
+    const queueMsg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+    return {
+      error: 'queue_unavailable',
+      action: 'blocked',
+      error_message: `${errorMessage} (offline-queue fallback also failed: ${queueMsg})`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,51 +256,37 @@ export async function handleStore(
   args: StoreArgs,
   configOverride?: ServerConfig,
 ): Promise<StoreResponse | StoreErrorResponse> {
-  const config = configOverride ?? await loadConfig();
+  // ── Phase 1: pre-write validation ─────────────────────────────────────
+  const config = configOverride ?? (await loadConfig());
   if (!config) {
-    return { error: 'not_configured', action: 'blocked' as const };
+    return { error: 'not_configured', action: 'blocked' };
   }
 
   // T023: Resolve project from per-directory config
   const resolved = configOverride ? null : await resolveConfig();
-  const projectId = args.project_id || configOverride?.project_id || resolved?.project?.project_id;
+  const projectId =
+    args.project_id || configOverride?.project_id || resolved?.project?.project_id;
 
   // T023: Reject store if no project configured
   if (!projectId) {
-    return {
-      error: 'no_project_configured',
-      action: 'blocked' as const,
-    };
+    return { error: 'no_project_configured', action: 'blocked' };
   }
 
-  // 1. Secret detection
-  const secret = await detectSecrets(args.text);
-  if (secret) {
-    return {
-      error: 'secret_detected',
-      pattern: secret.pattern,
-      action: 'blocked' as const,
-    };
+  // Secret detection — both text and summary
+  const textSecret = await detectSecrets(args.text);
+  if (textSecret) {
+    return { error: 'secret_detected', pattern: textSecret.pattern, action: 'blocked' };
   }
-
-  // Also check summary field for secrets
   if (args.summary) {
     const summarySecret = await detectSecrets(args.summary);
     if (summarySecret) {
-      return {
-        error: 'secret_detected',
-        pattern: summarySecret.pattern,
-        action: 'blocked' as const,
-      };
+      return { error: 'secret_detected', pattern: summarySecret.pattern, action: 'blocked' };
     }
   }
 
-  // 2. Dedup check
+  // Dedup check (session-scoped near-dupe cache)
   if (isDuplicate(args.text, args.session_id)) {
-    return {
-      id: 'duplicate',
-      status: 'duplicate' as const,
-    };
+    return { id: 'duplicate', status: 'duplicate' };
   }
 
   // T023: Include resolved project_id in raw decision for both Supabase and Qdrant
@@ -176,7 +300,7 @@ export async function handleStore(
     session_id: args.session_id,
   };
 
-  // 2b. Billing check (fail-open: never block on billing errors)
+  // Billing check (fail-open: never block on billing errors)
   try {
     const usageResult = await checkUsageOrProceed(
       config.supabase_url,
@@ -187,7 +311,7 @@ export async function handleStore(
     if (!usageResult.allowed) {
       return {
         error: 'usage_limit_reached',
-        action: 'blocked' as const,
+        action: 'blocked',
         upgrade: usageResult.upgrade,
       };
     }
@@ -195,77 +319,25 @@ export async function handleStore(
     // Fail-open: billing check failure must never block store operations
   }
 
-  // 3. Try dual write
   try {
-    // Server-side (configOverride) has service_role_key — use it directly.
-    // CLI hosted mode uses JWT exchange via getSupabaseJwtClient.
-    const supabase = (configOverride && config.supabase_service_role_key)
-      ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
-      : config.auth_mode === 'jwt'
-        ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-        : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    const supabase = pickSupabaseClient(config, configOverride);
 
-    // -----------------------------------------------------------------------
-    // Phase 2 pre-write validations
-    // -----------------------------------------------------------------------
-
-    // 3a. Validate `replaces` target exists in same org + RBAC check
-    let replacesTarget: { id: string; author: string; status: DecisionStatus } | null = null;
+    // ── Phase 2: pre-write conditional checks ──────────────────────────
+    let replacesTarget: ReplacesContext['target'] | null = null;
     if (args.replaces) {
-      const target = await getDecisionById(supabase, config.org_id, args.replaces);
-      if (!target) {
-        return {
-          error: 'replaces_target_not_found',
-          action: 'blocked' as const,
-        };
-      }
-
-      // RBAC: only admin or original author may supersede
-      const memberRole = await resolveMemberRole(
-        config.supabase_url,
-        config.member_api_key,
-        config.auth_mode,
-      );
-      if (!canSupersede(memberRole, config.author_name, target.author)) {
-        return {
-          error: 'permission_denied',
-          action: 'blocked' as const,
-        };
-      }
-      replacesTarget = { id: target.id, author: target.author, status: target.status };
+      const replacesResult = await validateReplaces(supabase, config, args.replaces);
+      if ('error' in replacesResult) return replacesResult;
+      replacesTarget = replacesResult.target;
     }
 
-    // 3b. Validate `depends_on` — all IDs must exist in same org
     if (args.depends_on && args.depends_on.length > 0) {
-      const found = await getDecisionsByIds(supabase, config.org_id, args.depends_on);
-      const foundIds = new Set(found.map((d) => d.id));
-      const missing = args.depends_on.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        return {
-          error: `depends_on_not_found: ${missing.join(', ')}`,
-          action: 'blocked' as const,
-        };
-      }
+      const dependsOnResult = await validateDependsOn(supabase, config, args.depends_on);
+      if (dependsOnResult) return dependsOnResult;
     }
 
-    // -----------------------------------------------------------------------
-    // Build store extras
-    // -----------------------------------------------------------------------
+    const extras = buildExtras(args);
 
-    const extras: StoreExtras = {};
-    // FR-018: All decisions default to 'proposed' — active requires explicit review
-    extras.status = args.status ?? 'proposed';
-    if (args.replaces) {
-      extras.replaces = args.replaces;
-    }
-    if (args.depends_on && args.depends_on.length > 0) {
-      extras.depends_on = args.depends_on;
-    }
-
-    // -----------------------------------------------------------------------
-    // Dual write (unchanged pipeline)
-    // -----------------------------------------------------------------------
-
+    // ── Phase 3: primary write (blocking) ──────────────────────────────
     const decision = await storeDecision(
       supabase,
       config.org_id,
@@ -275,235 +347,34 @@ export async function handleStore(
       Object.keys(extras).length > 0 ? extras : undefined,
     );
 
-    // Qdrant write (best-effort) — T023: include project_id in Qdrant payload
-    try {
-      const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-      await upsertDecision(qdrant, config.org_id, decision.id, raw, config.author_name, {
-        project_id: projectId,
-        source: 'mcp_store',
-      });
-    } catch {
-      // Qdrant failure — Postgres is source of truth
-      console.error('Warning: Qdrant write failed, Postgres succeeded');
-    }
-
     markAsSeen(args.text, args.session_id);
 
-    // -----------------------------------------------------------------------
-    // Q5: Incremental cluster assignment (best-effort)
-    // -----------------------------------------------------------------------
-    try {
-      const qdrantForClustering = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-      const registry = new ClusterRegistry(qdrantForClustering, config.org_id);
-      await registry.assignCluster(decision.id, args.text, args.affects ?? []);
-    } catch {
-      // Clustering is best-effort — never block the store
-    }
-
-    // -----------------------------------------------------------------------
-    // Increment usage counter (best-effort — never block the store)
-    // -----------------------------------------------------------------------
-    try {
-      const usageApiKey = (configOverride && config.supabase_service_role_key)
-        ? config.supabase_service_role_key
-        : config.auth_mode === 'jwt'
-          ? (config.member_api_key || config.api_key)
-          : config.supabase_service_role_key;
-      await incrementUsage(
-        config.supabase_url,
-        usageApiKey,
-        config.org_id,
-        'store',
-        config.auth_mode,
-      );
-    } catch {
-      // Best-effort: usage increment failure must never block store operations
-    }
-
-    // -----------------------------------------------------------------------
-    // Phase 2 post-write: supersede the replaced decision
-    // -----------------------------------------------------------------------
-
-    let superseded: StoreSupersededDetail | undefined;
-    if (replacesTarget) {
-      try {
-        const result = await supersedeDecision(
-          config.supabase_url,
-          config.supabase_service_role_key,
-          replacesTarget.id,
-          config.author_name,
-          config.member_api_key,
-        );
-        superseded = {
-          decision_id: replacesTarget.id,
-          old_status: result.old_status,
-          new_status: 'superseded',
-        };
-      } catch (err) {
-        // Best-effort: the new decision is stored, but the old one
-        // could not be transitioned. Log a warning for operators.
-        console.error(
-          `Warning: failed to supersede decision ${replacesTarget.id}: ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
-      }
-    }
-
-    // -----------------------------------------------------------------------
-    // Channel push: notify active sessions about new decision
-    // -----------------------------------------------------------------------
-
-    try {
-      // T011: When a proposed decision is stored, send a dedicated proposed
-      // notification so other sessions are alerted about pending review.
-      if (extras.status === 'proposed') {
-        const _proposedEvent = buildProposedDecisionEvent(
-          config.author_name,
-          raw.type || 'pending',
-          raw.summary || args.text.substring(0, 100),
-          decision.id,
-        );
-        // Channel push wired in serve command
-      } else {
-        const _event = buildNewDecisionEvent(
-          config.author_name,
-          raw.type || 'pending',
-          raw.summary || args.text.substring(0, 100),
-        );
-        // Channel notification would be sent via MCP server.notification()
-        // when channel transport is connected. For MVP, event is built but
-        // push requires server reference — wired in serve command.
-      }
-    } catch {
-      // Channel push is best-effort
-    }
-
-    // -----------------------------------------------------------------------
-    // Contradiction detection (Phase 2 — US3)
-    // -----------------------------------------------------------------------
-
-    let contradictions: StoreContradictionWarning[] | undefined;
-    try {
-      // Qdrant client — may be null if unavailable (Tier 1 only fallback)
-      let qdrantForDetection = null;
-      try {
-        qdrantForDetection = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
-      } catch {
-        // Qdrant unavailable — Tier 1 (area overlap) only
-      }
-
-      // Ensure project_id is set on decision for project-scoped contradiction detection
-      const decisionWithProject = { ...decision, project_id: decision.project_id || projectId };
-      const warnings = await detectContradictions(
-        supabase,
-        qdrantForDetection,
-        config.org_id,
-        decisionWithProject,
-      );
-
-      if (warnings.length > 0) {
-        contradictions = warnings;
-
-        // Build contradiction channel events (best-effort)
-        const newSummary = raw.summary || args.text.substring(0, 80);
-        for (const w of warnings) {
-          try {
-            const _contradictionEvent = buildContradictionEvent(
-              { author: config.author_name, summary: newSummary },
-              { author: w.author, summary: w.summary },
-              w.overlap_areas,
-            );
-            // Channel push wired in serve command
-          } catch {
-            // Channel push is best-effort
-          }
+    // ── Phase 4: side-effect bus (parallel, all best-effort) ───────────
+    const ctx: StoreSideEffectContext = {
+      decision,
+      raw,
+      args,
+      extras,
+      config,
+      supabase,
+      projectId,
+      usageApiKey: pickUsageApiKey(config, configOverride),
+      qdrant: () => {
+        try {
+          return getQdrantClient(config.qdrant_url, config.qdrant_api_key) as QdrantClient;
+        } catch {
+          return null;
         }
-
-        // Create audit entries for each detected contradiction (best-effort)
-        for (const w of warnings) {
-          try {
-            const auditPayload = buildAuditPayload(
-              'contradiction_detected',
-              'decision',
-              decision.id,
-              config.member_id || 'unknown',
-              config.org_id,
-              {
-                newState: {
-                  decision_a: decision.id,
-                  decision_b: w.decision_id,
-                  overlap_areas: w.overlap_areas,
-                  similarity: w.similarity,
-                },
-              },
-            );
-            await createAuditEntry(supabase, auditPayload);
-          } catch {
-            // Audit failures are non-fatal
-          }
-        }
-      }
-    } catch {
-      // Contradiction detection is best-effort — never block the store
-    }
-
-    const response: StoreResponse = {
-      id: decision.id,
-      status: 'stored' as const,
+      },
+      replacesTarget,
     };
-    // T011: Indicate when a decision was stored as proposed
-    if (extras.status === 'proposed') {
-      response.proposed = true;
-    }
-    if (superseded) {
-      response.superseded = superseded;
-    }
-    if (contradictions && contradictions.length > 0) {
-      response.contradictions = contradictions;
-    }
-    return response;
+
+    const sideEffectResults = await runStoreSideEffects(STORE_SIDE_EFFECTS, ctx);
+
+    return assembleResponse(decision, extras, sideEffectResults);
   } catch (err) {
-    // BUG #143 root-cause fix: the previous bare-catch swallowed the real
-    // error and unconditionally fell through to `appendToQueue`, which
-    // mkdir's `os.homedir()/.valis`. On Vercel Fluid Compute the sandbox
-    // user-home (`/home/sbx_user1051`) is not pre-created → `mkdir` throws
-    // `ENOENT`, and that's the error every caller actually saw — masking
-    // whatever truly broke the primary write.
-    //
-    // Two-tier handling now:
-    //   - server mode (configOverride present): no fs persistence — return
-    //     a structured infrastructure_error with the original message so
-    //     the agent/operator can triage without prod-log access.
-    //   - CLI-stdio mode: legitimate offline fallback via local queue;
-    //     queue.ts itself was hardened to fall back to os.tmpdir() if
-    //     homedir mkdir fails, but if even that fails we surface both
-    //     errors instead of swallowing them.
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error(`[store] Backend error: ${errorMessage}`);
-
-    if (configOverride) {
-      return {
-        error: 'infrastructure_error',
-        action: 'blocked',
-        error_message: errorMessage,
-      };
-    }
-
-    try {
-      const id = await appendToQueue(raw, config.author_name, 'mcp_store');
-      markAsSeen(args.text, args.session_id);
-      return {
-        id,
-        status: 'stored' as const,
-        synced: false,
-      };
-    } catch (queueErr) {
-      const queueMsg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-      return {
-        error: 'queue_unavailable',
-        action: 'blocked',
-        error_message: `${errorMessage} (offline-queue fallback also failed: ${queueMsg})`,
-      };
-    }
+    // BUG #143: distinguish server mode (return structured error) from
+    // CLI-stdio mode (legitimate offline-queue fallback).
+    return handlePrimaryWriteFailure(err, args, raw, config, configOverride);
   }
 }

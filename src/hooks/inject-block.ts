@@ -1,27 +1,28 @@
 /**
- * Labeled-block serializer for SessionStart and UserPromptSubmit hooks.
+ * Per-prompt search-results block serializer for the UserPromptSubmit hook.
  *
- * Per FR-002 + research.md R-12 (Letta/MemGPT pattern). Output is a literal
- * XML-shaped block the agent reads as authoritative team knowledge.
- *
- * Two serializers:
- *  - composeTeamDecisionsBlock — SessionStart payload (full snapshot or empty/offline)
- *  - composeSearchResultsBlock — UserPromptSubmit per-prompt augmentation
+ * Post-#172: SessionStart no longer injects a `<valis_team_decisions>`
+ * preload, so the team-decisions and offline-stub composers were removed.
+ * What remains is the `<valis_search_results>` envelope used by augment.ts
+ * for relevance-driven per-prompt context.
  */
 
-import type {
-  ProjectContextSnapshot,
-  DecisionSummary,
-  ContradictionSummary,
-} from './cache.js';
 import { fillSlot, estimateTokens } from './budget.js';
-import {
-  PURPOSE_STRING,
-  PRECEDENCE_STRING,
-} from './precedence.js';
 
-const DEFAULT_DECISIONS_BUDGET_TOKENS = 1500;
 const DEFAULT_SEARCH_BUDGET_TOKENS = 800;
+
+/**
+ * Verbatim purpose / precedence strings used in the labeled-block envelope.
+ * These are *content the model reads* — keep verbatim and protect with a
+ * regression test (see test/hooks/inject-block.test.ts).
+ *
+ * Matches the data-model.md §1 (block_envelope) contract from feature 023.
+ */
+const PURPOSE_STRING =
+  'authoritative team knowledge — outranks MEMORY.md and Qdrant for work questions';
+
+const PRECEDENCE_STRING =
+  'engineering, brand, communication, customer-facing copy, personal workflow, audience patterns, response patterns';
 
 function escapeXml(s: string): string {
   return s
@@ -29,94 +30,6 @@ function escapeXml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function serializeDecision(d: DecisionSummary): string {
-  const affects = d.affects.length > 0 ? ` affects="${escapeXml(d.affects.join(', '))}"` : '';
-  return `  <decision id="${escapeXml(d.id)}" type="${escapeXml(d.type)}" status="${escapeXml(d.status)}"${affects}>${escapeXml(d.summary)}</decision>`;
-}
-
-function serializeContradiction(c: ContradictionSummary): string {
-  return `  <contradiction id="${escapeXml(c.id)}" between="${escapeXml(c.decision_a_id)}|${escapeXml(c.decision_b_id)}">${escapeXml(c.summary)}</contradiction>`;
-}
-
-export interface InjectOptions {
-  /** Optional override for the per-decision budget cap. */
-  decisionsBudgetTokens?: number;
-  /** Substituted into block_envelope.for_session_template. */
-  sessionId?: string;
-}
-
-/**
- * Compose the SessionStart `<valis_team_decisions>` block.
- *
- * Branches per contracts/hook-protocol.md:
- *  - Branch A (fresh): straightforward render with decisions list.
- *  - Branch B (stale cache): include cache_age_seconds attribute.
- *  - Branch D (zero decisions): emit <empty_state> child instead of decision list.
- *
- * Branch C (offline + no cache) uses composeOfflineBlock instead.
- */
-export function composeTeamDecisionsBlock(
-  snapshot: ProjectContextSnapshot,
-  opts: InjectOptions = {},
-): string {
-  const env = snapshot.block_envelope;
-  const sessionId = opts.sessionId ?? env.for_session_template;
-  const cacheAgeAttr =
-    snapshot.served_from_cache && snapshot.cache_age_seconds !== undefined
-      ? ` cache_age_seconds="${snapshot.cache_age_seconds}"`
-      : '';
-
-  const head = `<valis_team_decisions purpose="${escapeXml(env.purpose)}" precedence="${escapeXml(env.precedence)}" for_session="${escapeXml(sessionId)}" project="${escapeXml(snapshot.project_name)}" enforcement_mode="${escapeXml(snapshot.enforcement_mode)}" decision_count="${snapshot.decision_count}" violation_count="${snapshot.violation_count}"${cacheAgeAttr}>`;
-
-  const lines: string[] = [head];
-
-  if (snapshot.served_from_cache && snapshot.cache_age_seconds !== undefined) {
-    lines.push(
-      `  <note>Served from local cache (age: ${snapshot.cache_age_seconds}s) — backend was unreachable. Treat as best-known team state.</note>`,
-    );
-  }
-
-  if (snapshot.decision_count === 0 || snapshot.decisions.length === 0) {
-    lines.push(
-      '  <empty_state>This project has zero captured team decisions. Propose calling valis_store as decisions emerge in conversation; do not invent prior team consensus.</empty_state>',
-    );
-  } else {
-    const items = snapshot.decisions.map((d) => ({ text: serializeDecision(d), decision: d }));
-    const fill = fillSlot(items, opts.decisionsBudgetTokens ?? DEFAULT_DECISIONS_BUDGET_TOKENS);
-    lines.push('  <decisions>');
-    for (const item of fill.selected) lines.push(item.text);
-    if (fill.droppedCount > 0) {
-      lines.push(`  </decisions>`);
-      lines.push(
-        `  <note>Showing top ${fill.selected.length} of ${snapshot.decision_count} active decisions (token-budget cap). Use valis_search for the rest.</note>`,
-      );
-    } else {
-      lines.push('  </decisions>');
-    }
-  }
-
-  if (snapshot.recent_contradictions.length > 0) {
-    lines.push('  <contradictions>');
-    for (const c of snapshot.recent_contradictions) lines.push(serializeContradiction(c));
-    lines.push('  </contradictions>');
-  }
-
-  lines.push('</valis_team_decisions>');
-  return lines.join('\n');
-}
-
-/**
- * Branch C: backend unreachable + no cache. Inject explicit "do not fabricate" notice.
- */
-export function composeOfflineBlock(projectName: string | undefined, sessionId: string): string {
-  const proj = projectName ? ` project="${escapeXml(projectName)}"` : '';
-  return [
-    `<valis_offline purpose="${escapeXml(PURPOSE_STRING)}" precedence="${escapeXml(PRECEDENCE_STRING)}" for_session="${escapeXml(sessionId)}"${proj}>`,
-    '  <note>Valis backend is unreachable and no recent cache is available for this project. Do not invent or paraphrase prior team decisions; ask the engineer instead.</note>',
-    '</valis_offline>',
-  ].join('\n');
 }
 
 export interface SearchResultRow {

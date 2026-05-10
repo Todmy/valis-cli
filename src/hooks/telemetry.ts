@@ -16,6 +16,7 @@ import { telemetryLogPath } from './paths.js';
 export type TelemetryEvent =
   | 'session_start_inject'
   | 'session_start_offline_stub'
+  | 'session_start_self_heal'
   | 'prompt_search_served'
   | 'prompt_search_hit'
   | 'prompt_search_miss_threshold'

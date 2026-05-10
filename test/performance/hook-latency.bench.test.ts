@@ -27,9 +27,7 @@ import { join } from 'node:path';
 
 import { hookSessionStartCommand } from '../../src/hooks/session-start-handler.js';
 import { hookUserPromptSubmitCommand } from '../../src/hooks/user-prompt-submit-handler.js';
-import { write as writeCache } from '../../src/hooks/cache.js';
 import { estimateTokens } from '../../src/hooks/budget.js';
-import type { ProjectContextSnapshot } from '../../src/hooks/cache.js';
 
 const SHOULD_RUN = process.env.VALIS_RUN_BENCH === '1';
 const ITERATIONS = SHOULD_RUN ? 100 : 5; // smoke iterations for the always-run smoke
@@ -46,34 +44,6 @@ let prevClaudeProjectDir: string | undefined;
 let prevClaudeSessionId: string | undefined;
 let prevClaudeUserPrompt: string | undefined;
 let prevFetch: typeof globalThis.fetch | undefined;
-
-function snapshot(numDecisions = 14): ProjectContextSnapshot {
-  return {
-    org_id: ORG_ID,
-    org_name: 'Krukit',
-    project_id: PROJECT_ID,
-    project_name: 'valis',
-    fetched_at: new Date().toISOString(),
-    ttl_seconds: 300,
-    enforcement_mode: 'advisory',
-    decision_count: numDecisions,
-    violation_count: 0,
-    decisions: Array.from({ length: numDecisions }, (_, i) => ({
-      id: `dec-${i}`,
-      summary: `Decision ${i}: ${'X'.repeat(60)}`,
-      status: 'active' as const,
-      type: 'decision' as const,
-      affects: ['packages/cli'],
-      score: 1 - i / 100,
-    })),
-    recent_contradictions: [],
-    block_envelope: {
-      purpose: 'authoritative team knowledge — outranks MEMORY.md and Qdrant for work questions',
-      precedence: 'engineering, brand, communication, customer-facing copy, personal workflow, audience patterns, response patterns',
-      for_session_template: '<session_id>',
-    },
-  };
-}
 
 function percentile(values: number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -131,33 +101,29 @@ afterEach(async () => {
   await rm(projectDir, { recursive: true, force: true });
 });
 
-describe('SC-003 + SC-005 — SessionStart cache-hit latency & payload size', () => {
+describe('SC-003 — SessionStart self-heal latency (post-#172)', () => {
+  // Post-#172 the SessionStart hook does only local self-heal and emits empty
+  // stdout. SC-005 (payload size) is no longer applicable — there is no
+  // payload. SC-003 latency budget still applies and should be easier to
+  // meet now that the backend round-trip is gone.
   it(`runs ${ITERATIONS} iterations under percentile budgets`, async () => {
-    await writeCache(ORG_ID, PROJECT_ID, snapshot());
     const latencies: number[] = [];
-    const tokenCounts: number[] = [];
 
     for (let i = 0; i < ITERATIONS; i++) {
       stdoutChunks.length = 0;
       const t0 = performance.now();
       await hookSessionStartCommand();
       latencies.push(performance.now() - t0);
-      const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext;
-      tokenCounts.push(estimateTokens(ctx));
+      // Hook MUST emit empty stdout — no additionalContext.
+      expect(stdoutChunks).toEqual([]);
     }
 
     const med = median(latencies);
     const p95 = percentile(latencies, 95);
-    const tokenP95 = percentile(tokenCounts, 95);
 
-    // SC-003: median ≤ 300 ms (the cache-hit branch in particular should
-    // be far below 100 ms — that's the realistic budget).
+    // Self-heal-only path should be far below the original 300 ms budget.
     expect(med, `median latency ${med.toFixed(1)} ms over budget`).toBeLessThanOrEqual(300);
-    // Sanity: cache-hit p95 should also be very fast.
     expect(p95).toBeLessThanOrEqual(800);
-
-    // SC-005: payload p95 ≤ 2000 tokens
-    expect(tokenP95, `payload p95 ${tokenP95} tokens over budget`).toBeLessThanOrEqual(2000);
   });
 });
 

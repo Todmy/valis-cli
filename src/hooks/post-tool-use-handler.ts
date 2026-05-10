@@ -11,27 +11,11 @@
  * Phase B FR-041, deferred behind telemetry.
  */
 
-import { readFile } from 'node:fs/promises';
-import { resolveProjectMarker } from './project-resolver.js';
+import { loadHookMarker, loadHookGlobalConfig } from './context.js';
 import { invalidate as invalidateCache } from './cache.js';
 import { record } from './telemetry.js';
-import { configPath } from './paths.js';
 
 const VALIS_WRITE_PATTERN = /^valis_(store|lifecycle|sync|create_project|.*write.*)$/i;
-
-interface GlobalConfig {
-  org_id?: string;
-}
-
-async function loadOrgId(): Promise<string | null> {
-  try {
-    const data = await readFile(configPath(), 'utf-8');
-    const parsed = JSON.parse(data) as GlobalConfig;
-    return parsed.org_id ?? null;
-  } catch {
-    return null;
-  }
-}
 
 export async function hookPostToolUseCommand(): Promise<void> {
   const toolName = process.env.CLAUDE_TOOL_NAME ?? '';
@@ -39,15 +23,15 @@ export async function hookPostToolUseCommand(): Promise<void> {
     return; // Branch B
   }
 
-  const marker = await resolveProjectMarker();
-  if (!marker || !marker.projectId) return;
+  const marker = await loadHookMarker();
+  if (!marker) return;
 
-  const orgId = await loadOrgId();
-  if (!orgId) return;
+  const cfg = await loadHookGlobalConfig();
+  if (!cfg) return;
 
-  await invalidateCache(orgId, marker.projectId);
+  await invalidateCache(cfg.orgId, marker.projectId);
   void record('cache_invalidate', {
-    org_id: orgId,
+    org_id: cfg.orgId,
     project_id: marker.projectId,
     metadata: { tool: toolName },
   });

@@ -11,8 +11,7 @@
  * Constitution III: any failure → empty stdout, exit 0; record `hook_failure`.
  */
 
-import { readFile } from 'node:fs/promises';
-import { resolveProjectMarker } from './project-resolver.js';
+import { loadHookMarker, loadHookGlobalConfig } from './context.js';
 import {
   read as readCache,
   write as writeCache,
@@ -26,25 +25,6 @@ import {
   composeOfflineBlock,
 } from './inject-block.js';
 import { record } from './telemetry.js';
-import { configPath } from './paths.js';
-
-interface GlobalConfig {
-  org_id?: string;
-  member_api_key?: string;
-  api_key?: string;
-  api_base_url?: string;
-}
-
-const DEFAULT_API_BASE = 'https://valis.krukit.co';
-
-async function loadGlobalConfig(): Promise<GlobalConfig | null> {
-  try {
-    const data = await readFile(configPath(), 'utf-8');
-    return JSON.parse(data) as GlobalConfig;
-  } catch {
-    return null;
-  }
-}
 
 function emitContext(additionalContext: string): void {
   const payload = {
@@ -61,8 +41,8 @@ export async function hookSessionStartCommand(): Promise<void> {
   const sessionId = process.env.CLAUDE_SESSION_ID ?? '<session_id>';
 
   // Branch E — not a Valis-configured directory.
-  const marker = await resolveProjectMarker();
-  if (!marker || !marker.projectId) {
+  const marker = await loadHookMarker();
+  if (!marker) {
     return; // empty stdout
   }
 
@@ -80,15 +60,13 @@ export async function hookSessionStartCommand(): Promise<void> {
     /* heal failures are silent by design */
   }
 
-  const cfg = await loadGlobalConfig();
-  if (!cfg || !cfg.org_id) {
+  const cfg = await loadHookGlobalConfig();
+  if (!cfg) {
     // Without org_id we can't read the cache. Treat as "no context, configured".
     return;
   }
-  const orgId = cfg.org_id;
+  const { orgId, apiKey, apiBaseUrl } = cfg;
   const projectId = marker.projectId;
-  const apiKey = cfg.member_api_key ?? cfg.api_key ?? '';
-  const apiBaseUrl = cfg.api_base_url ?? DEFAULT_API_BASE;
 
   // 1) Fresh cache — Branch A or D depending on decision_count.
   const cached = await readCache(orgId, projectId);

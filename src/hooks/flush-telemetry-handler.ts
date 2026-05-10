@@ -53,8 +53,9 @@ async function saveTransmissionLog(log: TransmissionLog): Promise<void> {
 /**
  * Load telemetry events from the JSONL log written since `since`.
  * Filters to event types that map onto the backend `adoption_metric_events`
- * closed enum — local-only events (e.g. `cache_hit`, `hook_failure`) are
- * intentionally excluded from transmission.
+ * closed enum — local-only events (e.g. `hook_failure`, `session_start_self_heal`)
+ * are intentionally excluded from transmission. The `session_start_inject`
+ * entry is retained here purely to flush historical pre-#172 log lines.
  */
 const TRANSMITTABLE: ReadonlySet<string> = new Set([
   'session_start_inject', // → session_started_with_context (rename)

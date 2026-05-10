@@ -490,7 +490,7 @@ program.addCommand(hookCmd, { hidden: true });
 
 hookCmd
   .command('session-start')
-  .description('SessionStart hook: inject team context into session')
+  .description('SessionStart hook: self-heal of Valis-managed surfaces (post-#172, no backend preload)')
   .action(async () => {
     try {
       await hookSessionStartCommand();
@@ -513,7 +513,7 @@ hookCmd
 
 hookCmd
   .command('post-tool-use')
-  .description('PostToolUse hook: own-write cache invalidation (Phase A FR-006a)')
+  .description('PostToolUse hook: silent-skip stub (cache infrastructure removed alongside #172; FR-029 backward compat)')
   .action(async () => {
     try {
       await hookPostToolUseCommand();

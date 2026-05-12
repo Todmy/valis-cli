@@ -69,9 +69,10 @@ describe('T037: Community mode init verification', () => {
   });
 
   it('community config prompts include 4 credential fields', () => {
-    // Verify init.ts community block references all 4 prompts by reading the source
+    // Community mode code now lives in init/cases.ts after the init refactor
+    // (5 case handlers split out of the original monolithic initCommand).
     const initSrc = readFileSync(
-      resolve(__dirname, '../../src/commands/init.ts'),
+      resolve(__dirname, '../../src/commands/init/cases.ts'),
       'utf8',
     );
 
@@ -83,9 +84,9 @@ describe('T037: Community mode init verification', () => {
   });
 
   it('community code path does not reference HOSTED_API_URL', () => {
-    // Read init.ts and isolate the community mode block
+    // Community mode code now lives in init/cases.ts (see test above).
     const initSrc = readFileSync(
-      resolve(__dirname, '../../src/commands/init.ts'),
+      resolve(__dirname, '../../src/commands/init/cases.ts'),
       'utf8',
     );
 

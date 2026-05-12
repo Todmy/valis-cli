@@ -441,8 +441,16 @@ describe('T016: Verify removal of hosted-env legacy code from init.ts', () => {
     expect(initTsContent).not.toMatch(/VALIS_HOSTED_QDRANT_KEY/);
   });
 
-  it('init.ts imports register from registration module', () => {
-    expect(initTsContent).toContain("from '../cloud/registration.js'");
+  it('init imports register from registration module (now via init/cases.ts)', () => {
+    // After the init refactor, `register` is imported from init/cases.ts
+    // (Case D legacy migration + Case E fresh install) and init/helpers.ts
+    // (selectOrCreateProjectLoggedIn). The dispatcher init.ts no longer
+    // imports it directly. Read cases.ts to satisfy this contract.
+    const casesContent = readFileSync(
+      resolve(__dirname, '../../src/commands/init/cases.ts'),
+      'utf-8',
+    );
+    expect(casesContent).toContain("from '../../cloud/registration.js'");
   });
 });
 

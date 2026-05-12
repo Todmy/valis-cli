@@ -11,6 +11,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { hookUserPromptSubmitCommand } from '../../src/hooks/user-prompt-submit-handler.js';
+import {
+  DEFAULT_MIN_TURN,
+  freshMarker,
+  writeSessionMarker,
+  readSessionMarker,
+  type SessionMarker,
+} from '../../src/hooks/session-marker.js';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PROJECT_ID = '22222222-2222-2222-2222-222222222222';
@@ -22,6 +29,7 @@ let writeSpy: ReturnType<typeof vi.spyOn>;
 let prevValisHome: string | undefined;
 let prevClaudeProjectDir: string | undefined;
 let prevClaudeUserPrompt: string | undefined;
+let prevClaudeSessionId: string | undefined;
 let prevFetch: typeof globalThis.fetch | undefined;
 const fetchMock = vi.fn();
 
@@ -51,11 +59,16 @@ beforeEach(async () => {
   prevValisHome = process.env.VALIS_HOME;
   prevClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
   prevClaudeUserPrompt = process.env.CLAUDE_USER_PROMPT;
+  prevClaudeSessionId = process.env.CLAUDE_SESSION_ID;
   prevFetch = globalThis.fetch;
 
   process.env.VALIS_HOME = tempHome;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
-  process.env.CLAUDE_USER_PROMPT = 'how do we cache decisions?';
+  process.env.CLAUDE_USER_PROMPT = 'how do we cache decisions and patterns?';
+  process.env.VALIS_DISABLE_PRUNE = '1';
+  // Disable capture-reminder by default for the existing Branch A-E tests.
+  // Dedicated tests below set CLAUDE_SESSION_ID + project_config to exercise it.
+  delete process.env.CLAUDE_SESSION_ID;
 
   await mkdir(tempHome, { recursive: true });
   await setGlobalConfig();
@@ -81,6 +94,8 @@ afterEach(async () => {
   else process.env.CLAUDE_PROJECT_DIR = prevClaudeProjectDir;
   if (prevClaudeUserPrompt === undefined) delete process.env.CLAUDE_USER_PROMPT;
   else process.env.CLAUDE_USER_PROMPT = prevClaudeUserPrompt;
+  if (prevClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
+  else process.env.CLAUDE_SESSION_ID = prevClaudeSessionId;
   if (prevFetch) globalThis.fetch = prevFetch;
   await rm(tempHome, { recursive: true, force: true });
   await rm(projectDir, { recursive: true, force: true });
@@ -174,7 +189,7 @@ describe('UserPromptSubmit roundtrip', () => {
   });
 
   it('Branch A on a Cyrillic prompt — no language gate', async () => {
-    process.env.CLAUDE_USER_PROMPT = 'Як ми кешуємо рішення?';
+    process.env.CLAUDE_USER_PROMPT = 'Як ми кешуємо рішення в системі?';
     fetchMock.mockResolvedValueOnce(
       jsonResponse([
         { id: 'cy', summary: 'cache pattern', type: 'pattern', score: 0.85 },
@@ -182,5 +197,109 @@ describe('UserPromptSubmit roundtrip', () => {
     );
     await hookUserPromptSubmitCommand();
     expect(stdoutChunks.length).toBe(1);
+  });
+});
+
+describe('UserPromptSubmit roundtrip — capture-reminder injection', () => {
+  const SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const CLOCK = new Date('2026-05-12T10:00:00.000Z');
+
+  beforeEach(async () => {
+    process.env.CLAUDE_SESSION_ID = SESSION_ID;
+    fetchMock.mockResolvedValue(jsonResponse([])); // no search results by default
+  });
+
+  it('does not inject reminder before the turn threshold', async () => {
+    await writeSessionMarker(freshMarker(SESSION_ID, CLOCK));
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(0);
+    const after = await readSessionMarker(SESSION_ID);
+    expect(after?.turn_count).toBe(1);
+    expect(after?.reminder_count).toBe(0);
+  });
+
+  it('injects reminder block when turn count reaches threshold', async () => {
+    const preSeed: SessionMarker = {
+      ...freshMarker(SESSION_ID, CLOCK),
+      turn_count: DEFAULT_MIN_TURN - 1,
+    };
+    await writeSessionMarker(preSeed);
+
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(1);
+    const parsed = JSON.parse(stdoutChunks[0]);
+    const ctx = parsed.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/<channel source="valis" event="capture_reminder"/);
+    expect(ctx).toContain('valis_store');
+
+    const after = await readSessionMarker(SESSION_ID);
+    expect(after?.reminder_count).toBe(1);
+    expect(after?.last_reminder_turn).toBe(DEFAULT_MIN_TURN);
+  });
+
+  it('composes search results BEFORE the capture reminder', async () => {
+    const preSeed: SessionMarker = {
+      ...freshMarker(SESSION_ID, CLOCK),
+      turn_count: DEFAULT_MIN_TURN - 1,
+    };
+    await writeSessionMarker(preSeed);
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        { id: 'r1', summary: 'relevant decision', type: 'decision', score: 0.9 },
+      ]),
+    );
+
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    const searchIdx = ctx.indexOf('<valis_search_results');
+    const reminderIdx = ctx.indexOf('<channel source="valis"');
+    expect(searchIdx).toBeGreaterThanOrEqual(0);
+    expect(reminderIdx).toBeGreaterThanOrEqual(0);
+    expect(searchIdx).toBeLessThan(reminderIdx);
+  });
+
+  it('suppresses reminder when project config disables it', async () => {
+    await setProjectConfig({ capture_reminder_enabled: false });
+    const preSeed: SessionMarker = {
+      ...freshMarker(SESSION_ID, CLOCK),
+      turn_count: DEFAULT_MIN_TURN + 5,
+    };
+    await writeSessionMarker(preSeed);
+
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(0);
+    const after = await readSessionMarker(SESSION_ID);
+    expect(after?.reminder_count).toBe(0);
+  });
+
+  it('skips reminder when CLAUDE_SESSION_ID is missing', async () => {
+    delete process.env.CLAUDE_SESSION_ID;
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(0);
+  });
+
+  it('does not count slash-command prompts as turns', async () => {
+    process.env.CLAUDE_USER_PROMPT = '/help me with this please right now';
+    await writeSessionMarker(freshMarker(SESSION_ID, CLOCK));
+    await hookUserPromptSubmitCommand();
+    const after = await readSessionMarker(SESSION_ID);
+    expect(after?.turn_count).toBe(0);
+  });
+
+  it('reminder fires alone when augment returns empty (no search block)', async () => {
+    const preSeed: SessionMarker = {
+      ...freshMarker(SESSION_ID, CLOCK),
+      turn_count: DEFAULT_MIN_TURN - 1,
+    };
+    await writeSessionMarker(preSeed);
+
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).not.toContain('<valis_search_results');
+    expect(ctx).toContain('<channel source="valis" event="capture_reminder"');
   });
 });

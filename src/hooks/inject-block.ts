@@ -8,8 +8,17 @@
  */
 
 import { fillSlot, estimateTokens } from './budget.js';
+import type { ChannelEvent } from '../channel/push.js';
 
 const DEFAULT_SEARCH_BUDGET_TOKENS = 800;
+
+/**
+ * Fixed reservation for the capture-reminder block. Outside the per-prompt
+ * search budget — the reminder must always fit (it's an instruction, not
+ * reference material). Defensive ceiling: if `buildCaptureReminder()`
+ * content grows past this, the composer throws.
+ */
+export const CAPTURE_REMINDER_BUDGET_TOKENS = 200;
 
 /**
  * Verbatim purpose / precedence strings used in the labeled-block envelope.
@@ -78,4 +87,40 @@ export function composeSearchResultsBlock(
 
 export function tokensForBlock(block: string): number {
   return estimateTokens(block);
+}
+
+/**
+ * Compose a `<channel source="..." event="..." attrs...>content</channel>`
+ * envelope around a ChannelEvent. Used by the user-prompt-submit hook to
+ * inject a deterministic capture reminder once per session.
+ *
+ * CLAUDE.md "Channel reminders" rule binds the receiver behavior: when an
+ * agent reads this envelope, it should review recent work and store any
+ * decisions via valis_store.
+ *
+ * Throws if the rendered block exceeds CAPTURE_REMINDER_BUDGET_TOKENS — a
+ * defensive ceiling against runaway content growth in buildCaptureReminder().
+ */
+export function composeCaptureReminderBlock(event: ChannelEvent): string {
+  const attrs = [
+    `source="${escapeXml(event.source)}"`,
+    `event="${escapeXml(event.event)}"`,
+    ...Object.entries(event.meta)
+      // The `event` key duplicates the top-level attribute; skip it.
+      .filter(([k]) => k !== 'event' && k !== 'source')
+      .map(([k, v]) => `${escapeXml(k)}="${escapeXml(String(v))}"`),
+  ].join(' ');
+
+  const block = [
+    `<channel ${attrs}>`,
+    escapeXml(event.content),
+    `</channel>`,
+  ].join('\n');
+
+  if (estimateTokens(block) > CAPTURE_REMINDER_BUDGET_TOKENS) {
+    throw new Error(
+      `capture-reminder block exceeds budget (${CAPTURE_REMINDER_BUDGET_TOKENS} tokens)`,
+    );
+  }
+  return block;
 }

@@ -42,6 +42,8 @@ export type TelemetryEvent =
   | 'auto_memory_drift_detected'
   | 'gitignore_blocking_marker'
   | 'cursor_mcp_repaired'
+  | 'capture_reminder_injected'
+  | 'capture_reminder_skipped'
   | 'hook_failure';
 
 export interface TelemetryRecord {

@@ -51,3 +51,11 @@ export function installationIdPath(): string {
 export function transmissionLogPath(): string {
   return join(valisHome(), 'transmission-log.json');
 }
+
+export function sessionMarkerPath(sessionId: string): string {
+  return join(valisHome(), 'session-markers', `${sessionId}.json`);
+}
+
+export function sessionMarkerDir(): string {
+  return join(valisHome(), 'session-markers');
+}

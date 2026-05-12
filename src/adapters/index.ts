@@ -132,14 +132,32 @@ export interface HarnessAdapter {
 }
 
 import { claudeCodeAdapter } from './claude-code.js';
+import { codexAdapter } from './codex.js';
+import { cursorAdapter } from './cursor.js';
+import { geminiAdapter } from './gemini.js';
+import { copilotAdapter } from './copilot.js';
+import { windsurfAdapter } from './windsurf.js';
+import { opencodeAdapter } from './opencode.js';
+import { antigravityAdapter } from './antigravity.js';
 
 /**
- * All adapters in canonical display order. Future harness additions
- * (codex, cursor, gemini, copilot, windsurf, antigravity, opencode)
- * register here.
+ * All adapters in canonical display order. Matches `ALL_HARNESSES` in
+ * `./hook-events.ts`.
  */
 export const ALL_ADAPTERS: HarnessAdapter[] = [
   claudeCodeAdapter,
+  codexAdapter,
+  geminiAdapter,
+  cursorAdapter,
+  copilotAdapter,
+  windsurfAdapter,
+  opencodeAdapter,
+  antigravityAdapter,
 ];
+
+/** Lookup an adapter by harness name. */
+export function adapterFor(name: HarnessName): HarnessAdapter | undefined {
+  return ALL_ADAPTERS.find((a) => a.name === name);
+}
 
 export type { HarnessName } from './hook-events.js';

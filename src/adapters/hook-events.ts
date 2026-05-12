@@ -23,7 +23,15 @@
  * Adapted from HarnessKit's `hk-core/src/adapter/hook_events.rs` (Apache-2.0).
  */
 
-export type HarnessName = 'claude-code' | 'codex' | 'gemini' | 'cursor' | 'copilot' | 'windsurf';
+export type HarnessName =
+  | 'claude-code'
+  | 'codex'
+  | 'gemini'
+  | 'cursor'
+  | 'copilot'
+  | 'windsurf'
+  | 'opencode'
+  | 'antigravity';
 
 interface EventMapping {
   canonical: string;
@@ -89,6 +97,9 @@ const WINDSURF_EVENTS: EventMapping[] = [
   { canonical: 'pre_run_command', agent: 'pre_run_command' },
 ];
 
+/** OpenCode and Antigravity have no hook system — tables intentionally empty. */
+const NO_HOOKS: EventMapping[] = [];
+
 const TABLES: Record<HarnessName, EventMapping[]> = {
   'claude-code': CLAUDE_EVENTS,
   'codex': CODEX_EVENTS,
@@ -96,6 +107,8 @@ const TABLES: Record<HarnessName, EventMapping[]> = {
   'cursor': CURSOR_EVENTS,
   'copilot': COPILOT_EVENTS,
   'windsurf': WINDSURF_EVENTS,
+  'opencode': NO_HOOKS,
+  'antigravity': NO_HOOKS,
 };
 
 /**
@@ -127,4 +140,6 @@ export const ALL_HARNESSES: HarnessName[] = [
   'cursor',
   'copilot',
   'windsurf',
+  'opencode',
+  'antigravity',
 ];

@@ -77,7 +77,7 @@ GROUPED BY PHASE
   Operator         enrich · admin · migrate-auth
 
 GETTING STARTED
-  $ valis init                        # first time: create or join an org
+  $ valis init --template ts-saas     # first time: create + seed a starter constitution
   $ valis index ./docs                # then: bulk-import existing markdown
   $ valis search "postgres"           # then: query the team brain
 
@@ -101,6 +101,10 @@ program
   .command('init')
   .description('Create or join an organization and configure the local environment')
   .option('--join <invite-code>', 'Join an existing org with invite code')
+  .option(
+    '--template <name>',
+    'Seed the new project with a constitution template (ts-saas | fintech | ai-agent)',
+  )
   .action(async (options) => {
     try {
       await initCommand(options);

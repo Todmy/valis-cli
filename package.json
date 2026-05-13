@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./dist/src/index.js",
   "bin": {
-    "valis": "./dist/bin/valis.js"
+    "valis": "./dist/bin/valis.js",
+    "valis-bench": "./dist/bin/valis-bench.js"
   },
   "scripts": {
     "build": "tsc",
@@ -13,10 +14,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "bench": "node dist/bin/valis-bench.js",
+    "corpus:fetch:longmemeval": "node --experimental-strip-types scripts/fetch-longmemeval.ts",
     "prepublishOnly": "pnpm run build && pnpm run test"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "20.x || 22.x || 24.x"
   },
   "author": "Dmytro Tolok <tolok.d@gmail.com>",
   "license": "Apache-2.0",
@@ -40,7 +43,8 @@
     "./types": "./dist/src/types.js",
     "./templates": "./dist/src/templates/index.js",
     "./templates/*.json": "./dist/src/templates/*.json",
-    "./cloud/chunking": "./dist/src/cloud/chunking.js"
+    "./cloud/chunking": "./dist/src/cloud/chunking.js",
+    "./lib/funnel-events": "./dist/src/lib/funnel-events.js"
   },
   "files": [
     "dist/"

@@ -12,11 +12,12 @@
  *   - Plugins: https://code.claude.com/docs/en/plugins
  *   - Hooks:   https://code.claude.com/docs/en/hooks
  *
- * The complementary action helpers (`configureClaudeCodeMCP`, `injectClaudeMdMarkers`,
- * `scaffoldBuiltInCommands`) still live in `../ide/claude-code.ts` — this module
- * is the data-first companion. Migration plan: once all eight harnesses have
- * their adapter declared here, `../ide/setupIDEs` switches over to walking
- * adapters and doing generic install/inject through a shared deployer.
+ * The Claude-only action helpers (`installClaudeHooks`, `injectClaudeMdMarkers`,
+ * `scaffoldBuiltInCommands`) still live in `../ide/claude-code.ts` — those
+ * cover hooks, CLAUDE.md markers, and scaffolded slash commands that are
+ * Claude-specific. The generic MCP-server install path now goes through
+ * `../adapters/deploy.ts::writeMcpServer`, walked by `setupIDEs` over
+ * `ALL_ADAPTERS`. Migration completed 2026-05-13 (sprint #13).
  *
  * Adapted from HarnessKit's `hk-core/src/adapter/claude.rs` (Apache-2.0).
  */

@@ -97,8 +97,12 @@ afterEach(async () => {
   if (prevClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
   else process.env.CLAUDE_SESSION_ID = prevClaudeSessionId;
   if (prevFetch) globalThis.fetch = prevFetch;
-  await rm(tempHome, { recursive: true, force: true });
-  await rm(projectDir, { recursive: true, force: true });
+  // BUG #177 — APFS race: pending hook handler writes (`writeSessionMarker`,
+  // telemetry appends) sometimes finish *after* the test body returns, so a
+  // straight `rm(..., force)` hits ENOTEMPTY on rmdir. Mirror the e05270f
+  // self-heal fix: retry up to 5× with 50ms backoff. Node 14.14+.
+  await rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  await rm(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 function jsonResponse(results: unknown[]): Response {

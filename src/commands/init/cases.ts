@@ -29,6 +29,7 @@ import { register, joinPublic } from '../../cloud/registration.js';
 import { loadCredentials } from '../../config/credentials.js';
 import type { ValisConfig, ProjectConfig } from '../../types.js';
 import { HOSTED_SUPABASE_URL } from '../../types.js';
+import { emitAdoptionEvents } from '../../lib/adoption-emit.js';
 import {
   prompt,
   createOrg,
@@ -43,6 +44,7 @@ import {
   runMemoryMigration,
   runTelemetryConsent,
 } from './helpers.js';
+import type { InitOptions } from '../init.js';
 
 type SetupMode = 'hosted' | 'community';
 
@@ -53,7 +55,7 @@ export type FreshInstallOutcome = 'completed' | 'needs_retry';
 // Case A — fast path for users already logged in via `valis login`
 // ===========================================================================
 
-export async function runLoggedInPath(): Promise<void> {
+export async function runLoggedInPath(options: InitOptions = {}): Promise<void> {
   const creds = (await loadCredentials())!;
   console.log(pc.green(`Logged in as ${creds.author_name} (${creds.org_name})\n`));
 
@@ -76,7 +78,7 @@ export async function runLoggedInPath(): Promise<void> {
     });
 
     if (answer === 'switch') {
-      const projectConfig = await selectOrCreateProjectLoggedIn(creds);
+      const projectConfig = await selectOrCreateProjectLoggedIn(creds, options);
       const configPath = await writeProjectConfig(process.cwd(), projectConfig);
       console.log(pc.green(`✓ Project config updated: ${configPath}`));
       console.log(`  Project: ${pc.cyan(projectConfig.project_name)}`);
@@ -89,7 +91,7 @@ export async function runLoggedInPath(): Promise<void> {
   }
 
   // Select or create a project using credentials
-  const projectConfig = await selectOrCreateProjectLoggedIn(creds);
+  const projectConfig = await selectOrCreateProjectLoggedIn(creds, options);
 
   // Build a ValisConfig for the global config file
   const config: ValisConfig = {
@@ -416,7 +418,10 @@ export async function runLegacyMigration(existing: ValisConfig): Promise<void> {
 // dispatcher should re-enter `initCommand` so the now-logged-in user hits
 // Case A. Returns 'completed' on success or abort.
 
-export async function runFreshInstall(): Promise<FreshInstallOutcome> {
+// 024 — `options` carries `--template` but dispatcher already gated on
+// "logged-in required" so fresh-install never sees a non-empty template
+// here. Param kept for signature symmetry with the other cases.
+export async function runFreshInstall(_options: InitOptions = {}): Promise<FreshInstallOutcome> {
   // Check if user wants to login first
   let creds = await loadCredentials();
   let setupMode: SetupMode = 'hosted';
@@ -589,6 +594,15 @@ export async function runFreshInstall(): Promise<FreshInstallOutcome> {
   // Feature 023 US3 — Memory.md migration prompt. Idempotent via
   // SHA-256 source-dedup hash; declined entries are suppressed for 30 days.
   await runMemoryMigration(process.cwd(), projectConfig.project_id);
+
+  // Funnel-event emit: both `install` (fresh install path) and `init_completed`
+  // fire here. Server-side bridge in /api/projects/[id]/metrics mirrors these
+  // to PostHog (see packages/web/src/lib/adoption-metrics.ts). Consent-gated;
+  // best-effort: telemetry MUST NEVER crash init.
+  await emitAdoptionEvents(projectConfig.project_id, [
+    { event_type: 'install' },
+    { event_type: 'init_completed' },
+  ]);
 
   // Print final summary
   await printSummary(config, projectConfig, false);

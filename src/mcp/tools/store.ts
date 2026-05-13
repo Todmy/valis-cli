@@ -32,7 +32,14 @@ import {
   getDecisionsByIds,
 } from '../../cloud/supabase.js';
 import type { StoreExtras } from '../../cloud/supabase.js';
-import { getQdrantClient } from '../../cloud/qdrant.js';
+import { getQdrantClient, buildProjectFilter, COLLECTION_NAME } from '../../cloud/qdrant.js';
+import {
+  detectEmbeddingStrategy,
+  truncateForEmbedding,
+  ClientEmbeddingStrategy,
+  DENSE_VECTOR_NAME,
+} from '../../cloud/embedding.js';
+import { extractLinks, type LinkExtractionResult, type SearchFn } from './link-extractor.js';
 import { appendToQueue } from '../../offline/queue.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
@@ -173,6 +180,57 @@ function buildExtras(args: StoreArgs): StoreExtras {
     extras.depends_on = args.depends_on;
   }
   return extras;
+}
+
+// ---------------------------------------------------------------------------
+// 025: Auto-link enrichment — build a SearchFn bound to (org, project)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `SearchFn` for the LinkExtractor that runs a project-scoped dense
+ * Qdrant query and dedups results by parent `decision_id`. Mirrors the
+ * pre-store path used by `valis_check_duplicate` but returns the structured
+ * `{id, similarity}[]` shape the extractor consumes.
+ *
+ * Returns `null` when Qdrant credentials are absent (community / self-hosted
+ * setups without managed inference). The caller treats `null` as "skip
+ * enrichment" rather than failing the store.
+ */
+function buildAutoLinkSearchFn(
+  config: StoreConfig,
+  projectId: string,
+): SearchFn | null {
+  if (!config.qdrant_url || !config.qdrant_api_key) return null;
+  const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+  return async (text: string) => {
+    const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
+    const truncated = truncateForEmbedding(text);
+    const denseQuery: unknown =
+      strategy.mode === 'client'
+        ? await (strategy as ClientEmbeddingStrategy).queryForDenseAsync(truncated)
+        : strategy.queryForDense(truncated);
+    const filter = buildProjectFilter(config.org_id, projectId);
+    const results = await qdrant.query(COLLECTION_NAME, {
+      query: denseQuery as never,
+      using: DENSE_VECTOR_NAME,
+      filter,
+      limit: 12, // over-fetch — chunked decisions land on the same parent
+      with_payload: true,
+    });
+
+    // Dedup by parent `decision_id` (chunked decisions share a parent).
+    const best = new Map<string, number>();
+    for (const point of results.points) {
+      const payload = (point.payload ?? {}) as Record<string, unknown>;
+      const parentId = (payload.decision_id as string) ?? (point.id as string);
+      const score = point.score ?? 0;
+      const existing = best.get(parentId);
+      if (existing === undefined || score > existing) best.set(parentId, score);
+    }
+    return Array.from(best.entries())
+      .map(([id, similarity]) => ({ id, similarity }))
+      .sort((a, b) => b.similarity - a.similarity);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +393,63 @@ export async function handleStore(
       if (dependsOnResult) return dependsOnResult;
     }
 
+    // ── 025: Auto-link enrichment (BUG #175) ──────────────────────────────
+    // Run when the agent did NOT supply depends_on AND there's no replaces
+    // (replaces already carries a structural link). Non-blocking: any
+    // failure persists `auto_links: { status: 'failed', ... }` and falls
+    // through to an empty depends_on.
+    const callerSuppliedDeps = (args.depends_on?.length ?? 0) > 0;
+    const callerSuppliedReplaces = Boolean(args.replaces);
+    let linkExtraction: LinkExtractionResult | null = null;
+    if (callerSuppliedDeps) {
+      linkExtraction = {
+        chosen: [],
+        candidates: [],
+        threshold: 0.6,
+        latency_ms: 0,
+        status: 'skipped',
+        reason: 'caller_supplied_depends_on',
+      };
+    } else if (callerSuppliedReplaces) {
+      linkExtraction = {
+        chosen: [],
+        candidates: [],
+        threshold: 0.6,
+        latency_ms: 0,
+        status: 'skipped',
+        reason: 'replaces_supplied',
+      };
+    } else {
+      const searchFn = buildAutoLinkSearchFn(config, projectId);
+      if (searchFn) {
+        linkExtraction = await extractLinks(args.text, searchFn);
+        if (linkExtraction.chosen.length > 0) {
+          // Best-effort validate — drop any IDs that don't resolve in
+          // Postgres rather than fail the write.
+          const found = await getDecisionsByIds(supabase, config.org_id, linkExtraction.chosen);
+          const validIds = new Set(found.map((d) => d.id));
+          linkExtraction.chosen = linkExtraction.chosen.filter((id) => validIds.has(id));
+        }
+      } else {
+        linkExtraction = {
+          chosen: [],
+          candidates: [],
+          threshold: 0.6,
+          latency_ms: 0,
+          status: 'failed',
+          reason: 'qdrant_unavailable',
+        };
+      }
+    }
+
     const extras = buildExtras(args);
+    if (
+      linkExtraction.status === 'ok' &&
+      linkExtraction.chosen.length > 0 &&
+      !extras.depends_on
+    ) {
+      extras.depends_on = linkExtraction.chosen;
+    }
 
     // ── Phase 3: primary write (blocking) ──────────────────────────────
     const decision = await storeDecision(
@@ -367,6 +481,7 @@ export async function handleStore(
         }
       },
       replacesTarget,
+      linkExtraction,
     };
 
     const sideEffectResults = await runStoreSideEffects(STORE_SIDE_EFFECTS, ctx);

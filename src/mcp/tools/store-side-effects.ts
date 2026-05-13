@@ -31,6 +31,7 @@ import {
 } from '../../channel/push.js';
 import { detectContradictions } from '../../contradiction/detect.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
+import type { LinkExtractionResult } from './link-extractor.js';
 import { HOSTED_SUPABASE_URL } from '../../types.js';
 import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
 import type {
@@ -140,6 +141,14 @@ export interface StoreSideEffectContext {
   qdrant: () => QdrantClient | null;
   /** When `args.replaces` resolves to a real target — null otherwise. */
   replacesTarget: { id: string; author: string; status: DecisionStatus } | null;
+  /**
+   * 025/BUG-#175: structured result of the auto-link enrichment pass. The
+   * pre-write step in `handleStore` always populates this (with status
+   * `ok` / `skipped` / `failed`) — adapters that emit audit / telemetry
+   * read it from here so the audit row is identical to what the agent
+   * sees in its store response.
+   */
+  linkExtraction?: LinkExtractionResult | null;
 }
 
 export type StoreSideEffectStatus = 'ok' | 'skipped' | 'failed';
@@ -314,6 +323,31 @@ const contradictionDetectEffect: StoreSideEffect<StoreContradictionWarning[]> = 
   },
 };
 
+// ---------------------------------------------------------------------------
+// 025/BUG-#175: emit audit entry recording the auto-link enrichment outcome.
+// ---------------------------------------------------------------------------
+
+const autoLinksAuditEffect: StoreSideEffect<void> = {
+  name: 'auto-links-audit',
+  shouldRun: (ctx) => ctx.linkExtraction != null,
+  async run(ctx): Promise<void> {
+    if (!ctx.linkExtraction) return;
+    try {
+      const auditPayload = buildAuditPayload(
+        'decision_stored',
+        'decision',
+        ctx.decision.id,
+        ctx.config.member_id || 'unknown',
+        ctx.config.org_id,
+        { newState: { auto_links: ctx.linkExtraction } },
+      );
+      await createAuditEntry(ctx.supabase, auditPayload);
+    } catch {
+      // Audit failures are non-fatal — observability gap, not a write-path failure
+    }
+  },
+};
+
 /**
  * Default registry. Order is informational only — the bus dispatches in
  * parallel via `Promise.allSettled`. Listed in the order they were inline in
@@ -326,6 +360,7 @@ export const STORE_SIDE_EFFECTS: StoreSideEffect[] = [
   supersedeEffect,
   channelPushEffect,
   contradictionDetectEffect,
+  autoLinksAuditEffect,
 ];
 
 // ---------------------------------------------------------------------------

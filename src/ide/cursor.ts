@@ -1,6 +1,5 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { trackFile } from '../config/manifest.js';
 
 const CURSORRULES_INSTRUCTIONS = `## Team Knowledge (Valis)
@@ -25,30 +24,6 @@ Call \`valis_context\` at the start of every new task or when switching to a dif
 
 ### Channel reminders
 When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;
-
-export async function configureCursorMCP(): Promise<void> {
-  const configPath = join(homedir(), '.cursor', 'mcp.json');
-
-  let config: Record<string, unknown> = {};
-  try {
-    const data = await readFile(configPath, 'utf-8');
-    config = JSON.parse(data);
-  } catch {
-    // File doesn't exist yet
-  }
-
-  const mcpServers = (config.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['valis'] = {
-    command: 'valis',
-    args: ['serve'],
-  };
-  config.mcpServers = mcpServers;
-
-  await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, JSON.stringify(config, null, 2));
-
-  await trackFile({ type: 'mcp_config', path: configPath, ide: 'cursor' });
-}
 
 export async function injectCursorrules(projectDir: string): Promise<void> {
   const cursorrulesPath = join(projectDir, '.cursorrules');

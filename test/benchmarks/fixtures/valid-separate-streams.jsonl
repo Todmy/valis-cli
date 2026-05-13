@@ -1,0 +1,5 @@
+# Documents-first, then queries that reference them by id
+{"document":{"id":"d1","text":"We use TypeScript with strict mode.","language":"en"}}
+{"document":{"id":"d2","text":"Tests run in vitest under packages/cli.","language":"en"}}
+{"query":{"id":"qa","text":"How is type-checking configured?","language":"en"},"ground_truth":{"query_id":"qa","relevant_doc_ids":["d1"]}}
+{"query":{"id":"qb","text":"Where do tests live?","language":"en"},"ground_truth":{"query_id":"qb","relevant_doc_ids":["d2"]}}

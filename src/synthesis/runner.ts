@@ -117,10 +117,16 @@ export async function runSynthesis(
 
   // 1. Fetch active decisions from time window
   const decisions = await store.fetchActiveDecisions(orgId, windowDays);
-  if (decisions.length === 0) return report;
 
-  // 2. Detect pattern candidates
-  const candidates = detectPatterns(decisions, minCluster, windowDays);
+  // BUG #174: previously an `if (decisions.length === 0) return report` here
+  // short-circuited step 4 (stale-pattern deprecation). On a quiet team week
+  // with no fresh active decisions, patterns whose source decisions were
+  // deprecated long ago would linger in `valis_search` indefinitely.
+  // Fix: only skip steps 2-3 (detection + creation) when there's no signal;
+  // always run step 4.
+  // 2. Detect pattern candidates (skip when window is empty)
+  const candidates =
+    decisions.length === 0 ? [] : detectPatterns(decisions, minCluster, windowDays);
   report.candidates_detected = candidates.length;
 
   // 3. For each candidate: idempotency check, then create

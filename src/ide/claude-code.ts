@@ -38,31 +38,18 @@ recent team decisions before writing code.
 ### Channel reminders
 When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;
 
-export async function configureClaudeCodeMCP(_projectDir: string): Promise<void> {
-  // MCP servers must go in ~/.claude.json (not ~/.claude/settings.json)
-  const mcpConfigPath = join(homedir(), '.claude.json');
-
-  let mcpConfig: Record<string, unknown> = {};
-  try {
-    const data = await readFile(mcpConfigPath, 'utf-8');
-    mcpConfig = JSON.parse(data);
-  } catch {
-    // File doesn't exist yet
-  }
-
-  // Install MCP server entry (idempotent — overwrites with same config)
-  const mcpServers = (mcpConfig.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['valis'] = {
-    command: 'valis',
-    args: ['serve'],
-    env: {},
-  };
-  mcpConfig.mcpServers = mcpServers;
-
-  await mkdir(join(homedir(), '.claude'), { recursive: true });
-  await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2) + '\n');
-
-  // Update settings.json — hooks + cleanup period
+/**
+ * Install Claude-Code-specific hooks + settings.json mutations.
+ *
+ * Decoupled from MCP-server install (which is generic across all 8 harnesses
+ * and goes through `adapters/deploy.ts::writeMcpServer`). This function owns
+ * the *Claude-only* parts: the SessionStart / UserPromptSubmit / stub hook
+ * entries and the `cleanupPeriodDays` setting, all idempotent.
+ *
+ * The matching MCP write lives in `commands/init/helpers.ts::setupIDEs`
+ * via `writeMcpServer(claudeCodeAdapter, GLOBAL_SCOPE, ...)`.
+ */
+export async function installClaudeHooks(): Promise<void> {
   const settingsPath = join(homedir(), '.claude', 'settings.json');
 
   let settings: Record<string, unknown> = {};

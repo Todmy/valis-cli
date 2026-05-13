@@ -1,0 +1,4 @@
+# LongMemEval-style: document + query + ground_truth per line
+{"document":{"id":"doc-1","text":"Authentication uses JWT with a 1-hour TTL.","language":"en"},"query":{"id":"q-1","text":"How does authentication work?","language":"en"},"ground_truth":{"query_id":"q-1","relevant_doc_ids":["doc-1"]}}
+{"document":{"id":"doc-2","text":"Database is Postgres 15 on Supabase.","language":"en"},"query":{"id":"q-2","text":"What database do we use?","language":"en"},"ground_truth":{"query_id":"q-2","relevant_doc_ids":["doc-2"]}}
+{"document":{"id":"doc-3","text":"Frontend is Next.js 15 App Router.","language":"en"},"query":{"id":"q-3","text":"Which framework for the frontend?","language":"en"},"ground_truth":{"query_id":"q-3","relevant_doc_ids":["doc-3"]}}

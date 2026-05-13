@@ -11,7 +11,8 @@ const WORKFLOWS_TEXT = `
 VALIS — CANONICAL WORKFLOWS
 
 Onboarding (first time on a fresh machine)
-  1. valis init                         # creates org + writes ~/.valis/config.json
+  1. valis init --template ts-saas      # seeds 18 starter decisions (or fintech / ai-agent)
+                                        #   omit --template to start blank
   2. valis switch --project <name>      # bind cwd to a project (writes .valis.json)
   3. valis index ./docs                 # bulk-import existing markdown
   4. valis search "postgres"            # verify capture & retrieval

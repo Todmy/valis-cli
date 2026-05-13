@@ -106,10 +106,19 @@ export interface CreateProjectResponse {
   invite_code: string;
   role?: string;
   org_id?: string;
+  /** 019/US6: set when the project was seeded from a constitution template. Format: `<id>@v<version>`. */
+  template_source?: string | null;
+  /** 019/US6: number of decisions seeded from the template (0 when no template). */
+  decisions_seeded?: number;
 }
 
 /**
  * Create a new project within an org by calling the create-project Edge Function.
+ *
+ * When `templateId` is provided, the server seeds the chosen constitution
+ * template atomically (019/US6). 4xx responses include `error` + `message`
+ * fields (and `upsell_url` for plan-gated denials) — the caller is expected
+ * to surface those verbatim and exit non-zero.
  */
 export async function createProject(
   supabaseUrl: string,
@@ -117,19 +126,23 @@ export async function createProject(
   orgId: string,
   projectName: string,
   serviceRoleKey?: string,
+  templateId?: string | null,
 ): Promise<CreateProjectResponse> {
   // Try Edge Function / API route first (Supabase Cloud / Vercel)
   const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
   const apiBase = resolveApiUrl(supabaseUrl, isHosted);
   const createProjectUrl = resolveApiPath(apiBase, 'create-project');
   try {
+    const body: Record<string, unknown> = { org_id: orgId, project_name: projectName };
+    if (templateId) body.template_id = templateId;
+
     const response = await fetch(createProjectUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ org_id: orgId, project_name: projectName }),
+      body: JSON.stringify(body),
     });
 
     if (response.ok) {
@@ -137,12 +150,31 @@ export async function createProject(
     }
 
     if (response.status !== 404 && response.status !== 502 && response.status !== 503) {
-      const error = await response.json().catch(() => ({ error: 'unknown error' }));
-      throw new Error(`Failed to create project: ${(error as Record<string, string>).error || 'unknown error'}`);
+      const errBody = await response.json().catch(() => ({ error: 'unknown error' })) as Record<string, unknown>;
+      const message = (errBody.message as string) || (errBody.error as string) || 'unknown error';
+      const upsellUrl = errBody.upsell_url as string | undefined;
+      const errorCode = errBody.error as string | undefined;
+      // 402 plan-gated denials carry an upsell URL; include verbatim.
+      // 500 seed_failed signals atomic rollback — instruct retry.
+      let suffix = '';
+      if (upsellUrl) suffix = ` See ${upsellUrl}`;
+      else if (response.status === 500 && errorCode === 'seed_failed') {
+        suffix = ' Please retry the same command.';
+      }
+      throw new Error(`Failed to create project: ${message}${suffix}`);
     }
   } catch (err) {
     if ((err as Error).message.startsWith('Failed to create project:')) throw err;
     // Fall through to direct SQL
+  }
+
+  // Templates require the hosted Edge Function path — community-mode direct
+  // SQL fallback would bypass plan gates, audit logging, and atomic seeding.
+  if (templateId) {
+    throw new Error(
+      `Failed to create project: Templates require hosted mode (Edge Function unavailable). ` +
+      `Re-run without --template to create a blank project, or switch to hosted Valis.`,
+    );
   }
 
   // Direct SQL fallback (community / self-hosted mode)

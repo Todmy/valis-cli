@@ -1,31 +1,6 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { trackFile } from '../config/manifest.js';
-
-export async function configureCodexMCP(): Promise<void> {
-  const configPath = join(homedir(), '.codex', 'config.json');
-
-  let config: Record<string, unknown> = {};
-  try {
-    const data = await readFile(configPath, 'utf-8');
-    config = JSON.parse(data);
-  } catch {
-    // File doesn't exist yet
-  }
-
-  const mcpServers = (config.mcpServers || {}) as Record<string, unknown>;
-  mcpServers['valis'] = {
-    command: 'valis',
-    args: ['serve'],
-  };
-  config.mcpServers = mcpServers;
-
-  await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, JSON.stringify(config, null, 2));
-
-  await trackFile({ type: 'mcp_config', path: configPath, ide: 'codex' });
-}
 
 export async function injectAgentsMdMarkers(projectDir: string): Promise<void> {
   const agentsMdPath = join(projectDir, 'AGENTS.md');

@@ -261,13 +261,13 @@ describe('runSynthesis — orchestration', () => {
     expect(store.created).toHaveLength(0);
   });
 
-  it('regression: empty decisions in window short-circuits stale-pattern deprecation (BACKLOG)', async () => {
-    // Documents the existing early-return behaviour in runner.ts: when no
-    // decisions exist in the time window, the stale-pattern deprecation
-    // pass at step 4 never runs. This means a quiet team week prevents
-    // cleanup of patterns whose sources were deprecated long ago. Behaviour
-    // captured here so a future fix removing the early-return is a visible,
-    // intentional change.
+  it('runs stale-pattern deprecation even when the time window contains zero decisions (BUG #174 fix)', async () => {
+    // Previously: an `if (decisions.length === 0) return report` short-circuit
+    // in runner.ts step 1 skipped step 4 (stale-pattern deprecation). A quiet
+    // team week prevented cleanup of patterns whose source decisions were
+    // deprecated long ago. Fixed 2026-05-13: the early-return is gone;
+    // detection (steps 2-3) skips on empty windows but deprecation always
+    // runs. This test asserts the fix.
     const store = createInMemorySynthesisStore({
       decisions: [],
       existingPatterns: [
@@ -283,8 +283,11 @@ describe('runSynthesis — orchestration', () => {
       dryRun: false,
     });
 
-    expect(report.stale_patterns_deprecated).toBe(0); // would-be stale, unhealed
-    expect(store.statusChanges).toHaveLength(0);
+    expect(report.candidates_detected).toBe(0); // empty window → no detection
+    expect(report.stale_patterns_deprecated).toBe(1); // but stale pattern still deprecated
+    expect(store.statusChanges).toEqual([
+      { patternId: 'pat-stale', newStatus: 'deprecated', reason: 'All source decisions deprecated' },
+    ]);
   });
 
   it('per-candidate failure does not abort the whole run', async () => {

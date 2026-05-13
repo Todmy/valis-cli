@@ -15,10 +15,18 @@ import { homedir } from 'node:os';
 import select from '@inquirer/select';
 import input from '@inquirer/input';
 import pc from 'picocolors';
-import { configureClaudeCodeMCP, injectClaudeMdMarkers, scaffoldBuiltInCommands } from '../../ide/claude-code.js';
-import { configureCodexMCP, injectAgentsMdMarkers } from '../../ide/codex.js';
-import { configureCursorMCP, injectCursorrules } from '../../ide/cursor.js';
-import { detectIDEs } from '../../ide/detect.js';
+import { installClaudeHooks, injectClaudeMdMarkers, scaffoldBuiltInCommands } from '../../ide/claude-code.js';
+import { injectAgentsMdMarkers } from '../../ide/codex.js';
+import { injectCursorrules } from '../../ide/cursor.js';
+import { ALL_ADAPTERS } from '../../adapters/index.js';
+import { writeMcpServer } from '../../adapters/deploy.js';
+import { GLOBAL_SCOPE } from '../../adapters/types.js';
+import type { McpServerEntry } from '../../adapters/types.js';
+import type { HarnessName } from '../../adapters/hook-events.js';
+import { trackFile } from '../../config/manifest.js';
+import { getTemplate, isTemplateId } from '../../templates/index.js';
+import { chooseTemplate, type OrgPlan } from './template-choice.js';
+import type { InitOptions } from '../init.js';
 import { runSeed } from '../../seed/index.js';
 import {
   getSupabaseClient,
@@ -116,6 +124,10 @@ export async function createOrg(
 /**
  * Prompt for project name and create the project via Edge Function.
  * Returns the ProjectConfig to write to .valis.json.
+ *
+ * When `templateId` is non-null, the server seeds the chosen constitution
+ * template atomically (019/US6). The success path prints an extra
+ * "Seeded N decisions from <template name>" confirmation line.
  */
 export async function promptAndCreateProject(
   supabaseUrl: string,
@@ -123,14 +135,24 @@ export async function promptAndCreateProject(
   orgId: string,
   defaultName?: string,
   serviceRoleKey?: string,
+  templateId?: string | null,
 ): Promise<ProjectConfig> {
   const projectName = await prompt(
     `Project name${defaultName ? ` (${defaultName})` : ''}: `,
   ) || defaultName || basename(process.cwd());
 
   console.log(pc.cyan(`\nCreating project "${projectName}"...`));
-  const result = await createProject(supabaseUrl, apiKey, orgId, projectName, serviceRoleKey);
+  const result = await createProject(supabaseUrl, apiKey, orgId, projectName, serviceRoleKey, templateId);
   console.log(pc.green(`✓ Project "${projectName}" created`));
+
+  // 019/US6 + 024: seed confirmation when the server reports a non-zero count.
+  if (result.decisions_seeded && result.decisions_seeded > 0) {
+    const templateDisplay = templateId && isTemplateId(templateId)
+      ? getTemplate(templateId).name
+      : result.template_source ?? 'template';
+    const source = result.template_source ? ` (${result.template_source})` : '';
+    console.log(pc.green(`✓ Seeded ${result.decisions_seeded} decisions from ${templateDisplay}${source}`));
+  }
 
   return {
     project_id: result.project_id,
@@ -195,30 +217,38 @@ export async function selectOrCreateProject(
 
 export async function setupIDEs(_config: ValisConfig): Promise<string[]> {
   console.log(pc.cyan('\nConfiguring IDEs...'));
-  const ides = await detectIDEs();
   const detectedNames: string[] = [];
 
-  for (const ide of ides) {
-    if (!ide.detected) continue;
-    detectedNames.push(ide.name);
+  const valisServer: McpServerEntry = {
+    name: 'valis',
+    command: 'valis',
+    args: ['serve'],
+    env: {},
+    enabled: true,
+  };
 
-    if (ide.name === 'claude-code') {
-      // configureClaudeCodeMCP is idempotent — checks existing config,
-      // installs MCP server, attention-gate hooks, and CLAUDE.md markers.
-      // Skips components that are already correctly configured.
-      await configureClaudeCodeMCP(process.cwd());
-      await injectClaudeMdMarkers(process.cwd());
-      const cmds = await scaffoldBuiltInCommands(process.cwd());
-      const cmdMsg = cmds.length > 0 ? ` + /${cmds.join(', /')} commands` : '';
-      console.log(pc.green(`  ✓ Claude Code: MCP + hooks + CLAUDE.md${cmdMsg}`));
-    } else if (ide.name === 'codex') {
-      await configureCodexMCP();
-      await injectAgentsMdMarkers(process.cwd());
-      console.log(pc.green('  ✓ Codex: MCP + AGENTS.md'));
-    } else if (ide.name === 'cursor') {
-      await configureCursorMCP();
-      await injectCursorrules(process.cwd());
-      console.log(pc.green('  ✓ Cursor: MCP + .cursorrules'));
+  for (const adapter of ALL_ADAPTERS) {
+    if (!(await adapter.detect())) continue;
+    detectedNames.push(adapter.name);
+
+    try {
+      // Generic MCP install — one code path covers all 8 harnesses.
+      // writeMcpServer handles format dispatch (JSON/TOML/Opencode), atomic
+      // write, sanitization, and PATH injection for GUI-launched agents.
+      await writeMcpServer(adapter, GLOBAL_SCOPE, valisServer);
+      await trackFile({
+        type: 'mcp_config',
+        path: adapter.mcpConfigPath(),
+        ide: adapter.name,
+      });
+
+      // Per-harness extras: rule-file injection, hooks, slash commands.
+      // Claude/Codex/Cursor have established markdown surfaces Valis claims;
+      // the other 5 are MCP-only installs.
+      const extras = await applyHarnessExtras(adapter.name, process.cwd());
+      console.log(pc.green(`  ✓ ${describeHarness(adapter.name)}: MCP${extras}`));
+    } catch (err) {
+      console.log(pc.yellow(`  ⚠ ${adapter.name}: ${(err as Error).message}`));
     }
   }
 
@@ -227,6 +257,43 @@ export async function setupIDEs(_config: ValisConfig): Promise<string[]> {
   }
 
   return detectedNames;
+}
+
+async function applyHarnessExtras(name: HarnessName, projectDir: string): Promise<string> {
+  switch (name) {
+    case 'claude-code': {
+      await installClaudeHooks();
+      await injectClaudeMdMarkers(projectDir);
+      const cmds = await scaffoldBuiltInCommands(projectDir);
+      const cmdMsg = cmds.length > 0 ? ` + /${cmds.join(', /')} commands` : '';
+      return ` + hooks + CLAUDE.md${cmdMsg}`;
+    }
+    case 'codex':
+      await injectAgentsMdMarkers(projectDir);
+      return ' + AGENTS.md';
+    case 'cursor':
+      await injectCursorrules(projectDir);
+      return ' + .cursorrules';
+    case 'gemini':
+    case 'copilot':
+    case 'windsurf':
+    case 'opencode':
+    case 'antigravity':
+      return '';
+  }
+}
+
+function describeHarness(name: HarnessName): string {
+  switch (name) {
+    case 'claude-code': return 'Claude Code';
+    case 'codex': return 'Codex';
+    case 'cursor': return 'Cursor';
+    case 'gemini': return 'Gemini';
+    case 'copilot': return 'Copilot';
+    case 'windsurf': return 'Windsurf';
+    case 'opencode': return 'OpenCode';
+    case 'antigravity': return 'Antigravity';
+  }
 }
 
 export async function setupQdrant(qdrantUrl: string, qdrantApiKey: string) {
@@ -298,10 +365,18 @@ export async function seedAndVerify(
 
 /**
  * List accessible projects via the API and let the user pick one.
- * Falls through to project creation via the idempotent register endpoint.
+ * Falls through to project creation via the idempotent register endpoint
+ * (blank) or via `createProject` (when a constitution template is selected).
+ *
+ * `options.template` flows through to the template-choice resolver inside
+ * the "Create new project" branch. When the resolver returns a non-null
+ * `TemplateId`, we route through `createProject` (which supports
+ * `template_id` server-side per 019/US6). When null, we use the legacy
+ * `register` endpoint to preserve existing invite-code semantics.
  */
 export async function selectOrCreateProjectLoggedIn(
   creds: ValisCredentials,
+  options: InitOptions = {},
 ): Promise<ProjectConfig> {
   // List existing projects via API route (works in hosted mode)
   let projects: Array<{ id: string; name: string; role: string; decision_count: number }> = [];
@@ -343,15 +418,49 @@ export async function selectOrCreateProjectLoggedIn(
     }
   }
 
-  // Create new project via the idempotent register endpoint
+  // Create new project — branch on constitution template choice.
   const defaultName = basename(process.cwd());
   const projectName = await input({
     message: 'Project name:',
     default: defaultName,
   });
 
+  // 024 — Resolve template choice (flag value, interactive picker, or null).
+  // Creds don't carry plan; the org plan is unknown at this point. Default
+  // 'free' per spec — picker will disable plan-gated rows, server-side
+  // `plan_too_low` 402 is the fail-safe if the flag bypasses the picker.
+  const templateChoice = await chooseTemplate({
+    flagValue: options.template,
+    orgPlan: 'free' as OrgPlan,
+    nonInteractive: !process.stdin.isTTY,
+    newProjectFlow: true,
+  });
+
   console.log(pc.cyan(`\nCreating project "${projectName}"...`));
 
+  if (templateChoice !== null) {
+    // Template path — createProject supports `template_id` and atomic seeding.
+    const result = await createProject(
+      creds.supabase_url || HOSTED_SUPABASE_URL,
+      creds.member_api_key,
+      creds.org_id,
+      projectName,
+      undefined,
+      templateChoice,
+    );
+    console.log(pc.green(`✓ Project "${result.project_name}" created`));
+    if (result.decisions_seeded && result.decisions_seeded > 0) {
+      const tplName = isTemplateId(templateChoice) ? getTemplate(templateChoice).name : templateChoice;
+      const sourceTag = result.template_source ? ` (${result.template_source})` : '';
+      console.log(pc.green(`✓ Seeded ${result.decisions_seeded} decisions from ${tplName}${sourceTag}`));
+    }
+    return {
+      project_id: result.project_id,
+      project_name: result.project_name,
+    };
+  }
+
+  // Blank path — preserve legacy register-endpoint flow (carries invite_code).
   const regResult = await register(
     creds.org_name,
     projectName,

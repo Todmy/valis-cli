@@ -1,0 +1,2 @@
+{"document":{"id":"d1","text":"text","language":"en"}}
+{"query":{"id":"q1","text":"a query"},"ground_truth":{"query_id":"q1","relevant_doc_ids":["nonexistent-doc"]}}

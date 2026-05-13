@@ -484,8 +484,8 @@ async function healSettingsHooks(): Promise<HealReport> {
   if (allPresent && !legacyPresent) return { target, outcome: 'fresh' };
 
   await backupOriginal(settingsPath, 'settings-json');
-  const { configureClaudeCodeMCP } = await import('../ide/claude-code.js');
-  await configureClaudeCodeMCP(process.cwd());
+  const { installClaudeHooks } = await import('../ide/claude-code.js');
+  await installClaudeHooks();
   return {
     target,
     outcome: 'repaired',

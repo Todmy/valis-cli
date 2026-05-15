@@ -25,6 +25,16 @@ export interface SearchTransportOptions {
   projectId?: string;
   all_projects?: boolean;
   expand?: SearchExpand;
+  /**
+   * 032/Track 6 — structured filter from `SearchFilterBuilder`. When present,
+   * the transport composes it with the project-scope predicate before sending
+   * to Qdrant. Direct transport passes it via `hybridSearch`'s `payload_filter`
+   * option; proxy transport forwards it through `/api/search` payload.
+   *
+   * Typed loosely — the builder emits a closed-world `SearchFilter` but Qdrant
+   * accepts a wider shape; callers pass it through to the engine verbatim.
+   */
+  payload_filter?: { must: unknown[] };
 }
 
 export interface SearchTransport {
@@ -184,6 +194,7 @@ export function createDirectTransport(
           limit: 50,
           projectId: options.projectId,
           expand: options.expand,
+          payload_filter: options.payload_filter,
         });
       }
 

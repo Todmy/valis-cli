@@ -348,6 +348,37 @@ const autoLinksAuditEffect: StoreSideEffect<void> = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// #23 — first_decision_captured funnel emit. Best-effort: count decisions in
+// the project after our insert; if the just-stored row is the only one, this
+// project just crossed the activation threshold. Idempotency comes from the
+// COUNT() check — a re-fire is mathematically impossible since count grows.
+// Skipped in CLI stdio mode (config.emit_funnel undefined).
+// ---------------------------------------------------------------------------
+
+const firstDecisionFunnelEffect: StoreSideEffect<void> = {
+  name: 'first-decision-funnel',
+  shouldRun: (ctx) =>
+    'emit_funnel' in ctx.config && typeof ctx.config.emit_funnel === 'function',
+  async run(ctx): Promise<void> {
+    const emit = (ctx.config as ServerConfig).emit_funnel;
+    if (!emit) return;
+    try {
+      const { count } = await ctx.supabase
+        .from('decisions')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', ctx.projectId);
+      if (count !== 1) return; // not the first decision for this project
+      emit('first_decision_captured', {
+        project_id: ctx.projectId,
+        decision_id: ctx.decision.id,
+      });
+    } catch {
+      // Analytics observability gap — never breaks the write path
+    }
+  },
+};
+
 /**
  * Default registry. Order is informational only — the bus dispatches in
  * parallel via `Promise.allSettled`. Listed in the order they were inline in
@@ -361,6 +392,7 @@ export const STORE_SIDE_EFFECTS: StoreSideEffect[] = [
   channelPushEffect,
   contradictionDetectEffect,
   autoLinksAuditEffect,
+  firstDecisionFunnelEffect,
 ];
 
 // ---------------------------------------------------------------------------

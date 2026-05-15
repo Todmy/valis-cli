@@ -245,4 +245,40 @@ describe('handleContext', () => {
     expect(result.infrastructure_error).toBe(true);
     expect(result.error_message).toContain('ECONNREFUSED');
   });
+
+  // #25/BUG-#118 — project_scope_mismatch defensive signal.
+  // Mid-session scope drift (JWT-encoded project_id ≠ per-call arg) gets
+  // converted from silent wrong-scope into a visible-actionable response field.
+  it('returns project_scope_mismatch when args.project_id differs from session scope', async () => {
+    const config = buildServerConfig({ project_id: 'project-A' });
+    const result = await handleContext(
+      { task_description: 'auth', project_id: 'project-B' },
+      config,
+    );
+
+    expect(result.project_scope_mismatch).toEqual({
+      session_project_id: 'project-A',
+      current_project_id: 'project-B',
+      action_required: 'restart_session',
+    });
+  });
+
+  it('omits project_scope_mismatch when args.project_id matches session scope', async () => {
+    const config = buildServerConfig({ project_id: 'project-A' });
+    const result = await handleContext(
+      { task_description: 'auth', project_id: 'project-A' },
+      config,
+    );
+
+    expect(result.project_scope_mismatch).toBeUndefined();
+  });
+
+  it('omits project_scope_mismatch in CLI stdio mode (no configOverride / no JWT scope)', async () => {
+    const result = await handleContext({
+      task_description: 'auth',
+      project_id: 'project-B',
+    });
+
+    expect(result.project_scope_mismatch).toBeUndefined();
+  });
 });

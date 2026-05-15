@@ -249,9 +249,15 @@ export async function hybridSearch(
     /** BUG #161: 'siblings' (default) returns matched chunk + ±1 context;
      * 'chunk' returns matched chunk only; 'full' returns whole decision body. */
     expand?: SearchExpand;
+    /**
+     * 032/Track 6: structured filter from `SearchFilterBuilder`. AND-merged
+     * with the existing project-scope predicate. Type loose since Qdrant
+     * accepts a wider shape than our closed-world builder.
+     */
+    payload_filter?: { must: unknown[] };
   } = {},
 ): Promise<SearchResult[]> {
-  const { type, limit = 10, projectId, legacyFallback, expand = 'siblings' } = options;
+  const { type, limit = 10, projectId, legacyFallback, expand = 'siblings', payload_filter } = options;
 
   // FR-013a: short-circuit empty queries before any inference call to avoid
   // wasting embedding tokens on no-op requests.
@@ -259,7 +265,21 @@ export async function hybridSearch(
     return [];
   }
 
-  const filter = buildProjectFilter(orgId, projectId, { type, legacyFallback });
+  const baseFilter = buildProjectFilter(orgId, projectId, { type, legacyFallback });
+  // 032/Track 6: compose project-scope predicate with caller's structured
+  // filter. Both have `must[]` shape, so a simple concat is correct.
+  const filter =
+    payload_filter && Array.isArray(payload_filter.must) && payload_filter.must.length > 0
+      ? {
+          ...baseFilter,
+          must: [
+            ...(Array.isArray((baseFilter as { must?: unknown[] }).must)
+              ? ((baseFilter as { must: unknown[] }).must as unknown[])
+              : []),
+            ...payload_filter.must,
+          ],
+        }
+      : baseFilter;
 
   // Expand query with synonyms for better recall (Q4-A) and truncate to the
   // embedding model's safe input ceiling (FR-013b).
@@ -367,6 +387,11 @@ function mapPointToSearchResult(
     confidence: (payload.confidence as number) ?? null,
     pinned: (payload.pinned as boolean) ?? false,
     depends_on: (payload.depends_on as string[]) ?? [],
+    // 028-phase13/Track 5a — outcome from payload; defaults to 'unknown' so
+    // rows written before the migration ship are still safely scored.
+    outcome:
+      (payload.outcome as 'success' | 'failed' | 'partial' | 'unknown') ??
+      'unknown',
     // T019: Include project_id and project_name for cross-project result labeling
     project_id: (payload.project_id as string) ?? undefined,
     project_name: (payload.project_name as string) ?? undefined,

@@ -44,12 +44,22 @@ export async function serveCommand(): Promise<void> {
   // 2. Init watcher state
   await initWatcherState();
 
-  // 3. Start JSONL activity watcher
-  const watcher = startWatcher((filePath) => {
-    console.error(`Activity detected: ${filePath}`);
-    // Channel push would happen here if channels are connected
-    const _reminder = buildCaptureReminder();
-  });
+  // 3. Start JSONL activity watcher (gated — disabled by default; re-enable
+  //    via VALIS_DISABLE_WATCHER=0). Watcher currently only activity-logs
+  //    and does NOT auto-extract decisions; explicit-off prevents partial-on
+  //    confusion when #91 Level 1 ships future auto-extraction. Tracked in
+  //    BACKLOG: re-enable after #91 Level 1 lands.
+  const watcherEnabled = process.env.VALIS_DISABLE_WATCHER === '0';
+  const watcher = watcherEnabled
+    ? startWatcher((filePath) => {
+        console.error(`Activity detected: ${filePath}`);
+        // Channel push would happen here if channels are connected
+        const _reminder = buildCaptureReminder();
+      })
+    : null;
+  if (!watcherEnabled) {
+    console.error('[watcher] Disabled by default (set VALIS_DISABLE_WATCHER=0 to enable). Pending #91 Level 1.');
+  }
 
   // 4. Start stop hook handler
   try {
@@ -146,7 +156,7 @@ export async function serveCommand(): Promise<void> {
     }
     await saveState();
     stopHookHandler();
-    await watcher.close();
+    if (watcher) await watcher.close();
     process.exit(0);
   });
 
@@ -156,7 +166,7 @@ export async function serveCommand(): Promise<void> {
     }
     await saveState();
     stopHookHandler();
-    await watcher.close();
+    if (watcher) await watcher.close();
     process.exit(0);
   });
 

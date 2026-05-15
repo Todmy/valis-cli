@@ -195,12 +195,33 @@ export async function runBenchmark(opts: RunBenchmarkOptions): Promise<number> {
 
   const slices: Record<string, SliceResult> = {};
   const provenances: CorpusProvenance[] = [];
+  const skipped: string[] = [];
 
   for (const spec of corporaToRun) {
     console.log(`\nrunning corpus: ${spec.corpusId}`);
-    const { slice, provenance } = await runOneCorpus(spec, runId);
-    slices[spec.sliceName] = slice;
-    provenances.push(provenance);
+    try {
+      const { slice, provenance } = await runOneCorpus(spec, runId);
+      slices[spec.sliceName] = slice;
+      provenances.push(provenance);
+    } catch (err) {
+      // Skip-on-missing-corpus: an incomplete multilingual slice (e.g. UA
+      // pending DeepL translation) should not abort --all. Hard infra
+      // errors (Qdrant down, embedding API timeout) propagate up.
+      const msg = (err as Error).message ?? String(err);
+      if (/corpus not found/i.test(msg)) {
+        console.warn(`  skipped — corpus file missing for ${spec.corpusId}`);
+        skipped.push(spec.corpusId);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (Object.keys(slices).length === 0) {
+    console.error(
+      `valis-bench: no corpora produced results. Skipped: ${skipped.join(', ') || 'none'}`,
+    );
+    return 1;
   }
 
   const result: BenchmarkResult = {

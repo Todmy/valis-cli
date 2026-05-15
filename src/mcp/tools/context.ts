@@ -13,6 +13,12 @@ interface ContextArgs {
   files?: string[];
   /** T022: When true, load context from all accessible projects. */
   all_projects?: boolean;
+  /**
+   * #25/BUG-#118: optional explicit project scope. When supplied AND differs
+   * from the JWT-encoded session scope, the response includes a
+   * `project_scope_mismatch` signal. Informational — results stay JWT-scoped.
+   */
+  project_id?: string;
 }
 
 /** Statuses considered non-active (historical). */
@@ -22,8 +28,22 @@ let firstCall = true;
 
 export async function handleContext(args: ContextArgs, configOverride?: ServerConfig): Promise<ContextResponse> {
   const config = (configOverride ?? await loadConfig()) as ValisConfig | null;
+
+  // #25/BUG-#118: compute scope mismatch once; every return spreads it in.
+  // Null in CLI stdio mode (no JWT scope to mismatch against) or on exact match.
+  const scopeMismatch =
+    args.project_id && configOverride?.project_id && args.project_id !== configOverride.project_id
+      ? {
+          session_project_id: configOverride.project_id,
+          current_project_id: args.project_id,
+          action_required: 'restart_session' as const,
+        }
+      : null;
+  const withMismatch = (base: ContextResponse): ContextResponse =>
+    scopeMismatch ? { ...base, project_scope_mismatch: scopeMismatch } : base;
+
   if (!config) {
-    return {
+    return withMismatch({
       decisions: [],
       constraints: [],
       patterns: [],
@@ -31,7 +51,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       historical: [],
       total_in_brain: 0,
       note: 'Not configured. Run `valis init` first.',
-    };
+    });
   }
 
   // Build query from task description + file names
@@ -94,7 +114,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         firstCall = false;
       }
 
-      return {
+      return withMismatch({
         decisions: grouped.decision.slice(0, 20),
         constraints: grouped.constraint.slice(0, 20),
         patterns: grouped.pattern.slice(0, 20),
@@ -103,7 +123,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         total_in_brain: totalInBrain,
         suppressed_count,
         note,
-      };
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
@@ -114,12 +134,12 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       // operator-actionable signal instead of the misleading "offline" cue
       // that drove uninstalls per BUG #84.
       // BUG #144: surface `error_message` so triage works without prod logs.
-      return {
+      return withMismatch({
         decisions: [], constraints: [], patterns: [], lessons: [],
         historical: [], total_in_brain: 0, suppressed_count: 0,
         backend_unavailable: true,
         error_message: errorMessage,
-      };
+      });
     }
   }
 
@@ -159,7 +179,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       } else if (isServerMode) {
         // 019/US1: HTTP transport + zero memberships → explicit indicator,
         // do NOT silently leak org-wide data the caller can't access.
-        return {
+        return withMismatch({
           decisions: [],
           constraints: [],
           patterns: [],
@@ -167,7 +187,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
           historical: [],
           total_in_brain: 0,
           no_accessible_projects: true,
-        };
+        });
       } else {
         results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
       }
@@ -232,7 +252,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       firstCall = false;
     }
 
-    return {
+    return withMismatch({
       decisions,
       constraints,
       patterns,
@@ -241,7 +261,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       total_in_brain: totalInBrain,
       suppressed_count,
       note,
-    };
+    });
   } catch (err) {
     // 019/US1 (R-001, T068): server-mode (HTTP MCP transport) must NEVER emit
     // `offline:true` — that's a CLI-stdio fallback indicator. Emit
@@ -256,7 +276,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     const errorMessage = err instanceof Error ? err.message : String(err);
     if (isServerMode) {
       console.error(`[context] Backend error (server mode): ${errorMessage}`);
-      return {
+      return withMismatch({
         decisions: [],
         constraints: [],
         patterns: [],
@@ -267,9 +287,9 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         infrastructure_error: true,
         backend_unavailable: true,
         error_message: errorMessage,
-      };
+      });
     }
-    return {
+    return withMismatch({
       decisions: [],
       constraints: [],
       patterns: [],
@@ -278,6 +298,6 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       total_in_brain: 0,
       suppressed_count: 0,
       offline: true,
-    };
+    });
   }
 }

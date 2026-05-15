@@ -80,6 +80,58 @@ const DEFAULT_HALF_LIFE_DAYS = 90;
 const STAGE2_CANDIDATE_LIMIT = 50;
 
 // ---------------------------------------------------------------------------
+// 028-phase13/Track 5a — outcome-based downranking
+// ---------------------------------------------------------------------------
+
+/**
+ * Multiplier applied to `composite_score` for `outcome='failed'` rows in
+ * non-failure-intent queries (FR-013). 0.5 — half-strength, not extinction.
+ */
+export const FAILED_OUTCOME_MULTIPLIER = 0.5;
+
+/**
+ * Keyword heuristic for failure-intent queries (FR-014). Word-boundary,
+ * case-insensitive. Matching disables the 0.5x downranking so failed
+ * decisions surface when the agent is explicitly post-morteming.
+ */
+const FAILURE_INTENT_RE =
+  /\b(mistake|mistakes|failed|failure|failures|broke|regress|regression)\b/i;
+
+export function hasFailureIntent(query: string | undefined): boolean {
+  if (!query) return false;
+  return FAILURE_INTENT_RE.test(query);
+}
+
+/**
+ * Apply the outcome multiplier as a post-rerank pass. Pure function: takes
+ * already-reranked results + the query string, returns a new array with
+ * adjusted `composite_score` plus diagnostics, re-sorted descending.
+ *
+ * Exported for direct unit testing — production callers reach this via
+ * `rerank()` which threads the query string through.
+ */
+export function applyOutcomeAdjustment(
+  results: RerankedResult[],
+  query: string | undefined,
+): RerankedResult[] {
+  if (results.length === 0) return [];
+  const failureIntent = hasFailureIntent(query);
+  const adjusted = results.map((r) => {
+    const isFailed = r.outcome === 'failed';
+    const multiplier =
+      isFailed && !failureIntent ? FAILED_OUTCOME_MULTIPLIER : 1.0;
+    return {
+      ...r,
+      composite_score: r.composite_score * multiplier,
+      outcome_multiplier: multiplier,
+      failure_intent_override: failureIntent,
+    };
+  });
+  adjusted.sort((a, b) => b.composite_score - a.composite_score);
+  return adjusted;
+}
+
+// ---------------------------------------------------------------------------
 // Weight normalization
 // ---------------------------------------------------------------------------
 
@@ -123,6 +175,11 @@ export interface RerankableResult extends SearchResult {
   depends_on?: string[];
   /** Number of decisions in this result's cluster (Q5). 0 = no cluster. */
   cluster_member_count?: number;
+  /**
+   * 028-phase13/Track 5a — outcome verdict on the decision. When `'failed'`
+   * the reranker applies a 0.5x multiplier unless the query has failure-intent.
+   */
+  outcome?: 'success' | 'failed' | 'partial' | 'unknown' | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,11 +313,17 @@ export function rerank<T extends RerankableResult>(
   // --- Stage 1: 5-signal linear combination --------------------------------
   const stage1Results = stage1Rerank(results, config, now);
 
-  // If no query provided, return stage-1 results (backward compat)
-  if (!query) return stage1Results;
+  // If no query provided, return stage-1 results + outcome adjustment
+  // (backward compat for the "no query" path — outcome multiplier still
+  // applies because it does not depend on query terms beyond the failure-
+  // intent check, which simply returns false when the query is absent).
+  if (!query) return applyOutcomeAdjustment(stage1Results, undefined);
 
   // --- Stage 2: Fine-grained reranking with query analysis -----------------
-  return stage2Rerank(stage1Results, query, now);
+  const stage2Results = stage2Rerank(stage1Results, query, now);
+
+  // --- 028/Track 5a: outcome multiplier as final post-rerank pass ---------
+  return applyOutcomeAdjustment(stage2Results, query);
 }
 
 /**

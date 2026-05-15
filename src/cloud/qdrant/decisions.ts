@@ -146,6 +146,10 @@ export async function upsertDecision(
     depends_on: extras?.depends_on ?? [] as string[],
     status: extras?.status ?? 'active',
     source: extras?.source ?? null,
+    // 028-phase13/Track 5a — default outcome at write time so the rerank
+    // multiplier can read it without a NULL guard. Updated later via
+    // `valis_update_outcome` which also syncs Qdrant payload.
+    outcome: 'unknown',
     created_at: new Date().toISOString(),
   };
 

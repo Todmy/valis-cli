@@ -40,6 +40,10 @@ import {
   DENSE_VECTOR_NAME,
 } from '../../cloud/embedding.js';
 import { extractLinks, type LinkExtractionResult, type SearchFn } from './link-extractor.js';
+import {
+  injectGroundTruth,
+  type GroundTruthContext,
+} from './ground-truth-injector.js';
 import { appendToQueue } from '../../offline/queue.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
@@ -241,6 +245,7 @@ function assembleResponse(
   decision: Decision,
   extras: StoreExtras,
   sideEffectResults: Map<string, StoreSideEffectResult>,
+  groundTruth: GroundTruthContext | null,
 ): StoreResponse {
   const response: StoreResponse = {
     id: decision.id,
@@ -259,6 +264,16 @@ function assembleResponse(
   );
   if (contradictions && contradictions.length > 0) {
     response.contradictions = contradictions;
+  }
+  if (groundTruth) {
+    response.ground_truth = {
+      status: groundTruth.status,
+      band: groundTruth.band,
+      top_similarity: groundTruth.top_similarity,
+      candidates: groundTruth.candidates,
+      latency_ms: groundTruth.latency_ms,
+      ...(groundTruth.reason ? { reason: groundTruth.reason } : {}),
+    };
   }
   return response;
 }
@@ -393,14 +408,60 @@ export async function handleStore(
       if (dependsOnResult) return dependsOnResult;
     }
 
-    // ── 025: Auto-link enrichment (BUG #175) ──────────────────────────────
-    // Run when the agent did NOT supply depends_on AND there's no replaces
-    // (replaces already carries a structural link). Non-blocking: any
-    // failure persists `auto_links: { status: 'failed', ... }` and falls
-    // through to an empty depends_on.
+    // ── 027/Track 4: GroundTruthInjector ──────────────────────────────────
+    // Pre-write semantic dedup. Runs FIRST so a duplicate short-circuit can
+    // skip the write entirely. The injector is non-blocking — any failure
+    // collapses to `injector_failed` and we fall through to LinkExtractor
+    // for the lower-threshold (0.6) auto-link behaviour established in 025.
     const callerSuppliedDeps = (args.depends_on?.length ?? 0) > 0;
     const callerSuppliedReplaces = Boolean(args.replaces);
+    const searchFn = buildAutoLinkSearchFn(config, projectId);
+    let groundTruth: GroundTruthContext | null = null;
+    if (searchFn) {
+      groundTruth = await injectGroundTruth(args.text, searchFn, {
+        callerSuppliedDependsOn: callerSuppliedDeps,
+        callerSuppliedReplaces,
+      });
+    }
+
+    // Duplicate short-circuit — return existing decision ID without writing
+    // a new row. Suppressed when the caller supplied `replaces` (explicit
+    // supersede intent overrides the injector's verdict).
+    if (
+      groundTruth &&
+      groundTruth.status === 'duplicate_detected' &&
+      groundTruth.existing_id
+    ) {
+      // Validate the existing decision still resolves — protects against
+      // a stale Qdrant payload pointing at a deleted Postgres row.
+      const found = await getDecisionsByIds(supabase, config.org_id, [
+        groundTruth.existing_id,
+      ]);
+      if (found.length > 0) {
+        return {
+          id: groundTruth.existing_id,
+          status: 'duplicate_detected',
+          ground_truth: {
+            status: groundTruth.status,
+            band: groundTruth.band,
+            top_similarity: groundTruth.top_similarity,
+            candidates: groundTruth.candidates,
+            latency_ms: groundTruth.latency_ms,
+          },
+        };
+      }
+      // Existing row vanished — fall through to a normal write and emit a
+      // stale-dedup signal via the LinkExtractor failed-result shape later.
+    }
+
+    // ── 025: Auto-link enrichment (BUG #175) — fallback to LinkExtractor ──
+    // Run when the agent did NOT supply depends_on AND no replaces AND the
+    // ground-truth injector did not already auto-link via neighbour-tier.
+    // The LinkExtractor uses a lower 0.6 threshold to catch weaker signals
+    // that the 0.7 neighbour band misses.
     let linkExtraction: LinkExtractionResult | null = null;
+    const groundTruthAutoLinked =
+      groundTruth?.status === 'neighbours_linked' && groundTruth.candidates.length > 0;
     if (callerSuppliedDeps) {
       linkExtraction = {
         chosen: [],
@@ -419,27 +480,41 @@ export async function handleStore(
         status: 'skipped',
         reason: 'replaces_supplied',
       };
-    } else {
-      const searchFn = buildAutoLinkSearchFn(config, projectId);
-      if (searchFn) {
-        linkExtraction = await extractLinks(args.text, searchFn);
-        if (linkExtraction.chosen.length > 0) {
-          // Best-effort validate — drop any IDs that don't resolve in
-          // Postgres rather than fail the write.
-          const found = await getDecisionsByIds(supabase, config.org_id, linkExtraction.chosen);
-          const validIds = new Set(found.map((d) => d.id));
-          linkExtraction.chosen = linkExtraction.chosen.filter((id) => validIds.has(id));
-        }
-      } else {
-        linkExtraction = {
-          chosen: [],
-          candidates: [],
-          threshold: 0.6,
-          latency_ms: 0,
-          status: 'failed',
-          reason: 'qdrant_unavailable',
-        };
+    } else if (groundTruthAutoLinked) {
+      // Ground-truth neighbour candidates win — use them for depends_on, skip
+      // LinkExtractor's redundant lower-threshold pass.
+      const chosen = groundTruth!.candidates.map((c) => c.id);
+      const found = await getDecisionsByIds(supabase, config.org_id, chosen);
+      const validIds = new Set(found.map((d) => d.id));
+      linkExtraction = {
+        chosen: chosen.filter((id) => validIds.has(id)),
+        candidates: groundTruth!.candidates.map((c) => ({
+          id: c.id,
+          confidence: c.similarity,
+        })),
+        threshold: 0.7,
+        latency_ms: groundTruth!.latency_ms,
+        status: 'ok',
+        reason: 'ground_truth_neighbours',
+      };
+    } else if (searchFn) {
+      linkExtraction = await extractLinks(args.text, searchFn);
+      if (linkExtraction.chosen.length > 0) {
+        // Best-effort validate — drop any IDs that don't resolve in
+        // Postgres rather than fail the write.
+        const found = await getDecisionsByIds(supabase, config.org_id, linkExtraction.chosen);
+        const validIds = new Set(found.map((d) => d.id));
+        linkExtraction.chosen = linkExtraction.chosen.filter((id) => validIds.has(id));
       }
+    } else {
+      linkExtraction = {
+        chosen: [],
+        candidates: [],
+        threshold: 0.6,
+        latency_ms: 0,
+        status: 'failed',
+        reason: 'qdrant_unavailable',
+      };
     }
 
     const extras = buildExtras(args);
@@ -486,7 +561,7 @@ export async function handleStore(
 
     const sideEffectResults = await runStoreSideEffects(STORE_SIDE_EFFECTS, ctx);
 
-    return assembleResponse(decision, extras, sideEffectResults);
+    return assembleResponse(decision, extras, sideEffectResults, groundTruth);
   } catch (err) {
     // BUG #143: distinguish server mode (return structured error) from
     // CLI-stdio mode (legitimate offline-queue fallback).

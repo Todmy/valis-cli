@@ -5,6 +5,8 @@ import { handleStore } from './tools/store.js';
 import { handleSearch } from './tools/search.js';
 import { handleContext } from './tools/context.js';
 import { handleLifecycle } from './tools/lifecycle.js';
+import { handleUpdateOutcome } from './tools/update-outcome.js';
+import { handleEvolve } from './tools/evolve.js';
 import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
@@ -98,6 +100,22 @@ const TOOL_DEFS = {
         .describe(
           "Return granularity. 'siblings' (default): matched chunk + ±1 context. 'chunk': matched chunk only. 'full': whole decision body (expensive for long docs).",
         ),
+      // 032/Track 6 — structured filter dimensions
+      status: z.enum(['active', 'proposed', 'deprecated', 'superseded']).optional().describe('Filter by lifecycle status'),
+      min_confidence: z.number().min(0).max(1).optional().describe('Minimum confidence (0.0-1.0)'),
+      max_confidence: z.number().min(0).max(1).optional().describe('Maximum confidence (0.0-1.0)'),
+      created_after: z.string().optional().describe('ISO date — only decisions created on or after this date'),
+      created_before: z.string().optional().describe('ISO date — only decisions created on or before this date'),
+      author: z.string().optional().describe('Filter by author name'),
+      affects: z.array(z.string()).optional().describe('Filter by areas (match.any — at least one tag matches)'),
+      pinned: z.boolean().optional().describe('Filter by pinned status'),
+      source: z.enum(['mcp_store', 'file_watcher', 'stop_hook', 'seed']).optional().describe('Filter by capture source'),
+      outcome: z.enum(['success', 'failed', 'partial', 'unknown']).optional().describe('Filter by after-the-fact outcome verdict'),
+      query_mode: z.enum(['semantic', 'metadata_only']).optional().describe("'semantic' (default): hybrid vector+BM25 search. 'metadata_only': bypass embedding, scan payload only — fast for list queries with no semantic intent."),
+      // 031/Track 5b — edge walking
+      depth: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional().describe('Walk decision_edges up to N levels deep from each hit (0=identity, 1=immediate neighbours, 2=neighbours-of-neighbours)'),
+      mode: z.enum(['summary', 'full']).optional().describe("Payload shape for `related` neighbours. 'summary' (default): {decision_id, summary, edge_type, depth, reason}. 'full': include full decision body."),
+      edge_types: z.array(z.enum(['supersedes', 'builds_on', 'synthesizes', 'contradicts'])).optional().describe('Optional edge-type filter for the walk'),
     },
   },
   valis_context: {
@@ -129,6 +147,52 @@ const TOOL_DEFS = {
       action: z.enum(['deprecate', 'promote', 'history', 'pin', 'unpin']).describe('Lifecycle action to perform'),
       decision_id: z.string().describe('UUID of the target decision'),
       reason: z.string().optional().describe('Reason for the status change'),
+    },
+  },
+  valis_update_outcome: {
+    description:
+      "Record the after-the-fact outcome of a decision (success | failed | partial | unknown). Use weeks or months after a decision was taken when real-world evidence arrives. Outcome string is typo-tolerant — 'SUCCEEDED', 'OK', 'BROKE', 'regression' all normalise to the four canonical values. Search automatically deprioritises 'failed'-outcome decisions unless the query explicitly asks about failures.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Update decision outcome',
+    } as ToolAnnotations,
+    schema: {
+      decision_id: z.string().uuid().describe('UUID of the decision to update'),
+      outcome: z
+        .string()
+        .min(1)
+        .describe(
+          "Outcome — canonical 'success' | 'failed' | 'partial' | 'unknown'. Aliases like 'SUCCEEDED', 'OK', 'BROKE', 'regression' are accepted and normalised.",
+        ),
+      reason: z
+        .string()
+        .optional()
+        .describe('Optional plain-text reason for the outcome verdict'),
+    },
+  },
+  valis_evolve: {
+    description:
+      "Declare an explicit typed relationship between two decisions ('supersedes', 'builds_on', 'synthesizes', or 'contradicts'). Use when the team revises, builds on, fuses, or contradicts a prior decision. Both decisions must exist in the caller's org; the edge becomes walkable via `valis_search(..., depth: 1|2)`.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Link two decisions with a typed edge',
+    } as ToolAnnotations,
+    schema: {
+      from_id: z.string().uuid().describe('UUID of the source decision (the predecessor or related-from)'),
+      to_id: z.string().uuid().describe('UUID of the target decision (the newer or related-to)'),
+      type: z
+        .enum(['supersedes', 'builds_on', 'synthesizes', 'contradicts'])
+        .describe('Relationship type — see tool description for semantics'),
+      reason: z
+        .string()
+        .optional()
+        .describe('Optional plain-text reason explaining why the edge exists'),
     },
   },
   valis_check_duplicate: {
@@ -449,6 +513,16 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
 
   registerToolFromDef(server, 'valis_lifecycle', async (args) => {
     const result = await handleLifecycle(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_update_outcome', async (args) => {
+    const result = await handleUpdateOutcome(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_evolve', async (args) => {
+    const result = await handleEvolve(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 

@@ -108,8 +108,8 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
         org_id: config.org_id,
         plan: targetPlan,
         billing_cycle: billingCycle,
-        success_url: 'https://dashboard.valis.dev/billing/success',
-        cancel_url: 'https://dashboard.valis.dev/billing/cancel',
+        success_url: 'https://valis.krukit.co/billing/success',
+        cancel_url: 'https://valis.krukit.co/billing/cancel',
       }),
     });
 

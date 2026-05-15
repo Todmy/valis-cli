@@ -127,7 +127,9 @@ export type AuditAction =
   | 'project_member_added'
   | 'project_member_removed'
   | 'migration_default_project'
-  | 'org_created';
+  | 'org_created'
+  | 'outcome_updated'
+  | 'evolve';
 
 export type AuditTargetType = 'decision' | 'member' | 'org';
 
@@ -332,11 +334,17 @@ export interface ServerConfig {
   member_api_key: string;
   project_id?: string | null;
   project_name?: string | null;
+  /**
+   * Optional funnel-event emitter injected by the web layer (`buildServerConfig*`).
+   * CLI stdio mode leaves it undefined — side effects call it via `?.()` so
+   * analytics is a pure server-side concern.
+   */
+  emit_funnel?: (event: string, properties: Record<string, unknown>) => void;
 }
 
 export interface StoreResponse {
   id: string;
-  status: 'stored' | 'duplicate';
+  status: 'stored' | 'duplicate' | 'duplicate_detected';
   synced?: boolean;
   /** When true, the decision was stored with proposed status (Phase 3 — US1). */
   proposed?: boolean;
@@ -344,6 +352,26 @@ export interface StoreResponse {
   contradictions?: StoreContradictionWarning[];
   /** Supersession detail when `replaces` triggered a transition (Phase 2). */
   superseded?: StoreSupersededDetail;
+  /**
+   * 027/Track 4: GroundTruthInjector result. Present whenever the pre-write
+   * injector ran (which is "always" in handleStore today — the injector is
+   * non-blocking and its result is informational unless `status` is set to
+   * `duplicate_detected`, in which case `id` is the existing decision UUID
+   * and no new row was written).
+   */
+  ground_truth?: {
+    status:
+      | 'duplicate_detected'
+      | 'neighbours_linked'
+      | 'neighbours_informational'
+      | 'no_matches'
+      | 'injector_failed';
+    band: 'duplicate' | 'neighbour' | 'none' | 'failed';
+    top_similarity: number;
+    candidates: Array<{ id: string; similarity: number }>;
+    latency_ms: number;
+    reason?: string;
+  };
 }
 
 export interface StoreErrorResponse {
@@ -381,6 +409,12 @@ export interface SearchResult {
   pinned?: boolean;
   /** UUIDs of decisions this one depends on (Phase 3 — graph signal input). */
   depends_on?: string[];
+  /**
+   * 028-phase13/Track 5a — after-the-fact outcome verdict. Read from Qdrant
+   * payload so search results carry it without a Postgres round-trip; powers
+   * the rerank-time downranking of `outcome='failed'` rows.
+   */
+  outcome?: 'success' | 'failed' | 'partial' | 'unknown' | null;
   /** BM25 sparse vector score when available (Phase 3 — reranker input). */
   bm25_score?: number;
   /** Human-readable status label for non-active decisions (e.g. 'proposed', 'deprecated'). */
@@ -453,6 +487,29 @@ export interface RerankedResult extends SearchResult {
   signals: SignalValues;
   /** Whether this result was suppressed (only present with --all). */
   suppressed?: boolean;
+  /**
+   * 028-phase13/Track 5a (FR-015): per-result outcome adjustment diagnostics.
+   * `outcome_multiplier` is 0.5 for `outcome='failed'` rows in non-failure-
+   * intent queries, 1.0 otherwise. `failure_intent_override` indicates whether
+   * the query string matched the keyword heuristic that suppresses downranking.
+   */
+  outcome?: 'success' | 'failed' | 'partial' | 'unknown' | null;
+  outcome_multiplier?: number;
+  failure_intent_override?: boolean;
+  /**
+   * 031/Track 5b — typed-edge neighbourhood. Present ONLY when the caller
+   * passed `depth >= 1` on valis_search. Empty array when the hit has no
+   * outgoing edges (never `undefined` in that mode). Field is OMITTED on
+   * depth=0 calls so existing callers see byte-identical responses (FR-010).
+   */
+  related?: Array<{
+    decision_id: string;
+    edge_type: 'supersedes' | 'builds_on' | 'synthesizes' | 'contradicts';
+    depth: 1 | 2;
+    reason: string | null;
+    /** Decision summary — present in `summary` mode (the default). */
+    summary?: string | null;
+  }>;
 }
 
 /** Org-level reranking configuration overrides. */
@@ -471,12 +528,37 @@ export interface RerankedSearchResponse {
   note?: string;
 }
 
+/**
+ * Per-call defensive signal (BUG #118 mitigation, sprint 2026-05-14). When the
+ * JWT-encoded session scope differs from the per-call `project_id` arg, the
+ * tool still returns JWT-scoped results but appends this field so the agent
+ * surfaces the drift to the user immediately. Visible-actionable instead of
+ * silent wrong-scope. Full fix (mid-session scope switch) is deferred.
+ */
+export interface ProjectScopeMismatch {
+  session_project_id: string;
+  current_project_id: string;
+  action_required: 'restart_session';
+}
+
 export interface SearchResponse {
   results: SearchResult[];
   /** Number of results suppressed from default view. */
   suppressed_count?: number;
   offline?: boolean;
   note?: string;
+  project_scope_mismatch?: ProjectScopeMismatch;
+  /**
+   * 032/Track 6 — structured-filter diagnostics surfaced when the agent
+   * passed unparseable or out-of-range filter args. Both arrays are omitted
+   * when empty so backward compat callers see byte-identical responses.
+   */
+  dropped_args?: Array<{ field: string; reason: string }>;
+  clamped_args?: Array<{ field: string; original: unknown; clamped: unknown }>;
+  /** Filter dimensions exercised on this call — telemetry for FR-014. */
+  filter_dim_used?: string[];
+  /** Note emitted when `query_mode: metadata_only` ignores a non-empty query string. */
+  mode_note?: 'query_string_ignored_in_metadata_mode';
 }
 
 export interface ContextResponse {
@@ -492,6 +574,7 @@ export interface ContextResponse {
   note?: string;
   /** CLI-stdio fallback indicator. NEVER set on HTTP transport (per 019 R-001). */
   offline?: boolean;
+  project_scope_mismatch?: ProjectScopeMismatch;
   /**
    * 019/US1: caller has zero accessible projects. Distinguishes "no data yet"
    * from "infrastructure failure". Only emitted on HTTP transport when the

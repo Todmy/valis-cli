@@ -55,9 +55,15 @@ function parseArgs(): CliArgs {
 /**
  * Thin adapter over DeepL's REST API (free tier). Sends each chunk as a
  * separate `text` field — DeepL preserves order in the response array.
+ *
+ * `fetchImpl` and `endpoint` are seam params so unit tests can run without
+ * hitting the real DeepL service.
  */
-function createDeepLApi(apiKey: string): TranslationApi {
-  const endpoint = 'https://api-free.deepl.com/v2/translate';
+export function createDeepLApi(
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+  endpoint: string = 'https://api-free.deepl.com/v2/translate',
+): TranslationApi {
   return {
     async translate(chunks, target) {
       const params = new URLSearchParams();
@@ -65,7 +71,7 @@ function createDeepLApi(apiKey: string): TranslationApi {
       params.append('source_lang', 'EN');
       params.append('target_lang', target.toUpperCase());
 
-      const res = await fetch(endpoint, {
+      const res = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
           Authorization: `DeepL-Auth-Key ${apiKey}`,
@@ -84,6 +90,20 @@ function createDeepLApi(apiKey: string): TranslationApi {
       return body.translations.map((t) => t.text);
     },
   };
+}
+
+/**
+ * Parse a JSONL corpus body, skipping comment lines (`#`-prefix) and blank
+ * lines. Exported for unit testing — main() inlines this same loop.
+ */
+export function parseCorpusBody(raw: string): CorpusLineRecord[] {
+  const seed: CorpusLineRecord[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    seed.push(JSON.parse(trimmed) as CorpusLineRecord);
+  }
+  return seed;
 }
 
 async function main(): Promise<void> {
@@ -108,12 +128,7 @@ async function main(): Promise<void> {
   const targetPath = resolve(corporaDir, `${targetId}.jsonl`);
 
   const raw = await readFile(sourcePath, 'utf-8');
-  const seed: CorpusLineRecord[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    seed.push(JSON.parse(trimmed) as CorpusLineRecord);
-  }
+  const seed = parseCorpusBody(raw);
 
   console.log(`Translating ${seed.length} lines from ${source} → ${target}…`);
   const api = createDeepLApi(apiKey);
@@ -133,7 +148,15 @@ async function main(): Promise<void> {
   console.log('Next: update LICENSE-CORPUS.md with the new file SHA-256 + fetched_at.');
 }
 
-main().catch((err) => {
-  console.error('translate-corpus: fatal error', err);
-  process.exit(1);
-});
+// Direct-invocation guard so importing this module (for tests) does not
+// trigger main(). Matches the resolved file-path against process.argv[1].
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error('translate-corpus: fatal error', err);
+    process.exit(1);
+  });
+}

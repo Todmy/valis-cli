@@ -25,18 +25,20 @@ The SHA-256 surfaces silent corpus drift: if two runs of `valis-bench` produce d
 - content sha256: `a37bce0a50b3d4fa021223fbbb0a5be51ffd23f033d1adae500cf3834239949a`
 - curation rule: 51 EN team-decision documents + 50 queries with ground_truth, hand-authored to reflect the team-decision profile across 13 topic clusters (auth, deployment, error handling, observability, contracts, data/storage, testing, performance, API design, dev workflow, frontend, search/retrieval, RBAC/billing). Each document is ~200-500 chars; queries mix single-doc (~70%) and multi-doc (~30%) relevance to exercise both precision and recall.
 
-## valis-multilingual-uk (deferred)
+## valis-multilingual-uk
 
 - upstream: derived from valis-multilingual-en
 - license: Apache-2.0
-- regeneration: `pnpm tsx packages/cli/scripts/translate-corpus.ts --source valis-multilingual-en --target uk` (script TODO; CorpusTranslator deep module is shipped in `src/benchmarks/corpus-translator.ts`)
-- blocked on: DeepL Free API key (env `DEEPL_API_KEY`); founder UA spot-check pass on 10/15 samples
-- curation rule: 1:1 translation of EN slice via DeepL; preserves IDs + ground_truth; `metadata.translation` records provenance per line
+- fetched_at: 2026-05-16
+- content sha256: `6885287ef05c4c7fd72e14b47a52567e1adc9066e9fc599f14b623a40066ba2b`
+- regeneration: `DEEPL_API_KEY=... pnpm tsx packages/cli/scripts/translate-corpus.ts --source valis-multilingual-en --target uk` (script shipped). Note: the committed slice was translated **inline via Claude Opus 4.7** (provider="claude-opus-4-7" in per-line `metadata.translation`), not DeepL. DeepL signup was deferred during Phase 9 close; Claude inline-translation gave comparable quality on technical prose. To regenerate via DeepL, run the script command above and overwrite this slice.
+- curation rule: 1:1 mapping of EN slice — 51 docs + 50 queries with identical IDs + `ground_truth` references; English technical terms (JWT, BM25, REST, Qdrant, MCP, etc.) preserved untranslated; domain prose translated. Per-line `metadata.translation` records `{source_id, source_lang, target_lang, provider}`.
 
-## valis-multilingual-pl (deferred)
+## valis-multilingual-pl
 
 - upstream: derived from valis-multilingual-en
 - license: Apache-2.0
-- regeneration: same script as uk with `--target pl`
-- blocked on: same DeepL key
-- curation rule: same as uk, with target=pl
+- fetched_at: 2026-05-16
+- content sha256: `32c54fa983c0bccd4d6b0c4c4ead60a8c368fbae70666d28e8a6db7bbd5a673b`
+- regeneration: same script as uk with `--target pl`. Same provenance note: committed slice was translated inline via Claude Opus 4.7.
+- curation rule: same as uk, target=pl.

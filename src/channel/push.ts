@@ -12,7 +12,7 @@ export function buildCaptureReminder(): ChannelEvent {
     source: 'valis',
     event: 'capture_reminder',
     content:
-      'Review your recent work. If any decisions, constraints, patterns, or lessons were established, store them via valis_store with type, summary, and affects.',
+      'SESSION CAPTURE CHECKPOINT — act now, do not defer. Review the last 5+ conversation turns and for EACH technical decision, constraint, pattern, or lesson established, immediately call valis_store with: status="proposed", type, summary (≤100 chars), affects (relevant module tags), and the supporting detail. Group near-duplicates into one entry. Recall fidelity later depends on capture cadence today.',
     meta: {
       event: 'capture_reminder',
     },

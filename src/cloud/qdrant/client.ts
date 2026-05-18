@@ -7,14 +7,10 @@
  */
 
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { VECTOR_SIZE, getActiveCollectionName } from '../embedding.js';
+import { VECTOR_SIZE, COLLECTION_NAME as EMBEDDING_COLLECTION_NAME } from '../embedding.js';
 
-/**
- * Active Qdrant collection. Resolved at module load against
- * `EMBEDDING_ACTIVE_VERSION` so the alias-swap is a single env-var flip
- * + redeploy. See `embedding.ts` `getActiveCollectionName`.
- */
-export const COLLECTION_NAME: string = getActiveCollectionName();
+/** Re-export the active Qdrant collection name for downstream consumers. */
+export const COLLECTION_NAME: string = EMBEDDING_COLLECTION_NAME;
 
 let client: QdrantClient | null = null;
 

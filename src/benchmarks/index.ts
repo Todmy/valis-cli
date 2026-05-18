@@ -19,11 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
-import {
-  getDenseModel,
-  getVectorSize,
-  BM25_MODEL,
-} from '../cloud/embedding.js';
+import { DENSE_MODEL, VECTOR_SIZE, BM25_MODEL } from '../cloud/embedding.js';
 import { loadCorpus, type ProvenanceInput } from './corpus.js';
 import { seedEphemeralCollection } from './seed.js';
 import {
@@ -128,8 +124,8 @@ async function harnessVersion(): Promise<string> {
 
 function productionStack(): ProductionStackDescriptor {
   return {
-    dense_model: getDenseModel(),
-    dense_dim: getVectorSize(),
+    dense_model: DENSE_MODEL,
+    dense_dim: VECTOR_SIZE,
     sparse_model: BM25_MODEL,
     chunking: { chars: 1500, overlap: 200, strategy: 'paragraph-then-sentence' },
     fusion: 'RRF',

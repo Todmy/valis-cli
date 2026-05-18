@@ -159,7 +159,7 @@ describe('ClusterRegistry', () => {
 
       // Should have set cluster_id on the new decision. 019/US4: payload
       // setter now uses filter (chunk-aware) instead of `points: [id]`.
-      expect(mock.setPayload).toHaveBeenCalledWith('decisions', expect.objectContaining({
+      expect(mock.setPayload).toHaveBeenCalledWith('decisions_v2', expect.objectContaining({
         payload: { cluster_id: 'cluster_existing' },
       }));
       const setCall = (mock.setPayload.mock.calls as unknown as Array<[string, { payload?: { cluster_id?: string } }]>).find(

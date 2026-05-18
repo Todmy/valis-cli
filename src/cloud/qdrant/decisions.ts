@@ -15,8 +15,6 @@ import {
   truncateForEmbedding,
   parseQuotaError,
   ClientEmbeddingStrategy,
-  getDualWriteCollection,
-  vectorForUpsertAtVersion,
 } from '../embedding.js';
 import { chunkText, type Chunk } from '../chunking.js';
 import { COLLECTION_NAME } from './client.js';
@@ -166,12 +164,6 @@ export async function upsertDecision(
   const strategy = await detectEmbeddingStrategy(qdrant, COLLECTION_NAME);
   const chunks: Chunk[] = chunkText(contextualText);
 
-  // Dual-write window (US4): when `EMBEDDING_DUAL_WRITE=1`, we also write the
-  // same decision to the inactive-version collection so it stays warm during
-  // the migration / 7-day retention. Inactive-version writes use the same
-  // strategy class but a different model + char ceiling (`v1` vs `v2`).
-  const dualTarget = strategy.mode === 'server' ? getDualWriteCollection() : null;
-
   const buildPointForChunk = async (chunk: Chunk) => {
     const chunkPayload: Record<string, unknown> = {
       ...payload,
@@ -194,28 +186,7 @@ export async function upsertDecision(
 
   try {
     const points = await Promise.all(chunks.map(buildPointForChunk));
-
-    if (dualTarget) {
-      // Dual-write — both upserts MUST succeed; if either fails, the function
-      // throws and the caller's outer handling decides retry / offline-queue.
-      const dualPoints = chunks.map((chunk) => ({
-        id: chunkPointId(decisionId, chunk.index),
-        payload: {
-          ...payload,
-          decision_id: decisionId,
-          chunk_index: chunk.index,
-          total_chunks: chunk.total,
-          chunk_text: chunk.text,
-        },
-        vector: vectorForUpsertAtVersion(chunk.text, dualTarget.version) as never,
-      }));
-      await Promise.all([
-        qdrant.upsert(COLLECTION_NAME, { points }),
-        qdrant.upsert(dualTarget.collection, { points: dualPoints }),
-      ]);
-    } else {
-      await qdrant.upsert(COLLECTION_NAME, { points });
-    }
+    await qdrant.upsert(COLLECTION_NAME, { points });
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
     if (quota) {

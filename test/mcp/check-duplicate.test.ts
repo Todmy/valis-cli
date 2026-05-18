@@ -51,7 +51,7 @@ vi.mock('../../src/cloud/qdrant.js', () => ({
   buildProjectFilter: vi.fn().mockReturnValue({
     must: [{ key: 'org_id', match: { value: 'test-org-id' } }],
   }),
-  COLLECTION_NAME: 'decisions',
+  COLLECTION_NAME: 'decisions_v2',
 }));
 
 vi.mock('../../src/cloud/embedding.js', () => ({
@@ -136,7 +136,7 @@ describe('handleCheckDuplicate', () => {
     await handleCheckDuplicate({ text: 'Test text', threshold: 0.5 });
 
     expect(mockQuery).toHaveBeenCalledWith(
-      'decisions',
+      'decisions_v2',
       expect.objectContaining({ score_threshold: 0.5 }),
     );
   });
@@ -147,7 +147,7 @@ describe('handleCheckDuplicate', () => {
     await handleCheckDuplicate({ text: 'Test text' });
 
     expect(mockQuery).toHaveBeenCalledWith(
-      'decisions',
+      'decisions_v2',
       expect.objectContaining({ score_threshold: 0.85 }),
     );
   });

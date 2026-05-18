@@ -16,7 +16,7 @@
 
 import { QdrantClient } from '@qdrant/js-client-rest';
 import {
-  getDenseModel,
+  DENSE_MODEL,
   BM25_MODEL,
   DENSE_VECTOR_NAME,
   BM25_VECTOR_NAME,
@@ -87,7 +87,7 @@ function dedupAndRank(points: QdrantPoint[], k: number): SearchHit[] {
  * collection.
  */
 export function hybridSearchFn(collectionName: string): SearchFn {
-  const denseModel = getDenseModel();
+  const denseModel = DENSE_MODEL;
   return async (query: string, k: number): Promise<SearchHit[]> => {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];
@@ -120,7 +120,7 @@ export function hybridSearchFn(collectionName: string): SearchFn {
  * attribute hybrid's gain to the lexical signal.
  */
 export function denseOnlySearchFn(collectionName: string): SearchFn {
-  const denseModel = getDenseModel();
+  const denseModel = DENSE_MODEL;
   return async (query: string, k: number): Promise<SearchHit[]> => {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];

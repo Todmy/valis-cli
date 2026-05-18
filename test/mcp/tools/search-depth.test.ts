@@ -70,7 +70,7 @@ vi.mock('../../../src/cloud/qdrant.js', () => ({
   hybridSearch: hybridSearchMock,
   hybridSearchAllProjects: vi.fn(),
   buildProjectFilter: vi.fn().mockReturnValue({ must: [] }),
-  COLLECTION_NAME: 'decisions',
+  COLLECTION_NAME: 'decisions_v2',
 }));
 
 vi.mock('../../../src/cloud/supabase.js', () => ({

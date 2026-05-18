@@ -20,8 +20,8 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { chunkText } from '../cloud/chunking.js';
 import {
-  getDenseModel,
-  getVectorSize,
+  DENSE_MODEL,
+  VECTOR_SIZE,
   BM25_MODEL,
   DENSE_VECTOR_NAME,
   BM25_VECTOR_NAME,
@@ -101,8 +101,8 @@ export async function seedEphemeralCollection(
   const qdrant = getBenchmarkClient();
   const collectionName = `valis_bench_${runId}`;
 
-  const denseModel = getDenseModel();
-  const vectorSize = getVectorSize();
+  const denseModel = DENSE_MODEL;
+  const vectorSize = VECTOR_SIZE;
 
   await qdrant.createCollection(collectionName, {
     vectors: {

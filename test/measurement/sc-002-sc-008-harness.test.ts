@@ -1,8 +1,12 @@
 /**
  * T069 — SC-002 + SC-008 measurement harness (post-#172).
  *
- * Skipped by default. Run via:
- *   VALIS_RUN_MEASUREMENT=1 pnpm --filter valis-cli test test/measurement
+ * Run on every `pnpm test` since 2026-05-18. The original `VALIS_RUN_MEASUREMENT=1`
+ * gate was set up anticipating expensive live-agent dispatch runs; the
+ * current implementation is pure structural (loads corpus JSON, runs
+ * `composeSearchResultsBlock`, asserts structural invariants). No backend
+ * IO, no LLM cost, ~10 ms total. The future live-agent loop will land as
+ * a separate, explicitly-gated harness when wired.
  *
  * This harness measures two success criteria from spec.md:
  *
@@ -48,7 +52,6 @@ import {
   type SearchResultRow,
 } from '../../src/hooks/inject-block.js';
 
-const SHOULD_RUN = process.env.VALIS_RUN_MEASUREMENT === '1';
 const CORPORA_DIR = join(__dirname, 'corpora');
 
 /** Canonical precedence string — single source of truth lives in inject-block.ts. */
@@ -88,9 +91,7 @@ function searchRowFor(decisionId: string): SearchResultRow {
   };
 }
 
-const skipIf = SHOULD_RUN ? describe : describe.skip;
-
-skipIf('SC-002 measurement harness — citation rate ≥ 90 %', () => {
+describe('SC-002 measurement harness — citation rate ≥ 90 %', () => {
   it('loads the multi-domain corpus and reports a citation rate', async () => {
     const questions = await loadJson<SC002Question>('sc-002-citations.json');
     expect(questions.length).toBeGreaterThanOrEqual(30);
@@ -112,7 +113,7 @@ skipIf('SC-002 measurement harness — citation rate ≥ 90 %', () => {
   });
 });
 
-skipIf('SC-008 measurement harness — Valis-preference rate ≥ 95 %', () => {
+describe('SC-008 measurement harness — Valis-preference rate ≥ 95 %', () => {
   it('verifies the per-prompt block carries the precedence signal for every conflict', async () => {
     const conflicts = await loadJson<SC008Conflict>('sc-008-conflicts.json');
     expect(conflicts.length).toBeGreaterThanOrEqual(20);

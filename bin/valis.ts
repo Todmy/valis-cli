@@ -539,7 +539,7 @@ hookCmd
 
 hookCmd
   .command('pre-compact')
-  .description('PreCompact hook: silent stub (Phase B FR-042 — telemetry-gated)')
+  .description('PreCompact hook: capture-window injection (Phase B FR-042)')
   .action(async () => {
     try {
       await hookPreCompactCommand();

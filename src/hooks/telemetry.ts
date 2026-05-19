@@ -44,6 +44,7 @@ export type TelemetryEvent =
   | 'cursor_mcp_repaired'
   | 'capture_reminder_injected'
   | 'capture_reminder_skipped'
+  | 'capture_window_opened'
   | 'hook_failure';
 
 export interface TelemetryRecord {

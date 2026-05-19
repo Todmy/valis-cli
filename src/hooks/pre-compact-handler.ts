@@ -1,50 +1,57 @@
 /**
- * PreCompact hook handler — block-and-gate for guaranteed capture (v0.5.2).
+ * PreCompact hook handler — v0.5.3 default-silent, gate opt-in.
  *
- * v0.5.0 architecture (compactor-as-extractor via
- * `hookSpecificOutput.additionalContext`) was silently broken because
- * Claude Code's PreCompact hook does NOT accept `additionalContext` —
- * that field is only valid for PreToolUse / UserPromptSubmit /
- * PostToolUse / PostToolBatch. The hook's JSON output failed schema
- * validation and the compactor never saw our instruction.
+ * History:
  *
- * v0.5.2 replacement architecture — hard block + agent-orchestrated
- * retry:
+ *   v0.5.0 — emitted `hookSpecificOutput.additionalContext` to try to
+ *            instruct the compactor. Silently broken: Claude Code's
+ *            PreCompact protocol rejects that field. Output failed
+ *            schema validation and the compactor never saw our
+ *            instruction.
  *
- *   1. PreCompact hook checks for a per-session sentinel at
- *      `~/.valis/capture-sentinels/<session_id>.json`.
- *   2. Sentinel present → emit empty stdout, exit 0 → compaction
- *      proceeds. After the hook returns the sentinel is consumed
- *      (cleared) so the next compaction in the same session requires a
- *      fresh capture cycle — each /compact is its own checkpoint.
- *   3. Sentinel absent → return JSON
- *      `{decision: "block", reason: "<structured imperative>"}`.
- *      Claude Code shows the reason to the agent and refuses to
- *      compact.
+ *   v0.5.2 — switched to `{decision: "block", reason: "<imperative>"}`
+ *            with a per-session sentinel. This worked but Claude Code
+ *            renders `decision: "block"` as a user-facing ERROR. The
+ *            agent never auto-acted on the reason — Claude Code does
+ *            not create a new agent turn from a hook block. Result:
+ *            users saw a red error message every `/compact` and had to
+ *            manually prompt the agent to follow the steps.
  *
- *   The block message is a structured imperative the agent reliably
- *   follows: walk the in-context conversation, call `valis_store` for
- *   each decision/constraint/pattern/lesson, run
- *   `valis hook capture-done` via the Bash tool (creates the local
- *   sentinel), then invoke /compact via the SlashCommand tool to
- *   resume.
+ *   v0.5.3 (this file) — silent no-op by default. PreCompact emits
+ *            empty stdout, exit 0; `/compact` runs normally with no
+ *            error toast. Capture happens continuously through the
+ *            UserPromptSubmit token-density reminder (active since
+ *            v0.4.0) rather than at the compaction moment.
  *
- *   Reliability profile:
- *     - Block itself: 100% deterministic — harness enforces, not the
- *       model. No /compact passes through without a sentinel.
- *     - Extraction + sentinel write + retrigger: ~99% agent compliance
- *       on structured imperatives. Failure mode is user-visible
- *       (agent paused mid-flow) and recoverable (user re-issues
- *       /compact manually).
+ *            The sentinel-gate machinery (sentinels.ts, the
+ *            `valis hook capture-done` CLI subcommand) is preserved
+ *            and can be re-activated by setting
+ *            `VALIS_PRECOMPACT_GATE=1`. Useful for operators who
+ *            explicitly want the harder-but-friction-heavier
+ *            checkpoint behavior, e.g. for compliance contexts or
+ *            once a server-side extraction path lands.
  *
- *   End-to-end ~98% reliable on Claude 4.x vs ~0% on the broken v0.5.0
- *   pattern.
+ * Why silent no-op is the right default:
+ *
+ *   - UserPromptSubmit capture-reminder already nudges the agent
+ *     throughout the session, when the conversation context is fresh
+ *     and the agent has full latitude to act on the imperative.
+ *     PreCompact is structurally a poor capture moment: by the time it
+ *     fires, the user has already chosen to truncate context.
+ *
+ *   - `decision: "block"` is a harness-level signal that shows as an
+ *     error to the user, not as an actionable instruction to the
+ *     agent. There is no Claude Code hook output shape that lets a
+ *     PreCompact hook synchronously trigger an agent extraction turn
+ *     and then resume compaction. The only path to fully-automatic
+ *     pre-compaction capture is server-side LLM extraction, which is
+ *     a separate architectural decision (cost + dependency trade-offs).
+ *
+ *   - Keeping the sentinel + capture-done CLI surface alive costs
+ *     nothing: they're inert without the gate, and `valis hook
+ *     capture-done` is still callable as a manual snapshot trigger.
  *
  * Constitution III: any throw → empty stdout, exit 0 (bin/ wrapper).
- * On read failure for sentinel state we treat it as absent — block, not
- * allow. Blocking is the safe side: a false-positive block is one
- * extra capture cycle; a false-negative allow loses decisions
- * permanently.
  */
 
 import { findProjectMarker } from '../config/project.js';
@@ -100,19 +107,6 @@ function normalizeTrigger(raw: string | undefined): 'auto' | 'manual' | 'unknown
   return 'unknown';
 }
 
-/**
- * Compose the structured block reason an agent receives when the
- * sentinel is absent. Two firm imperatives ordered:
- *
- *   1. Extract & store every decision/constraint/pattern/lesson from
- *      the in-context conversation (zero extra tokens — already loaded).
- *   2. Run the local CLI sentinel-write, then re-invoke /compact via
- *      SlashCommand.
- *
- * Kept short to fit comfortably in the agent's working context. The
- * Bash invocation is exact (no shell interpolation needed) so agents
- * can copy-paste verbatim.
- */
 function composeBlockReason(sessionId: string | undefined): string {
   const sessionHint = sessionId
     ? `(session_id=${sessionId})`
@@ -125,53 +119,55 @@ function composeBlockReason(sessionId: string | undefined): string {
     '',
     '1. Walk the conversation already in your context. For EACH technical',
     '   decision, constraint, pattern, or lesson, call `valis_store` with',
-    '   type, summary (≤100 chars), affects (relevant area tags), and the',
-    '   supporting detail. Group near-duplicates into one entry. Skip',
-    '   pleasantries and trivial chatter.',
+    '   type, summary, affects, and the supporting detail.',
     '',
-    '2. After all `valis_store` calls, run via the Bash tool:',
+    '2. Run via the Bash tool: `valis hook capture-done --stored <N>`',
     '',
-    '       valis hook capture-done --stored <N>',
-    '',
-    '   …where <N> is the count of decisions you just stored. This creates',
-    '   the local sentinel that gates the next /compact.',
-    '',
-    '3. Invoke `/compact` again via the SlashCommand tool. The next',
-    '   PreCompact hook fire will see the sentinel and allow compaction',
-    '   through.',
-    '',
-    'If no decisions were made this session, still complete step 2 with',
-    '`--stored 0 --note "no decisions"` so /compact can proceed.',
+    '3. Invoke `/compact` again via the SlashCommand tool.',
   ].join('\n');
 }
 
 function emitBlock(reason: string): void {
-  const payload = {
-    decision: 'block',
-    reason,
-  };
-  process.stdout.write(JSON.stringify(payload));
+  process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+}
+
+/** Read truthy `VALIS_PRECOMPACT_GATE` env var. Accepts `1`, `true`, `yes`. */
+function gateEnabled(): boolean {
+  const raw = (process.env.VALIS_PRECOMPACT_GATE ?? '').toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
 }
 
 export async function hookPreCompactCommand(): Promise<void> {
+  // Default path: silent no-op. /compact proceeds, no error toast.
+  if (!gateEnabled()) {
+    // Telemetry context — log every PreCompact fire so we can audit how
+    // often /compact runs, even when the gate is off.
+    const marker = await findProjectMarker();
+    const cfg = await loadHookGlobalConfig();
+    if (cfg && marker) {
+      void record('capture_window_opened', {
+        org_id: cfg.orgId,
+        project_id: marker.projectId,
+        metadata: { gate: 'disabled' },
+      });
+    }
+    return;
+  }
+
+  // Opt-in gate path: same v0.5.2 sentinel-check behavior.
   const envelope = await readHookEnvelope();
   const sessionId = envelope?.session_id ?? process.env.CLAUDE_SESSION_ID;
   const trigger = normalizeTrigger(envelope?.trigger);
 
-  // Best-effort telemetry context — never blocks the gate logic.
   const marker = await findProjectMarker();
   const cfg = await loadHookGlobalConfig();
 
-  // No session_id → we cannot key a sentinel and therefore cannot
-  // verify capture. Safe side is to block; the agent's first step
-  // will surface the same instruction and the agent can pass an
-  // explicit --session-id on the capture-done call.
   if (!sessionId) {
     if (cfg && marker) {
       void record('capture_window_opened', {
         org_id: cfg.orgId,
         project_id: marker.projectId,
-        metadata: { trigger, sentinel_present: false, reason: 'no_session_id' },
+        metadata: { gate: 'enabled', trigger, sentinel_present: false, reason: 'no_session_id' },
       });
     }
     emitBlock(composeBlockReason(undefined));
@@ -184,23 +180,12 @@ export async function hookPreCompactCommand(): Promise<void> {
     void record('capture_window_opened', {
       org_id: cfg.orgId,
       project_id: marker.projectId,
-      metadata: {
-        trigger,
-        sentinel_present: present,
-        session_id: sessionId,
-      },
+      metadata: { gate: 'enabled', trigger, sentinel_present: present, session_id: sessionId },
     });
   }
 
   if (present) {
-    // Consume the sentinel so subsequent /compact calls in the same
-    // session require a fresh capture cycle. Awaited (not fire-and-
-    // forget) so the consumption is observable on hook return — keeps
-    // the contract deterministic for callers that immediately query
-    // sentinel state.
     await clearSentinel(sessionId);
-    // Emit nothing; Claude Code treats empty stdout as "no opinion"
-    // and proceeds with compaction.
     return;
   }
 

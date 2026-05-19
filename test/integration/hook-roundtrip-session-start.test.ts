@@ -38,6 +38,10 @@ beforeEach(async () => {
   process.env.VALIS_HOME = tempHome;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
   process.env.CLAUDE_SESSION_ID = 'sess-test-1';
+  // Suppress the update-notifier registry call so it doesn't leak into
+  // the BUG #119/#120 regression assertions. The notifier is exercised
+  // independently in test/hooks/update-notifier.test.ts.
+  process.env.VALIS_NO_UPDATE_NOTIFIER = '1';
 
   stdoutChunks = [];
   writeSpy = vi
@@ -60,6 +64,7 @@ afterEach(async () => {
   else process.env.CLAUDE_PROJECT_DIR = prevClaudeProjectDir;
   if (prevClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
   else process.env.CLAUDE_SESSION_ID = prevClaudeSessionId;
+  delete process.env.VALIS_NO_UPDATE_NOTIFIER;
   await rm(tempHome, { recursive: true, force: true });
   await rm(projectDir, { recursive: true, force: true });
 });

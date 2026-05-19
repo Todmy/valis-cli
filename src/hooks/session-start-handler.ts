@@ -21,9 +21,21 @@
 
 import { findProjectMarker } from '../config/project.js';
 import { record } from './telemetry.js';
+import { maybeNotifyOfUpdate } from './update-notifier.js';
+import { VERSION } from '../index.js';
 
 export async function hookSessionStartCommand(): Promise<void> {
   const startedAt = Date.now();
+
+  // Update-notifier — runs on every session-start regardless of Valis
+  // configuration state. Reads cache off the hot path (~1ms), emits a
+  // one-line notice to stderr when a newer CLI is published. Background
+  // npm-registry refresh fires-and-forgets so the hook doesn't block.
+  // Disabled by VALIS_NO_UPDATE_NOTIFIER=1 for CI / containerized envs
+  // where the registry call is undesirable.
+  if ((process.env.VALIS_NO_UPDATE_NOTIFIER ?? '') !== '1') {
+    await maybeNotifyOfUpdate(VERSION);
+  }
 
   const marker = await findProjectMarker();
   if (!marker) {

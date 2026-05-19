@@ -1,9 +1,6 @@
 /**
- * Integration tests for the v0.5.2 PreCompact hook handler — sentinel-
- * gated block-and-allow flow.
- *
- * The handler reads from stdin (envelope) and stdout (decision JSON),
- * so we use the same spy pattern as hook-roundtrip-session-start.test.ts.
+ * Tests for the v0.5.3 PreCompact handler — default silent no-op +
+ * opt-in gate behavior under `VALIS_PRECOMPACT_GATE=1`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +21,7 @@ let writeSpy: ReturnType<typeof vi.spyOn>;
 let prevValisHome: string | undefined;
 let prevClaudeProjectDir: string | undefined;
 let prevClaudeSessionId: string | undefined;
+let prevGateFlag: string | undefined;
 
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), 'valis-precompact-'));
@@ -32,9 +30,11 @@ beforeEach(async () => {
   prevValisHome = process.env.VALIS_HOME;
   prevClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
   prevClaudeSessionId = process.env.CLAUDE_SESSION_ID;
+  prevGateFlag = process.env.VALIS_PRECOMPACT_GATE;
 
   process.env.VALIS_HOME = tempHome;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
+  delete process.env.VALIS_PRECOMPACT_GATE;
 
   await mkdir(tempHome, { recursive: true });
   await writeFile(
@@ -67,105 +67,76 @@ afterEach(async () => {
   else process.env.CLAUDE_PROJECT_DIR = prevClaudeProjectDir;
   if (prevClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
   else process.env.CLAUDE_SESSION_ID = prevClaudeSessionId;
-  // Telemetry record() runs fire-and-forget appendFile; retry on rmdir
-  // race like e05270f / BUG #177 did for session-start.
+  if (prevGateFlag === undefined) delete process.env.VALIS_PRECOMPACT_GATE;
+  else process.env.VALIS_PRECOMPACT_GATE = prevGateFlag;
   await rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   await rm(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
-describe('hookPreCompactCommand — sentinel absent (block path)', () => {
-  it('emits decision=block when no sentinel exists for this session', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-needs-capture';
-
+describe('hookPreCompactCommand — default (gate disabled)', () => {
+  it('emits empty stdout — /compact passes through with no error toast', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-default-1';
     await hookPreCompactCommand();
-
-    expect(stdoutChunks.length).toBeGreaterThan(0);
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.decision).toBe('block');
-    expect(typeof payload.reason).toBe('string');
-  });
-
-  it('block reason includes the exact Bash invocation for capture-done', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-needs-bash';
-    await hookPreCompactCommand();
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.reason).toContain('valis hook capture-done');
-    expect(payload.reason).toContain('--stored');
-  });
-
-  it('block reason instructs to invoke /compact via SlashCommand', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-needs-slashcommand';
-    await hookPreCompactCommand();
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.reason).toContain('SlashCommand');
-    expect(payload.reason).toContain('/compact');
-  });
-
-  it('block reason walks the agent through extraction steps (valis_store imperative)', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-needs-store';
-    await hookPreCompactCommand();
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.reason).toContain('valis_store');
-    expect(payload.reason).toMatch(/decision.*constraint.*pattern.*lesson/);
-  });
-
-  it('block reason carries the session_id when known', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-with-id-in-reason';
-    await hookPreCompactCommand();
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.reason).toContain('sess-with-id-in-reason');
-  });
-
-  it('blocks with a session-id-less reason when CLAUDE_SESSION_ID is missing', async () => {
-    delete process.env.CLAUDE_SESSION_ID;
-    await hookPreCompactCommand();
-    const payload = JSON.parse(stdoutChunks.join(''));
-    expect(payload.decision).toBe('block');
-    expect(payload.reason).toContain('CLAUDE_SESSION_ID');
-  });
-});
-
-describe('hookPreCompactCommand — sentinel present (allow path)', () => {
-  it('emits empty stdout when a fresh sentinel exists', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-allowed';
-    await createSentinel({
-      session_id: 'sess-allowed',
-      created_at: new Date().toISOString(),
-      stored_count: 3,
-    });
-
-    await hookPreCompactCommand();
-
     expect(stdoutChunks.join('')).toBe('');
   });
 
-  it('consumes the sentinel after a successful allow so the next /compact re-blocks', async () => {
-    process.env.CLAUDE_SESSION_ID = 'sess-consumes';
+  it('does not check sentinel state when gate is off', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-default-2';
+    // Pre-create a sentinel — under default behavior it shouldn't be consumed.
     await createSentinel({
-      session_id: 'sess-consumes',
+      session_id: 'sess-default-2',
       created_at: new Date().toISOString(),
       stored_count: 1,
     });
-    expect(await hasSentinel('sess-consumes')).toBe(true);
-
     await hookPreCompactCommand();
-
-    // Sentinel cleanup is fire-and-forget; allow a microtask tick.
-    await new Promise((r) => setImmediate(r));
-    expect(await hasSentinel('sess-consumes')).toBe(false);
+    expect(stdoutChunks.join('')).toBe('');
+    // Sentinel stays untouched (we don't consume in disabled mode).
+    expect(await hasSentinel('sess-default-2')).toBe(true);
   });
 
-  it('still blocks when the sentinel belongs to a different session_id', async () => {
-    process.env.CLAUDE_SESSION_ID = 'session-A';
-    await createSentinel({
-      session_id: 'session-B',
-      created_at: new Date().toISOString(),
-      stored_count: 1,
-    });
-
+  it('does not emit a block when VALIS_PRECOMPACT_GATE is unset', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-default-3';
     await hookPreCompactCommand();
+    const out = stdoutChunks.join('');
+    expect(out).not.toContain('"decision":"block"');
+    expect(out).not.toContain('Pre-compaction capture required');
+  });
+});
 
+describe('hookPreCompactCommand — gate enabled (VALIS_PRECOMPACT_GATE=1)', () => {
+  beforeEach(() => {
+    process.env.VALIS_PRECOMPACT_GATE = '1';
+  });
+
+  it('blocks with structured reason when sentinel absent', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-gated-block';
+    await hookPreCompactCommand();
     const payload = JSON.parse(stdoutChunks.join(''));
     expect(payload.decision).toBe('block');
+    expect(payload.reason).toContain('valis hook capture-done');
+    expect(payload.reason).toContain('/compact');
+  });
+
+  it('allows when fresh sentinel exists and consumes it', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-gated-allow';
+    await createSentinel({
+      session_id: 'sess-gated-allow',
+      created_at: new Date().toISOString(),
+      stored_count: 2,
+    });
+    await hookPreCompactCommand();
+    expect(stdoutChunks.join('')).toBe('');
+    expect(await hasSentinel('sess-gated-allow')).toBe(false);
+  });
+
+  it('accepts truthy aliases for the gate env var', async () => {
+    process.env.CLAUDE_SESSION_ID = 'sess-gated-alias';
+    for (const value of ['true', 'yes', '1']) {
+      process.env.VALIS_PRECOMPACT_GATE = value;
+      stdoutChunks.length = 0;
+      await hookPreCompactCommand();
+      const out = stdoutChunks.join('');
+      expect(out).toContain('"decision":"block"');
+    }
   });
 });

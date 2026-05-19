@@ -86,4 +86,26 @@ describe('Claude Code — project CLAUDE.md injection', () => {
       expect(content).toMatch(/(waive|waiver|explicitly|opt-out)/i);
     });
   });
+
+  describe('MIRROR-WRITE rule (drift-on-success — silent loss even when Valis is healthy)', () => {
+    it('declares the MIRROR-WRITE rule with explicit ordering ("FIRST call valis_store")', async () => {
+      await injectClaudeMdMarkers(projectDir);
+      const content = await readFile(join(projectDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toContain('MIRROR-WRITE');
+      expect(content).toMatch(/MUST FIRST call .?valis_store/i);
+    });
+
+    it('names common per-user KB tools so the agent recognizes them as triggers', async () => {
+      await injectClaudeMdMarkers(projectDir);
+      const content = await readFile(join(projectDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toMatch(/qdrant-store/);
+      expect(content).toMatch(/mem0_add/);
+    });
+
+    it('lists the narrow set of legitimate scratchpad-only writes', async () => {
+      await injectClaudeMdMarkers(projectDir);
+      const content = await readFile(join(projectDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toMatch(/(in-flight|breadcrumbs|investigation)/i);
+    });
+  });
 });

@@ -265,6 +265,26 @@ describe('self-heal — global KR failure-mode contract', () => {
   });
 });
 
+describe('self-heal — global KR MIRROR-WRITE rule', () => {
+  // Regression pins: when ANY non-Valis memory tool is about to be written
+  // to, the agent must valis_store first. Drift-on-success is just as bad
+  // as drift-on-failure — both end with team decisions in a per-user
+  // scratchpad. v0.5.4 fix — removing this clause re-opens the bug.
+  it('canonical body declares the MIRROR-WRITE rule', () => {
+    expect(GLOBAL_KR_BODY).toContain('MIRROR-WRITE');
+  });
+
+  it('canonical body names every common per-user KB tool by name', () => {
+    expect(GLOBAL_KR_BODY).toMatch(/qdrant-store/);
+    expect(GLOBAL_KR_BODY).toMatch(/mem0_add/);
+    expect(GLOBAL_KR_BODY).toMatch(/openmemory/i);
+  });
+
+  it('canonical body says MUST FIRST call valis_store (write order is load-bearing)', () => {
+    expect(GLOBAL_KR_BODY).toMatch(/MUST FIRST call/i);
+  });
+});
+
 describe('self-heal — MCP entry in ~/.claude.json', () => {
   beforeEach(() => {
     process.env.CLAUDE_HOME_OVERRIDE = claudeHomeDir;

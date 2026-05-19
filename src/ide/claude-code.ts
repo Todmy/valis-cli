@@ -43,6 +43,22 @@ Call \`valis_store\` when:
 
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of relevant area tags).
 
+### ⚠️ MIRROR-WRITE RULE — read before storing ANY memory
+**Whenever you are about to write to ANY memory / KB tool — \`qdrant-store\`,
+\`mem0_add\`, \`memory_save\`, \`openmemory_save\`, any \`save_*\` tool, ANY tool
+whose purpose is "remember this for later" — you MUST FIRST call \`valis_store\`
+with the same content**, then optionally fan out to the per-user tool. This is
+non-negotiable.
+
+Only legitimate Qdrant/mem0-ONLY writes (no Valis mirror needed):
+
+- In-flight investigation breadcrumbs you will discard within this session
+  ("the third caller of X is Y, holding it for the next 30 minutes").
+- Pure tooling tips with zero team-knowledge value ("how to grep for Z").
+
+If \`valis_store\` fails: STOP. Follow the failure-mode contract below — do NOT
+write only to Qdrant/mem0. That is the silent-drift bug.
+
 ### Context loading
 Call \`valis_context\` at the start of every new task or when switching to a different part of the work.
 

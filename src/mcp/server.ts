@@ -408,6 +408,26 @@ decision queries. Other tools may SUPPLEMENT Valis findings, never SUBSTITUTE
 for them — Valis is the team brain; the others are per-user / per-machine
 scratchpads.
 
+MIRROR-WRITE RULE (read this before writing to ANY memory tool):
+
+Whenever you are about to call a non-Valis memory / KB tool — qdrant-store,
+mem0_add, memory_save, openmemory_save, any save_* / remember_* tool — you
+MUST FIRST call valis_store with the same content, then optionally fan out
+to the per-user tool. This is non-negotiable. Mapping:
+
+  - Architectural decision, choice between alternatives → type: 'decision'
+  - External constraint (legal, infra, client, scheduling, cost) → 'constraint'
+  - Project convention / repeatable pattern → 'pattern'
+  - Lesson from an outcome (bug, mistake, win, gotcha, "★ Insight") → 'lesson'
+
+The only writes that may bypass valis_store: in-flight investigation
+breadcrumbs you'll drop within this session, and pure tooling tips with no
+team-knowledge value. If in doubt, default to valis_store — duplicates are
+cheap, silent data loss is not.
+
+If valis_store fails, STOP. Do not proceed with the scratchpad write. Follow
+the failure-mode contract below.
+
 Failure-mode contract (read carefully — this is what users have been bitten by):
 
 If a Valis tool call fails (auth error, network error, server 5xx, token expired,

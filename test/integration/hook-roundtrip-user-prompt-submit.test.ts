@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -260,6 +260,76 @@ describe('UserPromptSubmit roundtrip', () => {
     );
     await hookUserPromptSubmitCommand();
     expect(stdoutChunks.length).toBe(1);
+  });
+});
+
+describe('UserPromptSubmit roundtrip — update-available announcement (BUG #178)', () => {
+  const SESSION_A = 'session-aaaa-1111';
+  const SESSION_B = 'session-bbbb-2222';
+
+  beforeEach(async () => {
+    process.env.CLAUDE_SESSION_ID = SESSION_A;
+    fetchMock.mockResolvedValue(jsonResponse([])); // no search hits — keep noise out
+    await mkdir(join(tempHome, 'cache'), { recursive: true });
+    await writeFile(
+      join(tempHome, 'cache', 'update-available.json'),
+      JSON.stringify({
+        target_version: '0.5.6',
+        current_version: '0.5.5',
+        reason: 'managed',
+        detected_at: new Date('2026-05-19T15:00:00Z').toISOString(),
+      }),
+    );
+  });
+
+  it('emits <valis_update_available> on first prompt of a session and stamps last_emitted_session_id', async () => {
+    await hookUserPromptSubmitCommand();
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = (JSON.parse(stdoutChunks[0]) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('<valis_update_available');
+    expect(ctx).toContain('target_version="0.5.6"');
+    expect(ctx).toContain('reason="managed"');
+
+    // Sentinel updated with last_emitted_session_id for de-dup.
+    const raw = await readFile(join(tempHome, 'cache', 'update-available.json'), 'utf-8');
+    expect(JSON.parse(raw).last_emitted_session_id).toBe(SESSION_A);
+  });
+
+  it('does NOT re-emit on subsequent prompts in the same session', async () => {
+    await hookUserPromptSubmitCommand();
+    stdoutChunks.length = 0;
+    // Second prompt in SAME session — block must NOT appear.
+    await hookUserPromptSubmitCommand();
+    const ctx = (JSON.parse(stdoutChunks[0]) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext;
+    expect(ctx).not.toContain('<valis_update_available');
+    // active-project block must still emit (always-on identity).
+    expect(ctx).toContain('<valis_active_project');
+  });
+
+  it('re-emits in a NEW session even though the sentinel persists across sessions', async () => {
+    await hookUserPromptSubmitCommand();
+    stdoutChunks.length = 0;
+    // Simulate fresh session (different CLAUDE_SESSION_ID, same persistent sentinel).
+    process.env.CLAUDE_SESSION_ID = SESSION_B;
+    await hookUserPromptSubmitCommand();
+    const ctx = (JSON.parse(stdoutChunks[0]) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('<valis_update_available');
+    // Sentinel now stamped with the new session id.
+    const raw = await readFile(join(tempHome, 'cache', 'update-available.json'), 'utf-8');
+    expect(JSON.parse(raw).last_emitted_session_id).toBe(SESSION_B);
+  });
+
+  it('drops a corrupt sentinel without crashing', async () => {
+    await writeFile(join(tempHome, 'cache', 'update-available.json'), '{not valid json');
+    await expect(hookUserPromptSubmitCommand()).resolves.not.toThrow();
+    // Active-project still lands.
+    const ctx = (JSON.parse(stdoutChunks[0]) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext;
+    expect(ctx).not.toContain('<valis_update_available');
+    expect(ctx).toContain('<valis_active_project');
   });
 });
 

@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -274,5 +274,82 @@ describe('maybeNotifyOfUpdate — auto-install opt-outs', () => {
     );
     const action = await maybeNotifyOfUpdate('0.5.2');
     expect(action).toBe('noop');
+  });
+});
+
+describe('BUG #178: update-available sentinel lifecycle', () => {
+  it('writes update-available.json when notice branch fires (VALIS_DISABLE_AUTOUPDATER=1)', async () => {
+    process.env.VALIS_DISABLE_AUTOUPDATER = '1';
+    await mkdir(join(tempHome, 'cache'), { recursive: true });
+    await writeFile(
+      join(tempHome, 'cache', 'update-check.json'),
+      JSON.stringify({
+        checked_at: new Date().toISOString(),
+        latest_version: '0.6.0',
+      }),
+    );
+
+    const action = await maybeNotifyOfUpdate('0.5.2');
+    expect(action).toBe('notice_emitted');
+
+    const raw = await readFile(join(tempHome, 'cache', 'update-available.json'), 'utf-8');
+    const sentinel = JSON.parse(raw);
+    expect(sentinel).toMatchObject({
+      target_version: '0.6.0',
+      current_version: '0.5.2',
+      reason: 'opt_out',
+    });
+    expect(sentinel.last_emitted_session_id).toBeUndefined();
+    expect(typeof sentinel.detected_at).toBe('string');
+  });
+
+  it('clears the sentinel on noop branch (user caught up)', async () => {
+    delete process.env.VALIS_DISABLE_AUTOUPDATER;
+    // Pre-seed sentinel from a previous "newer version" session-start.
+    await mkdir(join(tempHome, 'cache'), { recursive: true });
+    await writeFile(
+      join(tempHome, 'cache', 'update-available.json'),
+      JSON.stringify({
+        target_version: '0.6.0',
+        current_version: '0.5.2',
+        reason: 'managed',
+        detected_at: new Date().toISOString(),
+      }),
+    );
+    // User has now upgraded — cache says they match.
+    await writeFile(
+      join(tempHome, 'cache', 'update-check.json'),
+      JSON.stringify({
+        checked_at: new Date().toISOString(),
+        latest_version: '0.6.0',
+      }),
+    );
+
+    const action = await maybeNotifyOfUpdate('0.6.0');
+    expect(action).toBe('noop');
+    // Sentinel must be gone — no more nagging.
+    await expect(
+      access(join(tempHome, 'cache', 'update-available.json')),
+    ).rejects.toThrow();
+  });
+
+  it('clears the sentinel when VALIS_NO_UPDATE_NOTIFIER=1 (legacy hard-off honored)', async () => {
+    process.env.VALIS_NO_UPDATE_NOTIFIER = '1';
+    await mkdir(join(tempHome, 'cache'), { recursive: true });
+    await writeFile(
+      join(tempHome, 'cache', 'update-available.json'),
+      JSON.stringify({
+        target_version: '99.0.0',
+        current_version: '0.5.2',
+        reason: 'managed',
+        detected_at: new Date().toISOString(),
+      }),
+    );
+
+    const action = await maybeNotifyOfUpdate('0.5.2');
+    expect(action).toBe('noop');
+    await expect(
+      access(join(tempHome, 'cache', 'update-available.json')),
+    ).rejects.toThrow();
   });
 });

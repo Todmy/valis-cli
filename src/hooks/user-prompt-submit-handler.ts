@@ -31,9 +31,11 @@ import { buildCaptureReminder } from '../channel/push.js';
 import {
   composeActiveProjectBlock,
   composeCaptureReminderBlock,
+  composeUpdateAvailableBlock,
   composeUpdateInstalledBlock,
 } from './inject-block.js';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile, unlink, writeFile, mkdir, rename } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { join } from 'node:path';
 import { valisHome } from './paths.js';
 import { readTranscriptTokens } from './transcript.js';
@@ -437,6 +439,16 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
   const emitParts: string[] = [];
   const updateBlock = await consumeUpdatePendingMarker();
   if (updateBlock) emitParts.push(updateBlock);
+  // BUG #178: once-per-session "newer CLI available" announcement for
+  // version-manager users (nvm/volta/asdf/brew) where auto-install is
+  // architecturally unsafe. Different semantics from update-pending: the
+  // sentinel persists across sessions until the user actually upgrades
+  // (cleared by `maybeNotifyOfUpdate` on the next session-start when
+  // current >= latest). Per-session de-dup via `last_emitted_session_id`.
+  if (sessionId) {
+    const availableBlock = await consumeUpdateAvailableMarker(sessionId);
+    if (availableBlock) emitParts.push(availableBlock);
+  }
   emitParts.push(composeActiveProjectBlock(marker.projectId, marker.projectName));
   if (searchBlock) emitParts.push(searchBlock);
   emitParts.push(...parts);
@@ -452,6 +464,80 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
  * one-shot semantics so the announcement appears exactly once after each
  * upgrade. Failures swallowed; Constitution III: never block.
  */
+/**
+ * BUG #178: Read the `update-available.json` sentinel. If it exists AND
+ * has NOT yet been emitted for the current session, return the composed
+ * block and flip `last_emitted_session_id` to the current session id so
+ * subsequent prompts in the same session see nothing. The sentinel
+ * itself persists across sessions until the user actually upgrades —
+ * cleanup happens in `maybeNotifyOfUpdate` on the next session-start
+ * once `cached.latest_version <= currentVersion`.
+ *
+ * Failures are swallowed (Constitution III). If the JSON is corrupt we
+ * unlink it so we don't loop on bad data — same defensive pattern as
+ * the update-pending consumer above.
+ */
+async function consumeUpdateAvailableMarker(currentSessionId: string): Promise<string | null> {
+  const markerPath = join(valisHome(), 'cache', 'update-available.json');
+  let raw: string;
+  try {
+    raw = await readFile(markerPath, 'utf-8');
+  } catch {
+    return null; // No sentinel — fast path, common case.
+  }
+  let parsed: {
+    target_version?: string;
+    current_version?: string;
+    reason?: string;
+    last_emitted_session_id?: string;
+  };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    void unlink(markerPath).catch(() => undefined);
+    return null;
+  }
+  const target = typeof parsed.target_version === 'string' ? parsed.target_version : null;
+  const current = typeof parsed.current_version === 'string' ? parsed.current_version : null;
+  const reasonRaw = parsed.reason;
+  const reason: 'managed' | 'opt_out' | null =
+    reasonRaw === 'managed' || reasonRaw === 'opt_out' ? reasonRaw : null;
+  if (!target || !current || !reason) {
+    void unlink(markerPath).catch(() => undefined);
+    return null;
+  }
+  // De-dup: already emitted for this session → silent.
+  if (parsed.last_emitted_session_id === currentSessionId) return null;
+
+  // Compose first — if the composer throws (unexpected) we don't poison
+  // the sentinel with a fake "emitted" timestamp.
+  let block: string;
+  try {
+    block = composeUpdateAvailableBlock(target, current, reason);
+  } catch {
+    return null;
+  }
+  // Atomic-rename write so a concurrent read never sees a half-written file.
+  try {
+    const tmp = `${markerPath}.tmp`;
+    await mkdir(dirname(markerPath), { recursive: true });
+    await writeFile(
+      tmp,
+      JSON.stringify(
+        { ...parsed, last_emitted_session_id: currentSessionId },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+    await rename(tmp, markerPath);
+  } catch {
+    // Marker write failed — return the block anyway so the user gets ONE
+    // emission; next session will re-emit because flag never landed.
+  }
+  return block;
+}
+
 async function consumeUpdatePendingMarker(): Promise<string | null> {
   const markerPath = join(valisHome(), 'cache', 'update-pending.json');
   let raw: string;

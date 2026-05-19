@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   composeActiveProjectBlock,
   composeSearchResultsBlock,
+  composeUpdateAvailableBlock,
 } from '../../src/hooks/inject-block.js';
 
 describe('hooks/inject-block — composeSearchResultsBlock', () => {
@@ -100,5 +101,35 @@ describe('hooks/inject-block — composeActiveProjectBlock (BUG #176)', () => {
     // 4 chars per token estimator (matches budget.ts) — block stays well
     // under 150 tokens for any realistic project_name length.
     expect(Math.ceil(out.length / 4)).toBeLessThan(150);
+  });
+});
+
+describe('hooks/inject-block — composeUpdateAvailableBlock (BUG #178)', () => {
+  it('emits a version-manager-aware block for reason="managed"', () => {
+    const out = composeUpdateAvailableBlock('0.5.6', '0.5.5', 'managed');
+    expect(out).toContain('<valis_update_available');
+    expect(out).toContain('target_version="0.5.6"');
+    expect(out).toContain('current_version="0.5.5"');
+    expect(out).toContain('reason="managed"');
+    expect(out).toMatch(/nvm|volta|asdf|brew|version manager/i);
+    expect(out).toContain('npm i -g valis-cli@latest');
+    expect(out).toContain('</valis_update_available>');
+  });
+
+  it('emits an opt-out-aware block for reason="opt_out"', () => {
+    const out = composeUpdateAvailableBlock('0.5.6', '0.5.5', 'opt_out');
+    expect(out).toContain('reason="opt_out"');
+    expect(out).toContain('VALIS_DISABLE_AUTOUPDATER');
+    expect(out).toContain('npm i -g valis-cli@latest');
+  });
+
+  it('reminds the agent to advise a session restart so the new binary takes effect', () => {
+    const out = composeUpdateAvailableBlock('0.5.6', '0.5.5', 'managed');
+    expect(out).toMatch(/restart Claude Code|session-start|new version takes effect/i);
+  });
+
+  it('is compact — under ~200 tokens — so it never crowds search budget', () => {
+    const out = composeUpdateAvailableBlock('0.5.6', '0.5.5', 'managed');
+    expect(Math.ceil(out.length / 4)).toBeLessThan(200);
   });
 });

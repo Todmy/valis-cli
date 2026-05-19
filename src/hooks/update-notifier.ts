@@ -47,7 +47,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { valisHome } from './paths.js';
 
@@ -69,12 +69,37 @@ interface UpdatePendingRecord {
   log_path: string;
 }
 
+/**
+ * BUG #178 — sentinel written by the notice branch when auto-install is
+ * blocked (version manager) but a newer CLI exists. UserPromptSubmit reads
+ * it and emits `<valis_update_available>` so the user sees the upgrade
+ * instruction in Claude Code's UI (stderr from session-start is unreliable
+ * there). One emission per session: `last_emitted_session_id` is reset on
+ * each session-start, and the consumer flips it on first qualifying prompt.
+ */
+interface UpdateAvailableRecord {
+  /** Latest version on the registry. */
+  target_version: string;
+  /** Current installed version when the sentinel was written. */
+  current_version: string;
+  /** Why auto-install was skipped — drives the wording in the block. */
+  reason: 'managed' | 'opt_out';
+  /** ISO timestamp when the sentinel was written. */
+  detected_at: string;
+  /** Filled by UserPromptSubmit on first emission; resets on session-start. */
+  last_emitted_session_id?: string;
+}
+
 function cachePath(): string {
   return join(valisHome(), 'cache', 'update-check.json');
 }
 
 function pendingPath(): string {
   return join(valisHome(), 'cache', 'update-pending.json');
+}
+
+function availablePath(): string {
+  return join(valisHome(), 'cache', 'update-available.json');
 }
 
 function installLogPath(): string {
@@ -134,6 +159,32 @@ async function writePending(record: UpdatePendingRecord): Promise<void> {
     const tmp = `${target}.tmp`;
     await writeFile(tmp, JSON.stringify(record, null, 2), 'utf-8');
     await rename(tmp, target);
+  } catch {
+    /* non-fatal */
+  }
+}
+
+async function writeAvailable(record: UpdateAvailableRecord): Promise<void> {
+  try {
+    const target = availablePath();
+    await mkdir(dirname(target), { recursive: true });
+    const tmp = `${target}.tmp`;
+    await writeFile(tmp, JSON.stringify(record, null, 2), 'utf-8');
+    await rename(tmp, target);
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Drop the update-available sentinel — called when the user has caught up
+ * (cached.latest <= currentVersion in the no-op branch) so we stop nagging.
+ * Swallows ENOENT and any other error: the sentinel may not exist, and the
+ * notifier must not throw from the hot path.
+ */
+async function clearAvailable(): Promise<void> {
+  try {
+    await unlink(availablePath());
   } catch {
     /* non-fatal */
   }
@@ -310,7 +361,13 @@ export async function maybeNotifyOfUpdate(
   currentVersion: string,
 ): Promise<'auto_installed' | 'notice_emitted' | 'noop'> {
   const prefs = readPreferences();
-  if (!prefs.notifier_enabled) return 'noop';
+  if (!prefs.notifier_enabled) {
+    // BUG #178: legacy kill-switch silences EVERYTHING including the
+    // additionalContext block — clear any stale sentinel so we don't keep
+    // nagging the agent after the user explicitly opted out.
+    await clearAvailable();
+    return 'noop';
+  }
 
   let cached: UpdateCacheRecord | null = null;
   try {
@@ -327,8 +384,27 @@ export async function maybeNotifyOfUpdate(
   }
 
   if (!cached || compareVersions(cached.latest_version, currentVersion) <= 0) {
+    // User has caught up (or first run) — purge the sentinel.
+    await clearAvailable();
     return 'noop';
   }
+
+  // From here on, a newer version IS available.
+
+  /**
+   * Write the `<valis_update_available>` sentinel for this session-start.
+   * Resets `last_emitted_session_id` to undefined so the UserPromptSubmit
+   * consumer emits the block once at the next qualifying prompt of THIS
+   * Claude Code session. Reason drives wording so the user sees an
+   * actionable, manager-aware instruction.
+   */
+  const writeAvailableSentinel = (reason: 'managed' | 'opt_out'): Promise<void> =>
+    writeAvailable({
+      target_version: cached!.latest_version,
+      current_version: currentVersion,
+      reason,
+      detected_at: new Date().toISOString(),
+    });
 
   if (prefs.auto_install_enabled) {
     const safeRoot = await resolveSafeNpmGlobalRoot();
@@ -340,17 +416,22 @@ export async function maybeNotifyOfUpdate(
           spawned_at: new Date().toISOString(),
           log_path: installLogPath(),
         });
+        // Auto-install is happening — drop the manual-action sentinel.
+        await clearAvailable();
         return 'auto_installed';
       }
       // Spawn failed — fall through to notice as the last-resort signal.
       emitNotice(currentVersion, cached.latest_version, 'opt_out');
+      await writeAvailableSentinel('opt_out');
       return 'notice_emitted';
     }
     emitNotice(currentVersion, cached.latest_version, 'managed');
+    await writeAvailableSentinel('managed');
     return 'notice_emitted';
   }
 
   emitNotice(currentVersion, cached.latest_version, 'opt_out');
+  await writeAvailableSentinel('opt_out');
   return 'notice_emitted';
 }
 

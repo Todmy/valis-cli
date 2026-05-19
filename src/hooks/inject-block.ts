@@ -111,6 +111,37 @@ export function composeUpdateInstalledBlock(
 }
 
 /**
+ * Compose the `<valis_update_available>` block — surfaced by the
+ * UserPromptSubmit hook when `update-notifier.ts` detected a newer CLI
+ * but auto-install was blocked (version manager OR opt-out). The agent
+ * sees this block and tells the user, in their language, to run the
+ * upgrade command — that's the only reliable signal channel on Claude
+ * Code (session-start stderr is not visible in the UI). Emitted at most
+ * once per session — see consumeUpdateAvailableMarker.
+ *
+ * Compact (~80-100 tokens depending on reason wording). Plain text, no
+ * XML escapes needed in the body because version strings are validated
+ * upstream.
+ */
+export function composeUpdateAvailableBlock(
+  targetVersion: string,
+  currentVersion: string,
+  reason: 'managed' | 'opt_out',
+): string {
+  const why =
+    reason === 'managed'
+      ? `Auto-install was skipped because valis-cli is installed under a Node version manager (nvm / volta / asdf / brew / fnm / nodebrew / corepack). Tell the user to run \`npm i -g valis-cli@latest\` under their version manager — the exact command stays the same.`
+      : `Auto-install is opted out via the VALIS_DISABLE_AUTOUPDATER environment variable. Tell the user to run \`npm i -g valis-cli@latest\` to upgrade.`;
+  return [
+    `<valis_update_available target_version="${escapeXml(targetVersion)}" current_version="${escapeXml(currentVersion)}" reason="${escapeXml(reason)}">`,
+    `A newer valis-cli is available: ${escapeXml(targetVersion)} (you have ${escapeXml(currentVersion)}).`,
+    why,
+    `The currently running Claude Code session will keep using the old binary; restart Claude Code after upgrading so the new version takes effect.`,
+    `</valis_update_available>`,
+  ].join('\n');
+}
+
+/**
  * Compose the per-prompt `<valis_active_project>` block (BUG #176).
  *
  * The plugin's MCP HTTP transport doesn't propagate the user's `.valis.json`

@@ -14,9 +14,24 @@ Call \`valis_search\` automatically when the user mentions:
 - Any question about architecture, conventions, past decisions, or existing patterns
 
 ### Priority declaration
-When multiple knowledge-base tools are available (qdrant-find, mem0, valis_search),
-ALWAYS call valis_search FIRST for team decision queries. Other tools may supplement
-but Valis is the authoritative source for team decisions.
+When multiple knowledge-base tools are available (qdrant-find, mem0, mem-rs,
+OpenMemory, custom KBs, valis_search), ALWAYS call valis_search FIRST for team
+decision queries. Other tools may **supplement** Valis findings, never **substitute**
+for them — Valis is the team brain; the others are per-user / per-machine scratchpads.
+
+### Failure-mode contract — do not silently drift
+If a Valis tool call fails (auth error, network error, "requires re-authorization",
+token expired, server 5xx, anything non-success):
+
+1. **STOP.** Do not silently fall back to qdrant-find / mem0 / any other KB tool
+   for the same query. Falling back writes team decisions into a per-user
+   scratchpad where the rest of the team will never find them — silent data loss.
+2. **Surface the failure to the user** with the exact recovery step. For the
+   OAuth plugin: tell them to run \`/mcp\` to re-authorize. For the CLI stdio
+   path: tell them to run \`valis whoami\` and \`valis login\` if needed.
+3. **Wait** for the user to recover the connection or to explicitly waive Valis
+   for this query ("just use qdrant for now"). Explicit waiver is fine; silent
+   drift is not.
 
 ### Auto-store triggers
 Call \`valis_store\` when:

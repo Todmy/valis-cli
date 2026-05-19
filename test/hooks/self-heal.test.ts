@@ -246,6 +246,25 @@ describe('self-heal — canonical hash stability', () => {
   });
 });
 
+describe('self-heal — global KR failure-mode contract', () => {
+  // Regression pins: when Valis fails the agent must NOT silently fall back
+  // to qdrant / mem0 / etc., or team-level decisions land in a per-user
+  // scratchpad (silent data loss). v0.5.4 fix — removing this clause
+  // re-opens the bug.
+  it('canonical body declares the failure-mode contract', () => {
+    expect(GLOBAL_KR_BODY).toContain('Failure-mode contract');
+  });
+
+  it('canonical body forbids silent fallback to Qdrant / mem0', () => {
+    expect(GLOBAL_KR_BODY).toMatch(/Do not silently fall back/i);
+  });
+
+  it('canonical body names the OAuth and CLI recovery paths', () => {
+    expect(GLOBAL_KR_BODY).toContain('/mcp');
+    expect(GLOBAL_KR_BODY).toContain('valis login');
+  });
+});
+
 describe('self-heal — MCP entry in ~/.claude.json', () => {
   beforeEach(() => {
     process.env.CLAUDE_HOME_OVERRIDE = claudeHomeDir;

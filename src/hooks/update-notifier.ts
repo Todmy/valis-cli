@@ -29,12 +29,16 @@
  *   3. **No-op branch.** Already at latest, no cache yet (first run),
  *      or explicit opt-out of the entire feature.
  *
- * Opt-outs (any one disables auto-install; the last two also disable
- * the notice fallback):
+ * Opt-outs (environment only — mirrors the Claude Code CLI pattern
+ * `DISABLE_AUTOUPDATER=1`; no config-file knob by design so the surface
+ * stays a single string the user can grep their shell rc files for):
  *
- *   - `VALIS_AUTO_UPDATE=0` env var
- *   - `auto_update: false` in `~/.valis/config.json`
- *   - `VALIS_NO_UPDATE_NOTIFIER=1` env var (legacy — disables EVERYTHING)
+ *   - `VALIS_DISABLE_AUTOUPDATER=1` — turns the auto-install spawn off,
+ *     leaves the notice fallback enabled (user still sees the upgrade
+ *     command, just runs it themselves).
+ *   - `VALIS_NO_UPDATE_NOTIFIER=1` — legacy kill switch, disables BOTH
+ *     auto-install AND notice. Retained as an alias for v0.5.3-era
+ *     users who already set it.
  *
  * Constitution III: the notifier must never throw, never delay the
  * host hook by more than a few ms on the hot path, and never surface
@@ -75,10 +79,6 @@ function pendingPath(): string {
 
 function installLogPath(): string {
   return join(valisHome(), 'cache', 'update-install.log');
-}
-
-function configPath(): string {
-  return join(valisHome(), 'config.json');
 }
 
 function compareVersions(a: string, b: string): number {
@@ -176,36 +176,25 @@ interface AutoUpdatePreferences {
 }
 
 /**
- * Read `~/.valis/config.json` for the `auto_update` flag and check
- * the env overrides. Defaults: auto_install enabled, notifier enabled.
+ * Read the environment for the two opt-out switches. Defaults: both on
+ * (auto-install enabled, notice fallback enabled). No config file is
+ * consulted by design — opt-out lives in the environment so it travels
+ * with the shell session the way `DISABLE_AUTOUPDATER` does for Claude
+ * Code, and so users can flip it per-invocation without editing JSON.
  */
-async function readPreferences(): Promise<AutoUpdatePreferences> {
-  let configAutoUpdate: boolean | undefined;
-  try {
-    const raw = await readFile(configPath(), 'utf-8');
-    const parsed = JSON.parse(raw) as { auto_update?: unknown };
-    if (typeof parsed.auto_update === 'boolean') {
-      configAutoUpdate = parsed.auto_update;
-    }
-  } catch {
-    /* missing / malformed config — fall back to defaults */
-  }
-
-  const notifierOff = (process.env.VALIS_NO_UPDATE_NOTIFIER ?? '') === '1';
-  const envAutoUpdate = process.env.VALIS_AUTO_UPDATE;
-  const envOptedOutOfAuto =
-    envAutoUpdate === '0' ||
-    envAutoUpdate?.toLowerCase() === 'false' ||
-    envAutoUpdate?.toLowerCase() === 'no';
+function readPreferences(): AutoUpdatePreferences {
+  const truthy = (v: string | undefined): boolean => {
+    if (!v) return false;
+    const s = v.trim().toLowerCase();
+    return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+  };
+  const notifierOff = truthy(process.env.VALIS_NO_UPDATE_NOTIFIER);
+  const autoInstallOff = truthy(process.env.VALIS_DISABLE_AUTOUPDATER);
 
   const notifierEnabled = !notifierOff;
-  // auto-install is enabled by default. Either env or config can disable it.
-  // The legacy NO_UPDATE_NOTIFIER kill-switch also disables it.
-  const autoInstallEnabled =
-    notifierEnabled &&
-    configAutoUpdate !== false &&
-    !envOptedOutOfAuto;
-
+  // Auto-install is on by default. Either explicit env switch turns it
+  // off; legacy NO_UPDATE_NOTIFIER turns off the notice path too.
+  const autoInstallEnabled = notifierEnabled && !autoInstallOff;
   return { notifier_enabled: notifierEnabled, auto_install_enabled: autoInstallEnabled };
 }
 
@@ -320,12 +309,7 @@ function emitNotice(
 export async function maybeNotifyOfUpdate(
   currentVersion: string,
 ): Promise<'auto_installed' | 'notice_emitted' | 'noop'> {
-  let prefs: AutoUpdatePreferences;
-  try {
-    prefs = await readPreferences();
-  } catch {
-    prefs = { notifier_enabled: false, auto_install_enabled: false };
-  }
+  const prefs = readPreferences();
   if (!prefs.notifier_enabled) return 'noop';
 
   let cached: UpdateCacheRecord | null = null;

@@ -19,7 +19,7 @@ import {
 
 let tempHome: string;
 let prevValisHome: string | undefined;
-let prevAutoUpdate: string | undefined;
+let prevDisableAuto: string | undefined;
 let prevNoNotifier: string | undefined;
 let stderrWrites: string[];
 let stderrSpy: ReturnType<typeof vi.spyOn>;
@@ -27,14 +27,14 @@ let stderrSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), 'valis-notifier-'));
   prevValisHome = process.env.VALIS_HOME;
-  prevAutoUpdate = process.env.VALIS_AUTO_UPDATE;
+  prevDisableAuto = process.env.VALIS_DISABLE_AUTOUPDATER;
   prevNoNotifier = process.env.VALIS_NO_UPDATE_NOTIFIER;
   process.env.VALIS_HOME = tempHome;
   // Default: opt OUT of auto-install for these tests so they exercise
   // the notice branch deterministically across dev/CI machines (some
   // have npm under a version manager, some don't). Specific tests
   // override this when they want to exercise the auto-install branch.
-  process.env.VALIS_AUTO_UPDATE = '0';
+  process.env.VALIS_DISABLE_AUTOUPDATER = '1';
   delete process.env.VALIS_NO_UPDATE_NOTIFIER;
   stderrWrites = [];
   stderrSpy = vi
@@ -49,8 +49,8 @@ afterEach(async () => {
   stderrSpy.mockRestore();
   if (prevValisHome === undefined) delete process.env.VALIS_HOME;
   else process.env.VALIS_HOME = prevValisHome;
-  if (prevAutoUpdate === undefined) delete process.env.VALIS_AUTO_UPDATE;
-  else process.env.VALIS_AUTO_UPDATE = prevAutoUpdate;
+  if (prevDisableAuto === undefined) delete process.env.VALIS_DISABLE_AUTOUPDATER;
+  else process.env.VALIS_DISABLE_AUTOUPDATER = prevDisableAuto;
   if (prevNoNotifier === undefined) delete process.env.VALIS_NO_UPDATE_NOTIFIER;
   else process.env.VALIS_NO_UPDATE_NOTIFIER = prevNoNotifier;
   await rm(tempHome, { recursive: true, force: true });
@@ -167,59 +167,53 @@ describe('maybeNotifyOfUpdate — cache hot path', () => {
   });
 });
 
-describe('readPreferences — config + env opt-outs', () => {
-  it('defaults to { notifier on, auto_install on } with no config and no env', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
-    const prefs = await __test__.readPreferences();
+describe('readPreferences — environment-only opt-outs (mirrors Claude Code DISABLE_AUTOUPDATER pattern)', () => {
+  it('defaults to { notifier on, auto_install on } with no env vars set', () => {
+    delete process.env.VALIS_DISABLE_AUTOUPDATER;
+    delete process.env.VALIS_NO_UPDATE_NOTIFIER;
+    const prefs = __test__.readPreferences();
     expect(prefs.notifier_enabled).toBe(true);
     expect(prefs.auto_install_enabled).toBe(true);
   });
 
-  it('VALIS_NO_UPDATE_NOTIFIER=1 disables both notifier and auto-install (legacy kill switch)', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
+  it('VALIS_NO_UPDATE_NOTIFIER=1 (legacy) disables BOTH notifier and auto-install', () => {
+    delete process.env.VALIS_DISABLE_AUTOUPDATER;
     process.env.VALIS_NO_UPDATE_NOTIFIER = '1';
-    const prefs = await __test__.readPreferences();
+    const prefs = __test__.readPreferences();
     expect(prefs.notifier_enabled).toBe(false);
     expect(prefs.auto_install_enabled).toBe(false);
   });
 
-  it('VALIS_AUTO_UPDATE=0 disables ONLY auto-install — notice still allowed', async () => {
-    process.env.VALIS_AUTO_UPDATE = '0';
-    const prefs = await __test__.readPreferences();
+  it('VALIS_DISABLE_AUTOUPDATER=1 disables ONLY auto-install — notice still allowed', () => {
+    process.env.VALIS_DISABLE_AUTOUPDATER = '1';
+    const prefs = __test__.readPreferences();
     expect(prefs.notifier_enabled).toBe(true);
     expect(prefs.auto_install_enabled).toBe(false);
   });
 
-  it('config `auto_update: false` disables auto-install (notice still allowed)', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
+  it('accepts truthy aliases (true / yes / on) for VALIS_DISABLE_AUTOUPDATER', () => {
+    for (const value of ['true', 'yes', 'on', 'TRUE', '1']) {
+      process.env.VALIS_DISABLE_AUTOUPDATER = value;
+      expect(__test__.readPreferences().auto_install_enabled).toBe(false);
+    }
+  });
+
+  it('ignores falsy / unset values for VALIS_DISABLE_AUTOUPDATER', () => {
+    for (const value of ['0', 'false', 'no', '', 'random']) {
+      process.env.VALIS_DISABLE_AUTOUPDATER = value;
+      expect(__test__.readPreferences().auto_install_enabled).toBe(true);
+    }
+  });
+
+  it('does NOT read ~/.valis/config.json — config-file knob removed by design', async () => {
+    delete process.env.VALIS_DISABLE_AUTOUPDATER;
+    delete process.env.VALIS_NO_UPDATE_NOTIFIER;
+    // Pretend a stale config file lingers — it must be ignored.
     await writeFile(
       join(tempHome, 'config.json'),
       JSON.stringify({ org_id: 'x', auto_update: false }),
     );
-    const prefs = await __test__.readPreferences();
-    expect(prefs.notifier_enabled).toBe(true);
-    expect(prefs.auto_install_enabled).toBe(false);
-  });
-
-  it('config `auto_update: true` is honored as default', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
-    await writeFile(
-      join(tempHome, 'config.json'),
-      JSON.stringify({ org_id: 'x', auto_update: true }),
-    );
-    const prefs = await __test__.readPreferences();
-    expect(prefs.auto_install_enabled).toBe(true);
-  });
-
-  it('treats config `auto_update: "false"` (string) as a non-bool and falls back to default', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
-    await writeFile(
-      join(tempHome, 'config.json'),
-      JSON.stringify({ org_id: 'x', auto_update: 'false' }),
-    );
-    const prefs = await __test__.readPreferences();
-    // We only honor `true`/`false` literals; string "false" is ignored and
-    // the default applies. This is intentional — JSON typo protection.
+    const prefs = __test__.readPreferences();
     expect(prefs.auto_install_enabled).toBe(true);
   });
 });
@@ -253,8 +247,8 @@ describe('maybeNotifyOfUpdate — auto-install opt-outs', () => {
     expect(stderrWrites.join('')).toBe('');
   });
 
-  it('emits a notice when VALIS_AUTO_UPDATE=0 but newer version is available', async () => {
-    process.env.VALIS_AUTO_UPDATE = '0';
+  it('emits a notice when VALIS_DISABLE_AUTOUPDATER=1 but newer version is available', async () => {
+    process.env.VALIS_DISABLE_AUTOUPDATER = '1';
     await mkdir(join(tempHome, 'cache'), { recursive: true });
     await writeFile(
       join(tempHome, 'cache', 'update-check.json'),
@@ -269,7 +263,7 @@ describe('maybeNotifyOfUpdate — auto-install opt-outs', () => {
   });
 
   it('returns "noop" when current version equals cached latest, regardless of auto-update setting', async () => {
-    delete process.env.VALIS_AUTO_UPDATE;
+    delete process.env.VALIS_DISABLE_AUTOUPDATER;
     await mkdir(join(tempHome, 'cache'), { recursive: true });
     await writeFile(
       join(tempHome, 'cache', 'update-check.json'),

@@ -26,6 +26,7 @@ import {
   GLOBAL_KR_BODY,
   canonicalGlobalKrBlock,
 } from '../../src/hooks/self-heal-templates.js';
+import { injectClaudeMdMarkers } from '../../src/ide/claude-code.js';
 
 let tempHome: string;
 let claudeHomeDir: string;
@@ -156,6 +157,67 @@ Other content.
     expect(after).not.toContain('Two-layer model');
   });
 
+  it('auto-upgrades a stale-canonical block (historical hash match) to current policy', async () => {
+    // Construct a synthetic stale-canonical body: known text + add its hash to the
+    // historical list. Body has NO policy-version marker — that's how all
+    // pre-v0.5.4 blocks look in the wild.
+    const staleBody = '# Knowledge Retention\n\nOld text from before policy versioning.';
+    const staleHash = __internal.contentHash(staleBody);
+    __internal.HISTORICAL_GLOBAL_KR_HASHES.push(staleHash);
+
+    try {
+      const wrapped = `${GLOBAL_KR_START}\n${staleBody}\n${GLOBAL_KR_END}`;
+      await writeGlobalClaudeMd(`# Top\n\n${wrapped}\n`);
+
+      const reports = await runSelfHeal({ projectDir, silent: true });
+      const r = reports.find((x) => x.target.includes('Knowledge Retention'));
+      expect(r?.outcome).toBe('repaired');
+      expect(r?.notes ?? '').toMatch(/auto-upgrade/);
+
+      const after = await readFile(join(claudeHomeDir, 'CLAUDE.md'), 'utf-8');
+      // New canonical content lands; old content is gone.
+      expect(after).toContain('MIRROR-WRITE');
+      expect(after).toContain('valis:policy-version:');
+      expect(after).not.toContain('Old text from before policy versioning');
+    } finally {
+      // Remove the test fixture from the shared module-scope array so other
+      // tests don't see it.
+      const i = __internal.HISTORICAL_GLOBAL_KR_HASHES.indexOf(staleHash);
+      if (i >= 0) __internal.HISTORICAL_GLOBAL_KR_HASHES.splice(i, 1);
+    }
+  });
+
+  it('writes a backup before auto-upgrading a stale canonical', async () => {
+    const staleBody = '# Knowledge Retention\n\nAnother snapshot of older canon.';
+    const staleHash = __internal.contentHash(staleBody);
+    __internal.HISTORICAL_GLOBAL_KR_HASHES.push(staleHash);
+
+    try {
+      const wrapped = `${GLOBAL_KR_START}\n${staleBody}\n${GLOBAL_KR_END}`;
+      const original = `# Top\n\n${wrapped}\n`;
+      await writeGlobalClaudeMd(original);
+
+      await runSelfHeal({ projectDir, silent: true });
+
+      const { readdirSync } = await import('node:fs');
+      const root = join(tempHome, 'migrate-backup', 'self-heal', 'global-claude-md');
+      const entries = readdirSync(root);
+      expect(entries.length).toBeGreaterThan(0);
+      const backup = await readFile(join(root, entries[0], 'CLAUDE.md'), 'utf-8');
+      expect(backup).toBe(original);
+    } finally {
+      const i = __internal.HISTORICAL_GLOBAL_KR_HASHES.indexOf(staleHash);
+      if (i >= 0) __internal.HISTORICAL_GLOBAL_KR_HASHES.splice(i, 1);
+    }
+  });
+
+  it('current canonical block carries the policy-version marker', async () => {
+    await writeGlobalClaudeMd('');
+    await runSelfHeal({ projectDir, silent: true });
+    const after = await readFile(join(claudeHomeDir, 'CLAUDE.md'), 'utf-8');
+    expect(after).toMatch(/<!--\s*valis:policy-version:\d{4}-\d{2}-\d{2}/);
+  });
+
   it('skipped when global CLAUDE.md does not exist', async () => {
     const reports = await runSelfHeal({ projectDir, silent: true });
     expect(reports.find((r) => r.target.includes('Knowledge Retention'))?.outcome).toBe('skipped');
@@ -184,13 +246,51 @@ describe('self-heal — project <dir>/CLAUDE.md markers', () => {
     expect(reports.find((r) => r.target.includes('valis:start markers'))?.outcome).toBe('skipped');
   });
 
-  it('reports fresh when project markers present', async () => {
-    await writeFile(
-      join(projectDir, 'CLAUDE.md'),
-      '# Project\n\n<!-- valis:start -->\nSome valis content.\n<!-- valis:end -->\n',
-    );
+  it('reports fresh when canonical project block is present', async () => {
+    // Seed via the canonical injector so the block carries the current
+    // policy-version marker — that's what self-heal looks for to skip
+    // the upgrade path.
+    await writeFile(join(projectDir, 'CLAUDE.md'), '# Project\n\n');
+    await injectClaudeMdMarkers(projectDir);
     const reports = await runSelfHeal({ projectDir, silent: true });
     expect(reports.find((r) => r.target.includes('valis:start markers'))?.outcome).toBe('fresh');
+  });
+
+  it('reports user_customized when markers wrap arbitrary user content (no policy marker, no historical hash)', async () => {
+    await writeFile(
+      join(projectDir, 'CLAUDE.md'),
+      '# Project\n\n<!-- valis:start -->\nSome custom valis content.\n<!-- valis:end -->\n',
+    );
+    const reports = await runSelfHeal({ projectDir, silent: true });
+    expect(reports.find((r) => r.target.includes('valis:start markers'))?.outcome).toBe(
+      'user_customized',
+    );
+  });
+
+  it('auto-upgrades a stale-canonical project block (historical hash match)', async () => {
+    const staleBody = 'Old AGENT_INSTRUCTIONS body from before policy versioning.';
+    const staleHash = __internal.contentHash(staleBody);
+    __internal.HISTORICAL_AGENT_INSTRUCTIONS_HASHES.push(staleHash);
+
+    try {
+      await writeFile(
+        join(projectDir, 'CLAUDE.md'),
+        `# Project\n\n<!-- valis:start -->\n${staleBody}\n<!-- valis:end -->\n`,
+      );
+      const reports = await runSelfHeal({ projectDir, silent: true });
+      const r = reports.find((x) => x.target.includes('valis:start markers'));
+      expect(r?.outcome).toBe('repaired');
+      expect(r?.notes ?? '').toMatch(/auto-upgrade/);
+
+      const after = await readFile(join(projectDir, 'CLAUDE.md'), 'utf-8');
+      // Canonical content with policy marker lands; old content is gone.
+      expect(after).toContain('MIRROR-WRITE');
+      expect(after).toContain('valis:policy-version:');
+      expect(after).not.toContain(staleBody);
+    } finally {
+      const i = __internal.HISTORICAL_AGENT_INSTRUCTIONS_HASHES.indexOf(staleHash);
+      if (i >= 0) __internal.HISTORICAL_AGENT_INSTRUCTIONS_HASHES.splice(i, 1);
+    }
   });
 });
 
@@ -563,10 +663,11 @@ describe('self-heal — Cursor MCP entry (F)', () => {
 describe('self-heal — performance smoke', () => {
   it('fresh-state path completes under 50ms (substring probes only)', async () => {
     await writeGlobalClaudeMd('# Top\n\n' + canonicalGlobalKrBlock() + '\n');
-    await writeFile(
-      join(projectDir, 'CLAUDE.md'),
-      '# P\n<!-- valis:start -->\nx\n<!-- valis:end -->\n',
-    );
+    // Seed project CLAUDE.md via the canonical injector so the block carries
+    // the current policy-version marker — required for the project heal to
+    // report `fresh` under the policy-version mechanism.
+    await writeFile(join(projectDir, 'CLAUDE.md'), '# P\n');
+    await injectClaudeMdMarkers(projectDir);
     await mkdir(claudeHomeDir, { recursive: true });
     await writeFile(
       join(claudeHomeDir, 'settings.json'),

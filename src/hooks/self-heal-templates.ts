@@ -7,7 +7,37 @@
 export const GLOBAL_KR_START = '<!-- valis:knowledge-retention:start -->';
 export const GLOBAL_KR_END = '<!-- valis:knowledge-retention:end -->';
 
+/**
+ * Policy version embedded inside the canonical block. Bumped whenever the
+ * agent-instruction policy changes in a way users must adopt automatically
+ * (e.g. MIRROR-WRITE rule, failure-mode contract). Self-heal uses this
+ * marker to distinguish "stale canonical from a previous CLI version" (auto-
+ * upgrade) from "engineer edited the block by hand" (leave alone).
+ *
+ * Format: ISO-date plus a slug. String-comparable lex order.
+ */
+export const KR_POLICY_VERSION = '2026-05-19-mirror-write';
+export const KR_POLICY_MARKER_PREFIX = '<!-- valis:policy-version:';
+export const KR_POLICY_MARKER_SUFFIX = ' -->';
+
+export function policyMarkerLine(version: string = KR_POLICY_VERSION): string {
+  return `${KR_POLICY_MARKER_PREFIX}${version}${KR_POLICY_MARKER_SUFFIX}`;
+}
+
+const POLICY_VERSION_PATTERN = /<!--\s*valis:policy-version:([^\s-]+(?:-[^\s-]+)*)\s*-->/;
+
+/**
+ * Parse a `<!-- valis:policy-version:X -->` marker out of arbitrary text.
+ * Returns the version string or `null` if no marker present. Pure helper.
+ */
+export function parsePolicyVersion(text: string): string | null {
+  const m = text.match(POLICY_VERSION_PATTERN);
+  return m ? m[1] : null;
+}
+
 const KR_LINES = [
+  policyMarkerLine(),
+  '',
   '# Knowledge Retention',
   '',
   'Two-layer model:',

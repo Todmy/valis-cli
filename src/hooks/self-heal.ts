@@ -44,7 +44,28 @@ import {
   SETTINGS_HOOK_COMMANDS,
   SETTINGS_HOOK_COMMANDS_LEGACY,
   canonicalGlobalKrBlock,
+  KR_POLICY_VERSION,
+  parsePolicyVersion,
 } from './self-heal-templates.js';
+
+/**
+ * Historical hashes of the canonical block bodies from previous CLI
+ * versions. When a user's block matches one of these AND is missing
+ * the policy-version marker, we know it's stale-canonical (not user
+ * customization) and can auto-upgrade silently with a backup.
+ *
+ * To add an entry on a future policy bump: hash the OLD body with the
+ * `contentHash` helper below before changing it, and append the result.
+ *
+ * Mutable (not `readonly`) only so tests can append synthetic hashes
+ * without owning the historical body strings — see `__internal`.
+ */
+const HISTORICAL_GLOBAL_KR_HASHES: string[] = [
+  '45038b086df136de', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
+];
+const HISTORICAL_AGENT_INSTRUCTIONS_HASHES: string[] = [
+  '46818720c327567f', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
+];
 
 function contentHash(s: string): string {
   return createHash('sha256').update(s.replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
@@ -171,6 +192,33 @@ async function healGlobalClaudeMd(): Promise<HealReport> {
     if (currentHash === CANONICAL_GLOBAL_KR_HASH) {
       return { target, outcome: 'fresh' };
     }
+
+    // Policy-version-aware drift gate. If the block carries a current
+    // policy marker, drift = user-customized (leave alone). If the
+    // marker is missing OR older AND the body matches a known historical
+    // canonical hash, drift = stale canonical → auto-upgrade silently.
+    // Anything else is genuine user customization.
+    const blockVersion = parsePolicyVersion(between);
+    const isStaleCanonical =
+      (blockVersion === null || blockVersion < KR_POLICY_VERSION) &&
+      HISTORICAL_GLOBAL_KR_HASHES.includes(currentHash);
+
+    if (isStaleCanonical) {
+      await backupOriginal(targetPath, 'global-claude-md');
+      const upgraded = content.replace(
+        new RegExp(
+          `${escapeRegex(GLOBAL_KR_START)}[\\s\\S]*?${escapeRegex(GLOBAL_KR_END)}`,
+        ),
+        canonicalGlobalKrBlock(),
+      );
+      await atomicWrite(targetPath, upgraded);
+      return {
+        target,
+        outcome: 'repaired',
+        notes: `auto-upgrade: ${blockVersion ?? 'pre-policy'} → ${KR_POLICY_VERSION}`,
+      };
+    }
+
     return {
       target,
       outcome: 'user_customized',
@@ -184,6 +232,10 @@ async function healGlobalClaudeMd(): Promise<HealReport> {
   return { target, outcome: 'repaired' };
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function healProjectClaudeMd(projectDir: string): Promise<HealReport> {
   const target = `${projectDir}/CLAUDE.md (valis:start markers)`;
   const targetPath = join(projectDir, 'CLAUDE.md');
@@ -194,7 +246,39 @@ async function healProjectClaudeMd(projectDir: string): Promise<HealReport> {
   const content = await readFile(targetPath, 'utf-8');
   const hasMarkers =
     content.includes(PROJECT_VALIS_START) && content.includes(PROJECT_VALIS_END);
-  if (hasMarkers) return { target, outcome: 'fresh' };
+
+  if (hasMarkers) {
+    // Policy-version-aware upgrade gate. If the block carries a current
+    // policy marker → fresh. Older / missing AND body hash matches a
+    // known historical canonical → silent auto-upgrade with backup.
+    // Anything else (genuine user customization) is left alone.
+    const between = extractBetween(content, PROJECT_VALIS_START, PROJECT_VALIS_END);
+    const blockVersion = parsePolicyVersion(between);
+    if (blockVersion === KR_POLICY_VERSION) {
+      return { target, outcome: 'fresh' };
+    }
+    const blockHash = contentHash(between);
+    const isStaleCanonical =
+      (blockVersion === null || blockVersion < KR_POLICY_VERSION) &&
+      HISTORICAL_AGENT_INSTRUCTIONS_HASHES.includes(blockHash);
+
+    if (isStaleCanonical) {
+      const { injectClaudeMdMarkers } = await import('../ide/claude-code.js');
+      await backupOriginal(targetPath, 'project-claude-md');
+      await injectClaudeMdMarkers(projectDir);
+      return {
+        target,
+        outcome: 'repaired',
+        notes: `auto-upgrade: ${blockVersion ?? 'pre-policy'} → ${KR_POLICY_VERSION}`,
+      };
+    }
+
+    return {
+      target,
+      outcome: 'user_customized',
+      notes: `policy drift: block has '${blockVersion ?? 'no-marker'}', expected '${KR_POLICY_VERSION}', but body hash is unknown — leaving customization intact`,
+    };
+  }
 
   const { injectClaudeMdMarkers } = await import('../ide/claude-code.js');
   await backupOriginal(targetPath, 'project-claude-md');
@@ -606,4 +690,10 @@ export async function runSelfHeal(options: SelfHealOptions = {}): Promise<HealRe
   return reports;
 }
 
-export const __internal = { extractBetween, contentHash, CANONICAL_GLOBAL_KR_HASH };
+export const __internal = {
+  extractBetween,
+  contentHash,
+  CANONICAL_GLOBAL_KR_HASH,
+  HISTORICAL_GLOBAL_KR_HASHES,
+  HISTORICAL_AGENT_INSTRUCTIONS_HASHES,
+};

@@ -4,8 +4,11 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { trackFile } from '../config/manifest.js';
 import { COMMAND_TEMPLATES } from './command-templates.js';
+import { policyMarkerLine } from '../hooks/self-heal-templates.js';
 
-const AGENT_INSTRUCTIONS = `## Team Knowledge (Valis)
+const AGENT_INSTRUCTIONS = `${policyMarkerLine()}
+
+## Team Knowledge (Valis)
 
 ### Auto-search triggers
 Call \`valis_search\` automatically when the user mentions:

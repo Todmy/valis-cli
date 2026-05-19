@@ -90,6 +90,31 @@ export function tokensForBlock(block: string): number {
 }
 
 /**
+ * Compose the per-prompt `<valis_active_project>` block (BUG #176).
+ *
+ * The plugin's MCP HTTP transport doesn't propagate the user's `.valis.json`
+ * project_id to the remote server. Without this block, the agent doesn't
+ * know which project the user is "in" and ends up either (a) calling
+ * valis_store without `project_id` and hitting the BUG #175 refusal, or
+ * (b) reading `.valis.json` itself with Bash before every write. This
+ * block injects the active project as standing context every turn so the
+ * agent can pass `project_id` correctly the first time.
+ *
+ * Compact by design — ~70 tokens — so it doesn't compete with search /
+ * reminder budgets. Always fits; no slot-fill required.
+ */
+export function composeActiveProjectBlock(
+  projectId: string,
+  projectName: string,
+): string {
+  return [
+    `<valis_active_project project_id="${escapeXml(projectId)}" project_name="${escapeXml(projectName)}">`,
+    `When you call any valis_* MCP tool (valis_store, valis_search, valis_lifecycle, etc.) on this user's machine, pass project_id="${escapeXml(projectId)}" explicitly in args. The plugin OAuth transport does not propagate this automatically.`,
+    `</valis_active_project>`,
+  ].join('\n');
+}
+
+/**
  * Compose a `<channel source="..." event="..." attrs...>content</channel>`
  * envelope around a ChannelEvent. Used by the user-prompt-submit hook to
  * inject a deterministic capture reminder once per session.

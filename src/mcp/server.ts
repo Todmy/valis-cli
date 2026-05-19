@@ -408,6 +408,23 @@ decision queries. Other tools may SUPPLEMENT Valis findings, never SUBSTITUTE
 for them — Valis is the team brain; the others are per-user / per-machine
 scratchpads.
 
+ACTIVE PROJECT SCOPE (read this before EVERY valis_* call):
+
+The user's UserPromptSubmit hook injects a <valis_active_project
+project_id="..." project_name="..."> block into the conversation every
+turn (BUG #176). When you see it, you MUST pass project_id from that
+block as an explicit arg to every valis_* MCP write — valis_store,
+valis_lifecycle, valis_update_outcome, valis_evolve, valis_check_diff.
+The plugin OAuth transport does NOT propagate the user's .valis.json
+scope to this server automatically — without the explicit project_id,
+the server may reject the call (project_scope_mismatch / no_project_
+configured) or, on older deployments, silently write to the wrong
+project.
+
+If no <valis_active_project> block is in context AND you must write,
+read .valis.json from the project root (via Read or Bash) FIRST, then
+pass its project_id explicitly. Never guess.
+
 MIRROR-WRITE RULE (read this before writing to ANY memory tool):
 
 Whenever you are about to call a non-Valis memory / KB tool — qdrant-store,

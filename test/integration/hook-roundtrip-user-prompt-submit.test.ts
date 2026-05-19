@@ -125,20 +125,25 @@ describe('UserPromptSubmit roundtrip', () => {
     const parsed = JSON.parse(stdoutChunks[0]);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     const ctx = parsed.hookSpecificOutput.additionalContext as string;
-    expect(ctx).toMatch(/^<valis_search_results /);
+    // BUG #176: active-project block is always first, search results follow.
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).toContain('<valis_search_results ');
     expect(ctx).toMatch(/for_prompt="[a-f0-9]+"/);
     expect(ctx).toContain('id="a"');
   });
 
-  it('Branch B: all results below threshold → empty stdout', async () => {
+  it('Branch B: all results below threshold → only active-project block emitted (BUG #176)', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse([{ id: 'a', summary: 's', type: 'decision', score: 0.1 }]),
     );
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<valis_search_results ');
   });
 
-  it('Branch C: above threshold but over budget → empty stdout', async () => {
+  it('Branch C: above threshold but over budget → only active-project block emitted (BUG #176)', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse([
         { id: 'big', summary: 'X'.repeat(10000), type: 'decision', score: 0.9 },
@@ -146,24 +151,33 @@ describe('UserPromptSubmit roundtrip', () => {
     );
     await setProjectConfig({ per_prompt_budget: 50 });
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<valis_search_results ');
   });
 
-  it('Branch D: project-level opt-out short-circuits before fetch', async () => {
+  it('Branch D: project-level opt-out skips search but still emits active-project (BUG #176)', async () => {
     await setProjectConfig({ per_prompt_augmentation: false });
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<valis_search_results ');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Branch D: user-level opt-out short-circuits before fetch', async () => {
+  it('Branch D: user-level opt-out skips search but still emits active-project (BUG #176)', async () => {
     await setGlobalConfig({ per_prompt_augmentation: false });
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<valis_search_results ');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Branch E: timeout → empty stdout', async () => {
+  it('Branch E: timeout → only active-project block emitted (BUG #176)', async () => {
     fetchMock.mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {
@@ -174,15 +188,16 @@ describe('UserPromptSubmit roundtrip', () => {
           }, 5);
         }),
     );
-    await setProjectConfig({}); // ensure project augmentation is on
+    await setProjectConfig({});
     await setGlobalConfig({});
-    // Override the project budget/threshold defaults are fine.
     process.env.CLAUDE_USER_PROMPT = 'q';
-    // We can't override timeoutMs directly through env; but the mock rejects
-    // synchronously fast enough that the standard 1500 ms wait is not needed:
     await hookUserPromptSubmitCommand();
-    // Either timeout-branch or fetch_failed-branch: both produce empty stdout.
-    expect(stdoutChunks.length).toBe(0);
+    // Even on timeout/fetch_failed, the active-project block lands so the
+    // agent still knows the scope when calling valis_* MCP tools.
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<valis_search_results ');
   });
 
   it('emits no output for empty CLAUDE_USER_PROMPT', async () => {
@@ -213,10 +228,14 @@ describe('UserPromptSubmit roundtrip — capture-reminder injection', () => {
     fetchMock.mockResolvedValue(jsonResponse([])); // no search results by default
   });
 
-  it('does not inject reminder before the turn threshold', async () => {
+  it('does not inject reminder before the turn threshold (only active-project block — BUG #176)', async () => {
     await writeSessionMarker(freshMarker(SESSION_ID, CLOCK));
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    // Active-project always lands; capture-reminder doesn't fire below threshold.
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<channel source="valis"');
     const after = await readSessionMarker(SESSION_ID);
     expect(after?.turn_count).toBe(1);
     expect(after?.reminder_count).toBe(0);
@@ -265,7 +284,7 @@ describe('UserPromptSubmit roundtrip — capture-reminder injection', () => {
     expect(searchIdx).toBeLessThan(reminderIdx);
   });
 
-  it('suppresses reminder when project config disables it', async () => {
+  it('suppresses reminder when project config disables it (active-project block still emitted)', async () => {
     await setProjectConfig({ capture_reminder_enabled: false });
     const preSeed: SessionMarker = {
       ...freshMarker(SESSION_ID, CLOCK),
@@ -274,15 +293,24 @@ describe('UserPromptSubmit roundtrip — capture-reminder injection', () => {
     await writeSessionMarker(preSeed);
 
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    // BUG #176: active-project block remains; only the capture reminder is suppressed.
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<channel source="valis"');
     const after = await readSessionMarker(SESSION_ID);
     expect(after?.reminder_count).toBe(0);
   });
 
-  it('skips reminder when CLAUDE_SESSION_ID is missing', async () => {
+  it('skips reminder when CLAUDE_SESSION_ID is missing (active-project block still emitted)', async () => {
     delete process.env.CLAUDE_SESSION_ID;
     await hookUserPromptSubmitCommand();
-    expect(stdoutChunks.length).toBe(0);
+    // BUG #176: active-project block doesn't depend on session_id — it
+    // comes purely from the project marker.
+    expect(stdoutChunks.length).toBe(1);
+    const ctx = JSON.parse(stdoutChunks[0]).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toMatch(/^<valis_active_project /);
+    expect(ctx).not.toContain('<channel source="valis"');
   });
 
   it('does not count slash-command prompts as turns', async () => {

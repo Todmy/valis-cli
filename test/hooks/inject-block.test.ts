@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { composeSearchResultsBlock } from '../../src/hooks/inject-block.js';
+import {
+  composeActiveProjectBlock,
+  composeSearchResultsBlock,
+} from '../../src/hooks/inject-block.js';
 
 describe('hooks/inject-block — composeSearchResultsBlock', () => {
   it('returns null on zero results', () => {
@@ -62,5 +65,40 @@ describe('hooks/inject-block — composeSearchResultsBlock', () => {
       'h',
     );
     expect(out).toContain('a &lt; b &amp; c &gt; d &quot;quoted&quot;');
+  });
+});
+
+describe('hooks/inject-block — composeActiveProjectBlock (BUG #176)', () => {
+  it('emits a <valis_active_project> envelope carrying project_id and project_name', () => {
+    const out = composeActiveProjectBlock(
+      '22222222-2222-2222-2222-222222222222',
+      'mojob',
+    );
+    expect(out).toContain('<valis_active_project');
+    expect(out).toContain('project_id="22222222-2222-2222-2222-222222222222"');
+    expect(out).toContain('project_name="mojob"');
+    expect(out).toContain('</valis_active_project>');
+  });
+
+  it('instructs the agent to pass project_id explicitly to valis_* MCP calls', () => {
+    const out = composeActiveProjectBlock('id-1', 'demo');
+    expect(out).toMatch(/valis_\*|valis_store/);
+    expect(out).toMatch(/pass project_id/i);
+    expect(out).toMatch(/explicit|automatically/i);
+  });
+
+  it('escapes XML special characters in project_name', () => {
+    const out = composeActiveProjectBlock('id-1', 'name & "<weird>"');
+    expect(out).toContain('name &amp; &quot;&lt;weird&gt;&quot;');
+  });
+
+  it('is compact — under ~150 tokens — so it never crowds search/reminder budgets', () => {
+    const out = composeActiveProjectBlock(
+      '22222222-2222-2222-2222-222222222222',
+      'a-reasonably-long-project-name-for-the-test',
+    );
+    // 4 chars per token estimator (matches budget.ts) — block stays well
+    // under 150 tokens for any realistic project_name length.
+    expect(Math.ceil(out.length / 4)).toBeLessThan(150);
   });
 });

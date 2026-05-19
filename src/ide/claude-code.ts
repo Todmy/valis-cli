@@ -46,6 +46,21 @@ Call \`valis_store\` when:
 
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of relevant area tags).
 
+### ⚠️ ACTIVE PROJECT SCOPE — read before EVERY valis_* call
+Each turn, the UserPromptSubmit hook injects a \`<valis_active_project
+project_id="..." project_name="...">\` block. When you see it, **you MUST
+pass \`project_id\` from that block as an explicit arg to every valis_* MCP
+write** — \`valis_store\`, \`valis_lifecycle\`, \`valis_update_outcome\`,
+\`valis_evolve\`, \`valis_check_diff\`. The plugin OAuth transport does
+not propagate the user's \`.valis.json\` scope to the remote server
+automatically (BUG #176) — without the explicit \`project_id\`, the call
+may be rejected (\`project_scope_mismatch\` / \`no_project_configured\`)
+or, on older backends, silently write to the wrong project.
+
+If no \`<valis_active_project>\` block is in context AND you must write,
+read \`.valis.json\` from the project root yourself (Read or Bash) FIRST,
+then pass its \`project_id\` explicitly. Never guess.
+
 ### ⚠️ MIRROR-WRITE RULE — read before storing ANY memory
 **Whenever you are about to write to ANY memory / KB tool — \`qdrant-store\`,
 \`mem0_add\`, \`memory_save\`, \`openmemory_save\`, any \`save_*\` tool, ANY tool

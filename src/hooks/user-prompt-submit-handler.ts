@@ -28,7 +28,7 @@ import { loadHookGlobalConfig } from './context.js';
 import { augment } from './augment.js';
 import { record } from './telemetry.js';
 import { buildCaptureReminder } from '../channel/push.js';
-import { composeCaptureReminderBlock } from './inject-block.js';
+import { composeActiveProjectBlock, composeCaptureReminderBlock } from './inject-block.js';
 import { readTranscriptTokens } from './transcript.js';
 import {
   DEFAULT_INTERVAL_TOKENS,
@@ -404,9 +404,16 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
     }
   }
 
-  // 3. Compose final additionalContext: search results FIRST (reference),
-  //    capture reminder LAST (actionable instruction — recency bias).
-  const emitParts: string[] = [];
+  // 3. Compose final additionalContext, in order:
+  //    - <valis_active_project> FIRST (~70 tokens) — standing scope every
+  //      turn so the agent knows which project_id to pass to valis_* MCP
+  //      tools (BUG #176 — plugin transport doesn't propagate this).
+  //    - <valis_search_results> NEXT — relevance-driven reference material.
+  //    - <channel capture_reminder> LAST — actionable instruction (recency
+  //      bias keeps it in the agent's working memory for the immediate turn).
+  const emitParts: string[] = [
+    composeActiveProjectBlock(marker.projectId, marker.projectName),
+  ];
   if (searchBlock) emitParts.push(searchBlock);
   emitParts.push(...parts);
   if (emitParts.length > 0) {

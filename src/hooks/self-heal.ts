@@ -62,9 +62,11 @@ import {
  */
 const HISTORICAL_GLOBAL_KR_HASHES: string[] = [
   '45038b086df136de', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
+  'a2cbf7b74f35a0b7', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
 ];
 const HISTORICAL_AGENT_INSTRUCTIONS_HASHES: string[] = [
   '46818720c327567f', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
+  'a0619db7222f5279', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
 ];
 
 function contentHash(s: string): string {

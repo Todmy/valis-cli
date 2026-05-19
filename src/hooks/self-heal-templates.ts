@@ -16,7 +16,7 @@ export const GLOBAL_KR_END = '<!-- valis:knowledge-retention:end -->';
  *
  * Format: ISO-date plus a slug. String-comparable lex order.
  */
-export const KR_POLICY_VERSION = '2026-05-19-mirror-write';
+export const KR_POLICY_VERSION = '2026-05-19-active-project-scope';
 export const KR_POLICY_MARKER_PREFIX = '<!-- valis:policy-version:';
 export const KR_POLICY_MARKER_SUFFIX = ' -->';
 

@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import { hookUserPromptSubmitCommand } from '../../src/hooks/user-prompt-submit-handler.js';
 import {
@@ -205,6 +206,49 @@ describe('UserPromptSubmit roundtrip', () => {
     await hookUserPromptSubmitCommand();
     expect(stdoutChunks.length).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('BUG #177: reads prompt + session_id from stdin envelope when env vars are missing', async () => {
+    // Reproduce real Claude Code behaviour: prompt arrives ONLY via the
+    // stdin JSON envelope; CLAUDE_USER_PROMPT / CLAUDE_SESSION_ID are not
+    // set. Before the fix, the handler silent-no-op'd → zero search,
+    // zero <valis_active_project>, zero telemetry across every real session.
+    delete process.env.CLAUDE_USER_PROMPT;
+    delete process.env.CLAUDE_SESSION_ID;
+
+    const envelopeJson = JSON.stringify({
+      transcript_path: '/tmp/none',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'how do we handle envelope-only prompts',
+      session_id: 'bug177-envelope-only',
+    });
+    const realStdin = process.stdin;
+    const fakeStdin = Readable.from([envelopeJson]) as unknown as NodeJS.ReadStream;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    // Mark not-TTY so readHookEnvelope proceeds to drain the stream.
+    Object.defineProperty(fakeStdin, 'isTTY', { value: false, configurable: true });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        { id: 'env1', summary: 'envelope path', type: 'decision', score: 0.9 },
+      ]),
+    );
+    try {
+      await hookUserPromptSubmitCommand();
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    }
+
+    // Active-project block must always be emitted now that the prompt is reachable.
+    expect(stdoutChunks.length).toBeGreaterThan(0);
+    const out = stdoutChunks.join('');
+    expect(out).toContain('<valis_active_project');
+    // Backend search must have been attempted with the envelope's prompt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      query: 'how do we handle envelope-only prompts',
+    });
   });
 
   it('Branch A on a Cyrillic prompt — no language gate', async () => {

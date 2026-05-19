@@ -162,19 +162,29 @@ function emitContext(additionalContext: string): void {
 }
 
 /**
- * Read Claude Code's hook JSON envelope from stdin. The envelope contains
- * `transcript_path`, `hook_event_name`, and other event metadata. We only
- * need `transcript_path` for the token-density scheduler; everything else
- * still flows through env vars (CLAUDE_USER_PROMPT, CLAUDE_SESSION_ID).
+ * Read Claude Code's hook JSON envelope from stdin. The envelope is the
+ * primary channel for hook payload in modern Claude Code builds; env vars
+ * are a legacy/fallback path. Fields we consume:
+ *   - `transcript_path` — token-density scheduler
+ *   - `prompt` — user's submitted prompt (BUG #177: env var
+ *     `CLAUDE_USER_PROMPT` is NOT set by current Claude Code; relying on
+ *     it caused silent no-op in all real sessions)
+ *   - `session_id` — capture-reminder marker key
  *
- * Returns null on any read or parse failure — token scheduling falls back
- * to legacy turn-based behaviour in that case.
+ * Returns null on any read or parse failure. Caller falls back to env vars
+ * so test harnesses (which set env vars but no stdin envelope) still work.
  */
-async function readHookEnvelope(): Promise<{ transcript_path?: string } | null> {
+interface HookEnvelope {
+  transcript_path?: string;
+  prompt?: string;
+  session_id?: string;
+}
+
+async function readHookEnvelope(): Promise<HookEnvelope | null> {
   // Empty stdin (tty / test harness) → null without blocking.
   if (process.stdin.isTTY) return null;
 
-  return new Promise<{ transcript_path?: string } | null>((resolve) => {
+  return new Promise<HookEnvelope | null>((resolve) => {
     let buf = '';
     let resolved = false;
     // 50ms hard cap — Claude Code writes the envelope before invoking the
@@ -195,7 +205,7 @@ async function readHookEnvelope(): Promise<{ transcript_path?: string } | null> 
       clearTimeout(timer);
       if (!buf.trim()) return resolve(null);
       try {
-        const parsed = JSON.parse(buf) as { transcript_path?: string };
+        const parsed = JSON.parse(buf) as HookEnvelope;
         resolve(parsed);
       } catch {
         resolve(null);
@@ -266,7 +276,12 @@ async function evaluateCaptureReminder(
 
 export async function hookUserPromptSubmitCommand(): Promise<void> {
   const startedAt = Date.now();
-  const prompt = process.env.CLAUDE_USER_PROMPT ?? '';
+
+  // BUG #177: Claude Code does NOT set CLAUDE_USER_PROMPT env var — the
+  // prompt arrives only via the stdin JSON envelope. Read envelope FIRST,
+  // then prefer envelope fields with env-var fallback (test harness).
+  const envelope = await readHookEnvelope();
+  const prompt = envelope?.prompt ?? process.env.CLAUDE_USER_PROMPT ?? '';
   if (!prompt) return;
 
   const marker = await findProjectMarker();
@@ -290,12 +305,7 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
     readCaptureReminderOverrides(cfg.raw),
   );
 
-  // Read the hook envelope once — transcript_path is the only field we
-  // currently consume. Done in parallel with the project marker / config
-  // reads conceptually; sequential in code for simpler error paths.
-  const envelope = await readHookEnvelope();
-
-  const sessionId = process.env.CLAUDE_SESSION_ID;
+  const sessionId = envelope?.session_id ?? process.env.CLAUDE_SESSION_ID;
   const parts: string[] = [];
 
   // 1. Capture-reminder decision (does not block on backend; runs in parallel

@@ -42,3 +42,23 @@ The SHA-256 surfaces silent corpus drift: if two runs of `valis-bench` produce d
 - content sha256: `32c54fa983c0bccd4d6b0c4c4ead60a8c368fbae70666d28e8a6db7bbd5a673b`
 - regeneration: same script as uk with `--target pl`. Same provenance note: committed slice was translated inline via Claude Opus 4.7.
 - curation rule: same as uk, target=pl.
+
+## valis-multilingual-de
+
+- upstream: derived from valis-multilingual-en
+- license: Apache-2.0
+- fetched_at: 2026-05-19
+- content sha256: `c1ba13cdf80ad25ab77e171c2878bf93e334835d228ad19d7dd5990cc6b5b501`
+- regeneration: `pnpm tsx packages/cli/scripts/translate-corpus.ts --source valis-multilingual-en --target de` (script supports de/ja since 2026-05-19; the committed slice was translated inline via Claude Opus 4.7).
+- curation rule: same as uk, target=de. 51 docs + 50 queries, identical IDs and `ground_truth` references; English technical terms preserved untranslated; domain prose translated to German.
+- rationale: chosen as a slice "further from English/Slavic" — Germanic family, gendered nouns, compound words. Stress-tests multilingual-e5-small on a language family the UK/PL slices do not cover.
+
+## valis-multilingual-ja
+
+- upstream: derived from valis-multilingual-en
+- license: Apache-2.0
+- fetched_at: 2026-05-19
+- content sha256: `2e3628d8eb731cab26cf69d500083cf1657f6ba58290c3bfa682bf823d5c47b2`
+- regeneration: `pnpm tsx packages/cli/scripts/translate-corpus.ts --source valis-multilingual-en --target ja` (script supports de/ja since 2026-05-19; the committed slice was translated inline via Claude Opus 4.7).
+- curation rule: same as uk, target=ja. 51 docs + 50 queries, identical IDs and `ground_truth` references; English technical terms preserved untranslated (kept in Latin script, not katakana) so the BM25 baseline still has lexical anchors; domain prose translated to Japanese.
+- rationale: chosen as the linguistically farthest slice from English — distinct writing system (kanji + hiragana + katakana), SOV word order, no inter-word spaces. BM25 collapses on this slice (R@5 ≈ 0.10, see latest.json) because tokenisation by space yields one giant token; hybrid recovers to 1.000 via the dense e5-small leg. This is the slice that demonstrates the multilingual embedding moat most clearly.

@@ -7,7 +7,7 @@
  * Pure type file — no runtime code, no imports beyond `node:` builtins.
  */
 
-export type Language = 'en' | 'uk' | 'pl' | 'mixed';
+export type Language = 'en' | 'uk' | 'pl' | 'de' | 'ja' | 'mixed';
 
 export interface Document {
   id: string;

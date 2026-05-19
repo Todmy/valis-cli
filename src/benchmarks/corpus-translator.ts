@@ -25,7 +25,7 @@
 
 import { createHash } from 'node:crypto';
 
-export type TargetLanguage = 'uk' | 'pl';
+export type TargetLanguage = 'uk' | 'pl' | 'de' | 'ja';
 
 export interface TranslationApi {
   /**

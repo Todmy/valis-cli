@@ -93,6 +93,24 @@ const KNOWN_CORPORA: KnownCorpus[] = [
       curation_rule: 'Valis-authored team-decision queries (PL), see LICENSE-CORPUS.md',
     },
   },
+  {
+    corpusId: 'valis-multilingual-de',
+    sliceName: 'multilingual-de',
+    provenance: {
+      upstream_url: 'https://github.com/Todmy/valis',
+      license: 'Apache-2.0',
+      curation_rule: 'Valis-authored team-decision queries (DE), see LICENSE-CORPUS.md',
+    },
+  },
+  {
+    corpusId: 'valis-multilingual-ja',
+    sliceName: 'multilingual-ja',
+    provenance: {
+      upstream_url: 'https://github.com/Todmy/valis',
+      license: 'Apache-2.0',
+      curation_rule: 'Valis-authored team-decision queries (JA), see LICENSE-CORPUS.md',
+    },
+  },
 ];
 
 function gitCommit(): string {

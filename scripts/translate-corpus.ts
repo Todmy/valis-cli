@@ -41,12 +41,12 @@ function parseArgs(): CliArgs {
   }
   if (!source || !target) {
     console.error(
-      'usage: translate-corpus --source <corpus-id> --target <uk|pl>',
+      'usage: translate-corpus --source <corpus-id> --target <uk|pl|de|ja>',
     );
     process.exit(2);
   }
-  if (target !== 'uk' && target !== 'pl') {
-    console.error(`invalid --target: ${target} (must be uk or pl)`);
+  if (target !== 'uk' && target !== 'pl' && target !== 'de' && target !== 'ja') {
+    console.error(`invalid --target: ${target} (must be uk, pl, de, or ja)`);
     process.exit(2);
   }
   return { source, target };

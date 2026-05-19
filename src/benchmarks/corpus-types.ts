@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { BenchmarkCorpusError } from './types.js';
 
-const LanguageSchema = z.enum(['en', 'uk', 'pl', 'mixed']);
+const LanguageSchema = z.enum(['en', 'uk', 'pl', 'de', 'ja', 'mixed']);
 
 const DocumentSchema = z
   .object({

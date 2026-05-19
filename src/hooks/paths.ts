@@ -59,3 +59,18 @@ export function sessionMarkerPath(sessionId: string): string {
 export function sessionMarkerDir(): string {
   return join(valisHome(), 'session-markers');
 }
+
+/**
+ * Capture-done sentinel for the pre-compact block-and-gate flow
+ * (v0.5.2). One file per Claude Code session that has signaled capture
+ * completion via the `valis_capture_done` MCP tool. PreCompact hook
+ * looks for this file: present → allow compaction; absent → block with
+ * structured instruction.
+ */
+export function captureSentinelPath(sessionId: string): string {
+  return join(valisHome(), 'capture-sentinels', `${sessionId}.json`);
+}
+
+export function captureSentinelDir(): string {
+  return join(valisHome(), 'capture-sentinels');
+}

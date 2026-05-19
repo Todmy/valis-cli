@@ -35,6 +35,7 @@ import {
   hookPreCompactCommand,
   hookStopCommand,
   hookFlushTelemetryCommand,
+  hookCaptureDoneCommand,
 } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
@@ -565,6 +566,26 @@ hookCmd
   .action(async () => {
     try {
       await hookFlushTelemetryCommand();
+    } catch {
+      process.exit(0);
+    }
+  });
+
+hookCmd
+  .command('capture-done')
+  .description(
+    'Record that the current session has finished capturing decisions. Allows the next /compact through the PreCompact gate. Agents invoke this via the Bash tool after their valis_store calls.',
+  )
+  .option('--session-id <id>', 'Override CLAUDE_SESSION_ID')
+  .option('--stored <n>', 'Number of decisions stored this cycle', (v) => parseInt(v, 10))
+  .option('--note <text>', 'Optional free-form note')
+  .action(async (opts: { sessionId?: string; stored?: number; note?: string }) => {
+    try {
+      await hookCaptureDoneCommand({
+        sessionId: opts.sessionId,
+        stored: opts.stored,
+        note: opts.note,
+      });
     } catch {
       process.exit(0);
     }

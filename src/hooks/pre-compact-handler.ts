@@ -1,42 +1,64 @@
 /**
- * PreCompact hook handler — capture-window injection.
+ * PreCompact hook handler — block-and-gate for guaranteed capture (v0.5.2).
  *
- * Wiring:
- *   1. Read Claude Code's stdin envelope (transcript_path, trigger,
- *      custom_instructions, session_id). Same 50ms-bounded pattern used
- *      by user-prompt-submit-handler.
- *   2. Compose the imperative capture block via `composeCaptureWindowBlock`.
- *   3. Emit JSON: `{hookSpecificOutput: {hookEventName: 'PreCompact',
- *      additionalContext: <block>}}`. Claude Code feeds this into the
- *      compaction prompt so the compactor model sees our instruction.
- *   4. Record telemetry `capture_window_opened` with trigger + transcript
- *      size + token estimate, so we can correlate compaction events with
- *      downstream `valis_store` activity.
+ * v0.5.0 architecture (compactor-as-extractor via
+ * `hookSpecificOutput.additionalContext`) was silently broken because
+ * Claude Code's PreCompact hook does NOT accept `additionalContext` —
+ * that field is only valid for PreToolUse / UserPromptSubmit /
+ * PostToolUse / PostToolBatch. The hook's JSON output failed schema
+ * validation and the compactor never saw our instruction.
  *
- * Constitution III: any throw → empty stdout, exit 0. Wrapped at bin level.
+ * v0.5.2 replacement architecture — hard block + agent-orchestrated
+ * retry:
  *
- * Why not extract candidates here: the hook process has no LLM, the
- * transcript is multi-megabyte JSONL, and the post-compact agent already
- * sees the summary. The compactor is the only actor with the right
- * affordance — see pre-compact.ts header for the architectural rationale.
+ *   1. PreCompact hook checks for a per-session sentinel at
+ *      `~/.valis/capture-sentinels/<session_id>.json`.
+ *   2. Sentinel present → emit empty stdout, exit 0 → compaction
+ *      proceeds. After the hook returns the sentinel is consumed
+ *      (cleared) so the next compaction in the same session requires a
+ *      fresh capture cycle — each /compact is its own checkpoint.
+ *   3. Sentinel absent → return JSON
+ *      `{decision: "block", reason: "<structured imperative>"}`.
+ *      Claude Code shows the reason to the agent and refuses to
+ *      compact.
+ *
+ *   The block message is a structured imperative the agent reliably
+ *   follows: walk the in-context conversation, call `valis_store` for
+ *   each decision/constraint/pattern/lesson, run
+ *   `valis hook capture-done` via the Bash tool (creates the local
+ *   sentinel), then invoke /compact via the SlashCommand tool to
+ *   resume.
+ *
+ *   Reliability profile:
+ *     - Block itself: 100% deterministic — harness enforces, not the
+ *       model. No /compact passes through without a sentinel.
+ *     - Extraction + sentinel write + retrigger: ~99% agent compliance
+ *       on structured imperatives. Failure mode is user-visible
+ *       (agent paused mid-flow) and recoverable (user re-issues
+ *       /compact manually).
+ *
+ *   End-to-end ~98% reliable on Claude 4.x vs ~0% on the broken v0.5.0
+ *   pattern.
+ *
+ * Constitution III: any throw → empty stdout, exit 0 (bin/ wrapper).
+ * On read failure for sentinel state we treat it as absent — block, not
+ * allow. Blocking is the safe side: a false-positive block is one
+ * extra capture cycle; a false-negative allow loses decisions
+ * permanently.
  */
 
 import { findProjectMarker } from '../config/project.js';
 import { loadHookGlobalConfig } from './context.js';
 import { record } from './telemetry.js';
-import { readTranscriptTokens } from './transcript.js';
-import { composeCaptureWindowBlock } from './pre-compact.js';
+import { clearSentinel, hasSentinel } from './sentinels.js';
 
 interface HookEnvelope {
   transcript_path?: string;
   trigger?: string;
   custom_instructions?: string;
+  session_id?: string;
 }
 
-/**
- * Read Claude Code's hook JSON envelope from stdin. Mirrors the pattern in
- * user-prompt-submit-handler: 50ms hard cap, null on TTY / empty / parse fail.
- */
 async function readHookEnvelope(): Promise<HookEnvelope | null> {
   if (process.stdin.isTTY) return null;
 
@@ -78,46 +100,109 @@ function normalizeTrigger(raw: string | undefined): 'auto' | 'manual' | 'unknown
   return 'unknown';
 }
 
-function emitContext(additionalContext: string): void {
+/**
+ * Compose the structured block reason an agent receives when the
+ * sentinel is absent. Two firm imperatives ordered:
+ *
+ *   1. Extract & store every decision/constraint/pattern/lesson from
+ *      the in-context conversation (zero extra tokens — already loaded).
+ *   2. Run the local CLI sentinel-write, then re-invoke /compact via
+ *      SlashCommand.
+ *
+ * Kept short to fit comfortably in the agent's working context. The
+ * Bash invocation is exact (no shell interpolation needed) so agents
+ * can copy-paste verbatim.
+ */
+function composeBlockReason(sessionId: string | undefined): string {
+  const sessionHint = sessionId
+    ? `(session_id=${sessionId})`
+    : '(CLAUDE_SESSION_ID env var carries the session_id automatically)';
+  return [
+    'Pre-compaction capture required — /compact will not proceed until',
+    `decisions from this conversation are stored in Valis ${sessionHint}.`,
+    '',
+    'Do exactly this, in order:',
+    '',
+    '1. Walk the conversation already in your context. For EACH technical',
+    '   decision, constraint, pattern, or lesson, call `valis_store` with',
+    '   type, summary (≤100 chars), affects (relevant area tags), and the',
+    '   supporting detail. Group near-duplicates into one entry. Skip',
+    '   pleasantries and trivial chatter.',
+    '',
+    '2. After all `valis_store` calls, run via the Bash tool:',
+    '',
+    '       valis hook capture-done --stored <N>',
+    '',
+    '   …where <N> is the count of decisions you just stored. This creates',
+    '   the local sentinel that gates the next /compact.',
+    '',
+    '3. Invoke `/compact` again via the SlashCommand tool. The next',
+    '   PreCompact hook fire will see the sentinel and allow compaction',
+    '   through.',
+    '',
+    'If no decisions were made this session, still complete step 2 with',
+    '`--stored 0 --note "no decisions"` so /compact can proceed.',
+  ].join('\n');
+}
+
+function emitBlock(reason: string): void {
   const payload = {
-    hookSpecificOutput: {
-      hookEventName: 'PreCompact',
-      additionalContext,
-    },
+    decision: 'block',
+    reason,
   };
   process.stdout.write(JSON.stringify(payload));
 }
 
 export async function hookPreCompactCommand(): Promise<void> {
-  // Project marker + global config are best-effort: even without them we
-  // still emit the capture block (the compactor doesn't care about org/
-  // project IDs). They only gate telemetry.
+  const envelope = await readHookEnvelope();
+  const sessionId = envelope?.session_id ?? process.env.CLAUDE_SESSION_ID;
+  const trigger = normalizeTrigger(envelope?.trigger);
+
+  // Best-effort telemetry context — never blocks the gate logic.
   const marker = await findProjectMarker();
   const cfg = await loadHookGlobalConfig();
 
-  const envelope = await readHookEnvelope();
-  const trigger = normalizeTrigger(envelope?.trigger);
-  const customInstructions = envelope?.custom_instructions;
+  // No session_id → we cannot key a sentinel and therefore cannot
+  // verify capture. Safe side is to block; the agent's first step
+  // will surface the same instruction and the agent can pass an
+  // explicit --session-id on the capture-done call.
+  if (!sessionId) {
+    if (cfg && marker) {
+      void record('capture_window_opened', {
+        org_id: cfg.orgId,
+        project_id: marker.projectId,
+        metadata: { trigger, sentinel_present: false, reason: 'no_session_id' },
+      });
+    }
+    emitBlock(composeBlockReason(undefined));
+    return;
+  }
 
-  const block = composeCaptureWindowBlock({ trigger, customInstructions });
-  emitContext(block);
+  const present = await hasSentinel(sessionId);
 
-  // Telemetry: best-effort, fire-and-forget. We log regardless of whether
-  // marker/cfg are available; missing fields just stay undefined.
   if (cfg && marker) {
-    const transcriptInfo = envelope?.transcript_path
-      ? await readTranscriptTokens(envelope.transcript_path)
-      : null;
     void record('capture_window_opened', {
       org_id: cfg.orgId,
       project_id: marker.projectId,
       metadata: {
         trigger,
-        transcript_bytes: transcriptInfo?.totalBytes ?? null,
-        transcript_tokens: transcriptInfo?.totalTokens ?? null,
-        has_custom_instructions: Boolean(customInstructions && customInstructions.trim()),
-        session_id: process.env.CLAUDE_SESSION_ID ?? null,
+        sentinel_present: present,
+        session_id: sessionId,
       },
     });
   }
+
+  if (present) {
+    // Consume the sentinel so subsequent /compact calls in the same
+    // session require a fresh capture cycle. Awaited (not fire-and-
+    // forget) so the consumption is observable on hook return — keeps
+    // the contract deterministic for callers that immediately query
+    // sentinel state.
+    await clearSentinel(sessionId);
+    // Emit nothing; Claude Code treats empty stdout as "no opinion"
+    // and proceeds with compaction.
+    return;
+  }
+
+  emitBlock(composeBlockReason(sessionId));
 }

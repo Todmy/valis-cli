@@ -429,6 +429,19 @@ After completing a meaningful task, briefly explain the non-obvious "why"
 behind your choices — trade-offs, gotchas, or reusable patterns. Then call
 valis_store with the appropriate type and a concise summary so the team
 retains this knowledge.
+
+Pre-compaction capture (v0.5.2):
+When the user runs /compact, Claude Code's PreCompact hook BLOCKS the
+compaction with a structured "capture required" message until decisions
+from this conversation are stored. If you receive such a block:
+  1. Walk the conversation already in your context. For each decision /
+     constraint / pattern / lesson, call valis_store.
+  2. After all valis_store calls, run via the Bash tool:
+        valis hook capture-done --stored <N>
+     This creates the local sentinel that gates the next /compact.
+  3. Invoke /compact again via the SlashCommand tool.
+If no decisions were made this session, still run step 2 with
+"--stored 0 --note 'no decisions'" so /compact can proceed.
 `.trim();
 
 function createBaseServer(): McpServer {

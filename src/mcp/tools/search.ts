@@ -24,6 +24,7 @@ import {
   getSupabaseJwtClient,
   getDecisionsByIds,
 } from '../../cloud/supabase.js';
+import { canReadProject } from '../../lib/project-access.js';
 import type {
   SearchResponse,
   RerankedResult,
@@ -47,6 +48,15 @@ interface SearchArgs {
    * is informational, not a hard block.
    */
   project_id?: string;
+  /**
+   * Feature 033 — cross-org public-KB read. When set, the search targets
+   * a project that may differ from the caller's JWT scope. Access is
+   * resolved at request time via `is-member-of(target) OR is-public(target)`.
+   * Denied → empty result set indistinguishable from "no results" /
+   * "project does not exist" (FR-006). Members searching their own
+   * project should leave this undefined to preserve legacy behaviour.
+   */
+  target_project_id?: string;
   // 032/Track 6 — structured filter args. All optional + backward-compatible.
   status?: 'active' | 'proposed' | 'deprecated' | 'superseded';
   min_confidence?: number;
@@ -127,7 +137,32 @@ export async function handleSearch(
   // T021: Resolve project from per-directory config when stdio CLI; HTTP MCP
   // passes project_id via configOverride.
   const resolved = configOverride ? null : await resolveConfig();
-  const projectId = configOverride?.project_id || resolved?.project?.project_id || undefined;
+  let projectId = configOverride?.project_id || resolved?.project?.project_id || undefined;
+
+  // Feature 033 — public-KB cross-org read gate. When `target_project_id`
+  // is set, replace `projectId` with the target after access resolution.
+  // Denied access returns an empty response indistinguishable from "no
+  // results" / "project does not exist" (FR-006, never leaks existence).
+  if (args.target_project_id && args.target_project_id !== projectId) {
+    if (!configOverride?.member_id || !configOverride?.supabase_url || !configOverride?.supabase_service_role_key) {
+      // stdio mode or insufficient creds — cross-org reads only work in HTTP
+      // (plugin) mode where the server holds service-role auth. Deny silently.
+      return { results: [] };
+    }
+    const supabaseAdmin = getSupabaseClient(
+      configOverride.supabase_url,
+      configOverride.supabase_service_role_key,
+    );
+    const granted = await canReadProject(
+      supabaseAdmin,
+      configOverride.member_id,
+      args.target_project_id,
+    );
+    if (!granted) {
+      return { results: [] };
+    }
+    projectId = args.target_project_id;
+  }
 
   const isHostedProxy = config.auth_mode === 'jwt' && isHostedMode(config);
 

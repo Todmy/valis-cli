@@ -6,6 +6,7 @@ import { proxySearch } from '../../cloud/search-proxy.js';
 import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
+import { canReadProject } from '../../lib/project-access.js';
 import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
 
 interface ContextArgs {
@@ -19,6 +20,15 @@ interface ContextArgs {
    * `project_scope_mismatch` signal. Informational — results stay JWT-scoped.
    */
   project_id?: string;
+  /**
+   * Feature 033 — cross-org public-KB read. When set, context loads from
+   * a project that may differ from the caller's JWT scope. Access
+   * resolution: `is-member-of(target) OR is-public(target)`. Denied →
+   * empty context indistinguishable from "no decisions" / "project does
+   * not exist" (FR-006). Members loading their own context should leave
+   * this undefined to preserve legacy behaviour.
+   */
+  target_project_id?: string;
 }
 
 /** Statuses considered non-active (historical). */
@@ -66,7 +76,45 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
 
   // T022: Resolve project from per-directory config
   const resolved = configOverride ? null : await resolveConfig();
-  const projectId = configOverride?.project_id || resolved?.project?.project_id;
+  let projectId = configOverride?.project_id || resolved?.project?.project_id;
+
+  // Feature 033 — public-KB cross-org gate. Mirrors handleSearch.
+  if (args.target_project_id && args.target_project_id !== projectId) {
+    if (
+      !configOverride?.member_id ||
+      !configOverride?.supabase_url ||
+      !configOverride?.supabase_service_role_key
+    ) {
+      return withMismatch({
+        decisions: [],
+        constraints: [],
+        patterns: [],
+        lessons: [],
+        historical: [],
+        total_in_brain: 0,
+      });
+    }
+    const supabaseAdmin = getSupabaseClient(
+      configOverride.supabase_url,
+      configOverride.supabase_service_role_key,
+    );
+    const granted = await canReadProject(
+      supabaseAdmin,
+      configOverride.member_id,
+      args.target_project_id,
+    );
+    if (!granted) {
+      return withMismatch({
+        decisions: [],
+        constraints: [],
+        patterns: [],
+        lessons: [],
+        historical: [],
+        total_in_brain: 0,
+      });
+    }
+    projectId = args.target_project_id;
+  }
 
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {

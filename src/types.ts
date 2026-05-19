@@ -388,6 +388,26 @@ export interface StoreErrorResponse {
    * mode. Lets operators (and the agent) triage without prod-log access.
    */
   error_message?: string;
+  /**
+   * BUG #175: structured warning when the per-call `project_id` arg differs
+   * from the JWT-encoded session scope. Mirrors the search-side
+   * `project_scope_mismatch` shape so the agent can surface a uniform
+   * recovery instruction to the user (restart the session so the JWT
+   * picks up the active `.valis.json`).
+   */
+  project_scope_mismatch?: {
+    session_project_id: string;
+    current_project_id: string;
+    action_required: 'restart_session';
+  };
+  /**
+   * BUG #175: when the OAuth session has no project_id and the member has
+   * access to multiple projects, server cannot safely pick a default. Tool
+   * returns the candidate list so the agent can ask the user to choose,
+   * instead of silently writing to whichever project Supabase happened to
+   * return first.
+   */
+  candidate_project_ids?: string[];
 }
 
 export interface SearchResult {

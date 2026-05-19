@@ -340,6 +340,28 @@ export async function handleStore(
   const projectId =
     args.project_id || configOverride?.project_id || resolved?.project?.project_id;
 
+  // BUG #175: refuse to write when the agent-provided project_id disagrees
+  // with the OAuth session's scoped project. Without this guard, the store
+  // call silently lands in whichever project the JWT carries — symptom: agent
+  // running in /repo-mojob/ writes decisions to `personal` because that's
+  // what's in the (stale or wrongly-defaulted) JWT. Matches the search-side
+  // detection at tools/search.ts so the agent gets a uniform signal.
+  if (
+    args.project_id &&
+    configOverride?.project_id &&
+    args.project_id !== configOverride.project_id
+  ) {
+    return {
+      error: 'project_scope_mismatch',
+      action: 'blocked',
+      project_scope_mismatch: {
+        session_project_id: configOverride.project_id,
+        current_project_id: args.project_id,
+        action_required: 'restart_session',
+      },
+    };
+  }
+
   // T023: Reject store if no project configured
   if (!projectId) {
     return { error: 'no_project_configured', action: 'blocked' };

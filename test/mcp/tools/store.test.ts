@@ -98,6 +98,82 @@ describe('handleStore', () => {
     expect(result).toHaveProperty('status', 'duplicate');
   });
 
+  it('refuses to write on project_scope_mismatch (BUG #175 regression guard)', async () => {
+    // Repro the symptom: agent passes project_id (from .valis.json in the
+    // working directory) that differs from the OAuth session's project_id
+    // (encoded in the JWT). Previously the store silently wrote to the
+    // session's project — symptom on dogfood: decisions for `mojob` landed
+    // in `personal` because the JWT carried `personal`. Now we block with
+    // a structured signal so the agent can surface a restart-session
+    // instruction to the user.
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore(
+      {
+        text: 'Decision intended for project mojob but session JWT scopes personal',
+        type: 'decision',
+        summary: 'project mismatch repro',
+        affects: ['scope'],
+        project_id: 'project-mojob',
+      },
+      {
+        org_id: 'test-org-id',
+        api_key: 'tm_test123',
+        author_name: 'tester',
+        supabase_url: 'https://test.supabase.co',
+        supabase_service_role_key: 'test-key',
+        qdrant_url: 'https://test.qdrant.io',
+        qdrant_api_key: 'test-qdrant-key',
+        project_id: 'project-personal',
+      } as never,
+    );
+
+    expect(result).toHaveProperty('error', 'project_scope_mismatch');
+    expect(result).toHaveProperty('action', 'blocked');
+    expect(result).toMatchObject({
+      project_scope_mismatch: {
+        session_project_id: 'project-personal',
+        current_project_id: 'project-mojob',
+        action_required: 'restart_session',
+      },
+    });
+    // Critical: no write went through to Supabase / Qdrant.
+    expect(storeSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts a store when args.project_id matches the session scope', async () => {
+    // Inverse of the regression: when the two project_ids agree, the store
+    // proceeds normally — the guard is targeted, not paranoid.
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore(
+      {
+        text: 'Decision properly scoped to the active project — should succeed',
+        type: 'decision',
+        summary: 'matched scope',
+        affects: ['scope'],
+        project_id: 'project-aligned',
+      },
+      {
+        org_id: 'test-org-id',
+        api_key: 'tm_test123',
+        author_name: 'tester',
+        supabase_url: 'https://test.supabase.co',
+        supabase_service_role_key: 'test-key',
+        qdrant_url: 'https://test.qdrant.io',
+        qdrant_api_key: 'test-qdrant-key',
+        project_id: 'project-aligned',
+      } as never,
+    );
+
+    expect(result).not.toHaveProperty('error');
+    expect(result).toHaveProperty('id');
+  });
+
   it('returns infrastructure_error in server mode (BUG #143 regression guard)', async () => {
     // Repro the BUG #143 condition: in server mode (configOverride
     // present), the primary write path throws — we must NOT fall through

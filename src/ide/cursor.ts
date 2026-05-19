@@ -7,15 +7,15 @@ const CURSORRULES_INSTRUCTIONS = `## Team Knowledge (Valis)
 ### Auto-search triggers
 Call \`valis_search\` automatically when the user mentions:
 - "remember", "recall", "find", "what did we decide", "how did we handle"
-- Any question about architecture, conventions, past decisions, or existing patterns
+- Any question about decisions, conventions, or existing patterns
 
 ### Auto-store triggers
 Call \`valis_store\` when:
-- A technical choice is made between alternatives
+- A choice is made between alternatives
 - The user says "remember this", "store this"
-- A constraint is identified (client/regulatory/infra)
-- A coding pattern or convention is established
-- A lesson is learned from a bug or incident
+- A constraint is identified (client/regulatory/infra/scheduling/cost/access)
+- A pattern or convention is established
+- A lesson is learned from an outcome (good or bad)
 
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of modules).
 

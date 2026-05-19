@@ -20,20 +20,20 @@ but Valis is the authoritative source for team decisions.
 
 ### Auto-store triggers
 Call \`valis_store\` when:
-- A technical choice is made between alternatives
+- A choice is made between alternatives
 - The user says "запам'ятай", "збережи", "remember this", "store this"
-- A constraint is identified (client/regulatory/infra)
-- A coding pattern or convention is established
-- A lesson is learned from a bug or incident
+- A constraint is identified (client/regulatory/infra/scheduling/cost/access)
+- A pattern or convention is established
+- A lesson is learned from an outcome (good or bad)
 
-When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of modules).
+When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of relevant area tags).
 
 ### Context loading
-Call \`valis_context\` at the start of every new task or when switching to a different part of the codebase.
+Call \`valis_context\` at the start of every new task or when switching to a different part of the work.
 
 ### Session ritual
 At the start of every new task, run \`valis wake-up\` or call \`valis_context\` to load
-recent team decisions before writing code.
+recent team decisions.
 
 ### Channel reminders
 When you receive a \`<channel source="valis" event="capture_reminder">\`, review your recent work and store any decisions made via \`valis_store\`.`;

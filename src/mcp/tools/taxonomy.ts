@@ -7,9 +7,9 @@ const TAXONOMY_SPEC = {
   statuses: ['active', 'proposed', 'deprecated', 'superseded'] as const,
   areaConventions: "lowercase, hyphenated (e.g., 'api-design', 'auth', 'database')",
   toolUsage: {
-    store: 'When a technical choice is made, constraint identified, pattern established, or lesson learned',
+    store: 'When a choice is made between alternatives, constraint identified, pattern established, or lesson learned',
     search: "When recalling past decisions, 'what did we decide about X'",
-    context: 'At session start or when switching codebases — loads recent decisions',
+    context: 'At session start or when switching contexts — loads recent decisions',
     lifecycle: 'To promote proposed→active, or deprecate/supersede active decisions',
     check_duplicate: 'Before storing — informational check for similar existing decisions',
   },

@@ -53,7 +53,7 @@ Respond with valid JSON only:
 }
 
 Rules:
-- "decision": An explicit architectural or technical choice.
+- "decision": An explicit choice between alternatives.
 - "constraint": A limitation or requirement that restricts options.
 - "pattern": A recurring approach or convention.
 - "lesson": Something learned from experience (good or bad).

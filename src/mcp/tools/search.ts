@@ -24,6 +24,7 @@ import {
   getSupabaseJwtClient,
   getDecisionsByIds,
 } from '../../cloud/supabase.js';
+import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { canReadProject } from '../../lib/project-access.js';
 import type {
   SearchResponse,
@@ -162,6 +163,28 @@ export async function handleSearch(
       return { results: [] };
     }
     projectId = args.target_project_id;
+
+    // Feature 033 — audit the cross-org read so the target project's owner can
+    // observe who is reading their public KB (FR-015, SC-005). Best-effort:
+    // failure must never block the search response (Constitution III).
+    try {
+      await storeAuditEntry(supabaseAdmin, {
+        id: crypto.randomUUID(),
+        org_id: configOverride.org_id,
+        project_id: args.target_project_id,
+        member_id: configOverride.member_id,
+        action: 'cross_org_read',
+        target_type: 'project',
+        target_id: args.target_project_id,
+        previous_state: null,
+        new_state: { tool: 'valis_search' },
+        reason: null,
+      });
+    } catch (err) {
+      console.error(
+        `[search] audit emit failed for cross_org_read: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   const isHostedProxy = config.auth_mode === 'jwt' && isHostedMode(config);

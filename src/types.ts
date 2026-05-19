@@ -129,9 +129,10 @@ export type AuditAction =
   | 'migration_default_project'
   | 'org_created'
   | 'outcome_updated'
-  | 'evolve';
+  | 'evolve'
+  | 'cross_org_read';
 
-export type AuditTargetType = 'decision' | 'member' | 'org';
+export type AuditTargetType = 'decision' | 'member' | 'org' | 'project';
 
 export interface AuditEntry {
   id: string;

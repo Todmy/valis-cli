@@ -7,6 +7,7 @@ import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { canReadProject } from '../../lib/project-access.js';
+import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
 
 interface ContextArgs {
@@ -114,6 +115,26 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       });
     }
     projectId = args.target_project_id;
+
+    // Feature 033 — audit the cross-org read (FR-015, SC-005). Best-effort.
+    try {
+      await storeAuditEntry(supabaseAdmin, {
+        id: crypto.randomUUID(),
+        org_id: configOverride.org_id,
+        project_id: args.target_project_id,
+        member_id: configOverride.member_id,
+        action: 'cross_org_read',
+        target_type: 'project',
+        target_id: args.target_project_id,
+        previous_state: null,
+        new_state: { tool: 'valis_context' },
+        reason: null,
+      });
+    } catch (err) {
+      console.error(
+        `[context] audit emit failed for cross_org_read: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)

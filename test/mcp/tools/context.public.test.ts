@@ -56,9 +56,14 @@ vi.mock('../../../src/lib/project-access.js', () => ({
   canReadProject: vi.fn(),
 }));
 
+vi.mock('../../../src/cloud/supabase/audit.js', () => ({
+  storeAuditEntry: vi.fn().mockResolvedValue({}),
+}));
+
 import { handleContext } from '../../../src/mcp/tools/context.js';
 import { canReadProject } from '../../../src/lib/project-access.js';
 import { proxySearch } from '../../../src/cloud/search-proxy.js';
+import { storeAuditEntry } from '../../../src/cloud/supabase/audit.js';
 
 const httpServerOverride = {
   org_id: 'caller-org',
@@ -140,5 +145,38 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
     );
     expect(canReadProject).not.toHaveBeenCalled();
     expect(proxySearch).toHaveBeenCalled();
+    // No cross-org → no audit emit for cross_org_read.
+    expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('emits a cross_org_read audit row on successful cross-org context load', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+
+    await handleContext(
+      { task_description: 'how to handle auth', target_project_id: PUBLIC_TARGET },
+      httpServerOverride,
+    );
+
+    expect(storeAuditEntry).toHaveBeenCalledTimes(1);
+    const auditCall = vi.mocked(storeAuditEntry).mock.calls[0][1];
+    expect(auditCall).toMatchObject({
+      action: 'cross_org_read',
+      project_id: PUBLIC_TARGET,
+      member_id: 'caller-member-id',
+      target_type: 'project',
+      target_id: PUBLIC_TARGET,
+      new_state: { tool: 'valis_context' },
+    });
+  });
+
+  it('does NOT emit cross_org_read audit when access is denied', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+
+    await handleContext(
+      { task_description: 'how to handle auth', target_project_id: 'private-target' },
+      httpServerOverride,
+    );
+
+    expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 });

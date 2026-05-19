@@ -442,6 +442,8 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   // api_key; community → direct Supabase + Qdrant write.
   let stored = 0;
   let storedProposed = 0;
+  let duplicates = 0;
+  let invalid = 0;
   let failed = 0;
   const storedIds: string[] = [];
 
@@ -449,6 +451,8 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
     const result = await storeDraftsHosted(config, projectId ?? null, drafts);
     stored = result.stored;
     storedProposed = result.storedProposed;
+    duplicates = result.duplicates;
+    invalid = result.invalid;
     failed = result.failed;
     storedIds.push(...result.storedIds);
   } else {
@@ -496,6 +500,16 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
         pc.yellow(`${storedProposed} proposed`) +
         pc.dim(' (drafts — review in dashboard before promote)'),
     );
+  }
+  // BUG #174: report duplicates / invalid separately from real failures so
+  // safe re-imports (every hash already in DB) don't look like data loss.
+  if (duplicates > 0) {
+    console.log(
+      pc.dim(`○ Skipped ${duplicates} duplicate(s) — already in the team brain`),
+    );
+  }
+  if (invalid > 0) {
+    console.log(pc.dim(`○ Skipped ${invalid} malformed draft(s) — text too short`));
   }
   if (failed > 0) console.log(pc.red(`✗ ${failed} failed`));
 
@@ -553,7 +567,14 @@ async function storeDraftsHosted(
   config: import('../types.js').ValisConfig,
   projectId: string | null,
   drafts: DraftDecision[],
-): Promise<{ stored: number; storedProposed: number; failed: number; storedIds: string[] }> {
+): Promise<{
+  stored: number;
+  storedProposed: number;
+  duplicates: number;
+  invalid: number;
+  failed: number;
+  storedIds: string[];
+}> {
   const apiKey = config.member_api_key ?? config.api_key;
   if (!apiKey || !projectId) {
     console.error(
@@ -562,7 +583,14 @@ async function storeDraftsHosted(
           'Run `valis init` then `valis switch --project <name>`.',
       ),
     );
-    return { stored: 0, storedProposed: 0, failed: drafts.length, storedIds: [] };
+    return {
+      stored: 0,
+      storedProposed: 0,
+      duplicates: 0,
+      invalid: 0,
+      failed: drafts.length,
+      storedIds: [],
+    };
   }
 
   const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
@@ -576,6 +604,8 @@ async function storeDraftsHosted(
   const BATCH_SIZE = 25;
   let stored = 0;
   let storedProposed = 0;
+  let duplicates = 0;
+  let invalid = 0;
   let failed = 0;
   const storedIds: string[] = [];
   const totalBatches = Math.ceil(drafts.length / BATCH_SIZE);
@@ -641,13 +671,30 @@ async function storeDraftsHosted(
 
     const json = (await res.json()) as {
       stored: number;
-      skipped: number;
+      skipped?: number; // legacy field, retained for backward compat
+      duplicates?: number;
+      invalid?: number;
+      failed?: number;
       total: number;
       decision_ids: string[];
+      errors?: string[];
     };
 
+    // BUG #174: respect the new fine-grained counters when the server
+    // returns them (>=0.5.4 backend). Fall back to legacy {stored, skipped}
+    // shape for older deployments — in that case, all non-stored items get
+    // lumped into `failed` as before.
+    const batchDuplicates = json.duplicates ?? 0;
+    const batchInvalid = json.invalid ?? 0;
+    const batchFailed =
+      json.failed !== undefined
+        ? json.failed
+        : Math.max(0, (json.skipped ?? 0) - batchDuplicates - batchInvalid);
+
     stored += json.stored;
-    failed += json.skipped;
+    duplicates += batchDuplicates;
+    invalid += batchInvalid;
+    failed += batchFailed;
     storedIds.push(...(json.decision_ids ?? []));
 
     // Track proposed count from the batch slice — server doesn't return it
@@ -666,7 +713,7 @@ async function storeDraftsHosted(
     );
   }
 
-  return { stored, storedProposed, failed, storedIds };
+  return { stored, storedProposed, duplicates, invalid, failed, storedIds };
 }
 
 /**

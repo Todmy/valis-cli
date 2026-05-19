@@ -6,9 +6,19 @@
  * neighbours of the candidate text and classifies the top match into one of
  * three similarity bands:
  *
- *   duplicate  [0.92, 1.0]  → short-circuit the write; return existing ID
- *   neighbour  [0.70, 0.92) → write proceeds; auto-populate `depends_on`
+ *   duplicate  [0.97, 1.0]  → short-circuit the write; return existing ID
+ *   neighbour  [0.70, 0.97) → write proceeds; auto-populate `depends_on`
  *   none       [0.00, 0.70) → write proceeds unchanged
+ *
+ * Threshold history:
+ *   - 027/Track 4 (original): 0.92 — chosen for engineering-decision corpora.
+ *   - 2026-05-19: raised to 0.97 after the 0.92 band kept blocking legitimate
+ *     re-recordings on mixed-domain personal workloads where the same topic
+ *     is revisited with new facts (e.g. "Synevo vs diag.pl" at 93% to an
+ *     earlier April Synevo decision). Lowering the bar to 0.97 routes the
+ *     0.92-0.97 band into neighbour-tier so the new row still writes and
+ *     auto-links via `depends_on`. A follow-up backlog item (#181) tracks
+ *     a richer "clone edge" replacement for the hard block.
  *
  * The pattern mirrors `LinkExtractor` (025/T010): generic over `SearchFn`,
  * never-rejects, structured failure surface. The injector adds the duplicate
@@ -58,8 +68,10 @@ export interface GroundTruthContext {
 
 export interface InjectGroundTruthOptions {
   /**
-   * Duplicate-tier lower bound; default 0.92. Top match at or above this value
-   * triggers the short-circuit. Clamped to [0.0, 1.0].
+   * Duplicate-tier lower bound; default 0.97 (raised from 0.92 on 2026-05-19
+   * to stop blocking legitimate re-recordings with deltas on mixed-domain
+   * workloads). Top match at or above this value triggers the short-circuit.
+   * Clamped to [0.0, 1.0].
    */
   duplicateThreshold?: number;
   /**
@@ -86,7 +98,7 @@ export interface InjectGroundTruthOptions {
   callerSuppliedReplaces?: boolean;
 }
 
-const DEFAULT_DUPLICATE_THRESHOLD = 0.92;
+const DEFAULT_DUPLICATE_THRESHOLD = 0.97;
 const DEFAULT_NEIGHBOUR_THRESHOLD = 0.7;
 const DEFAULT_MAX_CANDIDATES = 3;
 const DEFAULT_TIMEOUT_MS = 1500;

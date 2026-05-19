@@ -20,11 +20,11 @@ function searchReturning(
 }
 
 describe('injectGroundTruth — similarity tiers', () => {
-  it('classifies top match ≥ 0.92 as duplicate and short-circuits the write', async () => {
+  it('classifies top match ≥ 0.97 as duplicate and short-circuits the write', async () => {
     const ctx = await injectGroundTruth(
       'we chose Postgres',
       searchReturning([
-        { id: 'd1', similarity: 0.95 },
+        { id: 'd1', similarity: 0.98 },
         { id: 'd2', similarity: 0.6 },
       ]),
     );
@@ -32,14 +32,29 @@ describe('injectGroundTruth — similarity tiers', () => {
     expect(ctx.status).toBe('duplicate_detected');
     expect(ctx.band).toBe('duplicate');
     expect(ctx.existing_id).toBe('d1');
-    expect(ctx.top_similarity).toBe(0.95);
+    expect(ctx.top_similarity).toBe(0.98);
     // Only the duplicate ID is surfaced — the 0.6 second match is below
     // both the duplicate AND neighbour thresholds, so it would just be
     // noise in the duplicate-detected response.
-    expect(ctx.candidates).toEqual([{ id: 'd1', similarity: 0.95 }]);
+    expect(ctx.candidates).toEqual([{ id: 'd1', similarity: 0.98 }]);
   });
 
-  it('classifies top match in [0.7, 0.92) as neighbour and auto-populates depends_on', async () => {
+  it('classifies the 0.92-0.97 band as neighbour, not duplicate (2026-05-19 threshold raise)', async () => {
+    // Regression lock for BACKLOG #181 motivation: a 0.93 match used to
+    // land in the duplicate tier and block the write. Post-raise it falls
+    // into neighbour and auto-links via depends_on.
+    const ctx = await injectGroundTruth(
+      'related decision, fresh facts',
+      searchReturning([{ id: 'd1', similarity: 0.93 }]),
+    );
+
+    expect(ctx.status).toBe('neighbours_linked');
+    expect(ctx.band).toBe('neighbour');
+    expect(ctx.existing_id).toBeUndefined();
+    expect(ctx.candidates).toEqual([{ id: 'd1', similarity: 0.93 }]);
+  });
+
+  it('classifies top match in [0.7, 0.97) as neighbour and auto-populates depends_on', async () => {
     const ctx = await injectGroundTruth(
       'lesson from prior decision',
       searchReturning([
@@ -88,10 +103,10 @@ describe('injectGroundTruth — similarity tiers', () => {
     expect(ctx.top_similarity).toBe(0.6);
   });
 
-  it('boundary: similarity exactly 0.92 falls into the duplicate tier (closed upper bound)', async () => {
+  it('boundary: similarity exactly 0.97 falls into the duplicate tier (closed upper bound)', async () => {
     const ctx = await injectGroundTruth(
       'exact-boundary text',
-      searchReturning([{ id: 'd1', similarity: 0.92 }]),
+      searchReturning([{ id: 'd1', similarity: 0.97 }]),
     );
 
     expect(ctx.status).toBe('duplicate_detected');
@@ -136,7 +151,7 @@ describe('injectGroundTruth — caller-arg precedence', () => {
   it('caller-supplied replaces suppresses the duplicate short-circuit', async () => {
     const ctx = await injectGroundTruth(
       'we revised our prior decision',
-      searchReturning([{ id: 'd1', similarity: 0.96 }]),
+      searchReturning([{ id: 'd1', similarity: 0.98 }]),
       { callerSuppliedReplaces: true },
     );
 
@@ -146,7 +161,7 @@ describe('injectGroundTruth — caller-arg precedence', () => {
     // similarity actually said, even though we suppressed the short-circuit).
     expect(ctx.status).not.toBe('duplicate_detected');
     expect(ctx.band).toBe('duplicate');
-    expect(ctx.candidates).toEqual([{ id: 'd1', similarity: 0.96 }]);
+    expect(ctx.candidates).toEqual([{ id: 'd1', similarity: 0.98 }]);
   });
 
   it('caller-supplied replaces + caller-supplied depends_on still informational', async () => {
@@ -234,7 +249,7 @@ describe('injectGroundTruth — threshold + option clamping', () => {
   it('uses default thresholds when options are undefined', async () => {
     const ctx = await injectGroundTruth(
       'text',
-      searchReturning([{ id: 'd1', similarity: 0.95 }]),
+      searchReturning([{ id: 'd1', similarity: 0.98 }]),
     );
     expect(ctx.status).toBe('duplicate_detected');
   });

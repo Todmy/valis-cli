@@ -1,72 +1,86 @@
 /**
- * Update notifier — npm-registry-aware version check for valis-cli.
+ * Update notifier + auto-installer for valis-cli.
  *
- * Industry-standard pattern (modeled after the `update-notifier` package
- * used by npm, yarn, Claude Code, and most Node CLIs): once per 24 hours,
- * fetch the latest published version from the npm registry, cache it
- * locally, and emit a one-line notice on subsequent invocations when the
- * installed version is older than the cached "latest".
+ * v0.5.4 (BUG #176 sibling — surfaced same dogfood session): the prior
+ * notice-only design was passive, and Claude Code's session-start hook
+ * stderr is not reliably surfaced in the UI — engineers running v0.5.3
+ * could not see the "new version available" line at all. The fix is
+ * (a) make the install automatic by default, (b) confine the legacy
+ * notice path to the cases where auto-install would break user setups
+ * (volta / asdf / nvm / brew etc.), (c) communicate via a mechanism the
+ * user definitely sees on the next prompt.
  *
- * Design:
+ * Design — three branches:
  *
- *   - Check is **best-effort and non-blocking**: it must never throw,
- *     never delay the host hook by more than a few milliseconds on the
- *     hot path, and never fail in a way that surfaces to the user as an
- *     error (Constitution III).
+ *   1. **Auto-install branch (default).** Cache says newer version
+ *      exists, user has not opted out, and `npm root -g` resolves to a
+ *      vanilla npm-global directory (not under a known version
+ *      manager). Spawn `npm i -g valis-cli@latest` detached + unref'd,
+ *      stdio routed to `~/.valis/cache/update-install.log`. Drop a
+ *      sentinel at `~/.valis/cache/update-pending.json` so the
+ *      UserPromptSubmit hook can announce the upgrade to the agent on
+ *      the next turn (the user definitely sees additionalContext; they
+ *      don't necessarily see hook stderr).
  *
- *   - Notice is emitted via `process.stderr.write` — Claude Code surfaces
- *     hook stderr in its UI without treating it as a failure. The notice
- *     is two lines: the version delta + the install command. No boxen
- *     drawing, no animation.
+ *   2. **Notice branch.** Auto-install is unsafe (version manager
+ *      detected) OR explicit opt-out. Same one-line stderr notice as
+ *      before, kept for back-compat and for users who watch stderr.
  *
- *   - Auto-install is **deliberately not implemented**. Many users run
- *     valis-cli via volta / asdf / homebrew / corepack where global
- *     install paths are managed externally; `npm i -g valis-cli@latest`
- *     from inside our process would break those setups. The notice
- *     prints the install command so the user runs it themselves under
- *     their own version manager. Opt-in auto-install can be added later
- *     (e.g., `VALIS_AUTO_UPDATE=1` env var) if dogfooding shows the
- *     notice-only path is too passive.
+ *   3. **No-op branch.** Already at latest, no cache yet (first run),
+ *      or explicit opt-out of the entire feature.
  *
- *   - Cache lives at `~/.valis/cache/update-check.json` with a 24-hour
- *     TTL. Refresh runs in the background via `void` — the function
- *     returns immediately and the cache file updates whenever the
- *     registry responds.
+ * Opt-outs (any one disables auto-install; the last two also disable
+ * the notice fallback):
  *
- *   - On the very first run (no cache yet), we kick off the background
- *     refresh and emit no notice. The user sees the notice on the next
- *     session-start fired ≥24h later, once we have a cached "latest" to
- *     compare against. This is consistent with how `npm update-notifier`
- *     behaves — silence on first run, notice from second run onward.
+ *   - `VALIS_AUTO_UPDATE=0` env var
+ *   - `auto_update: false` in `~/.valis/config.json`
+ *   - `VALIS_NO_UPDATE_NOTIFIER=1` env var (legacy — disables EVERYTHING)
+ *
+ * Constitution III: the notifier must never throw, never delay the
+ * host hook by more than a few ms on the hot path, and never surface
+ * as a failure. Install spawn is detached so the hook returns
+ * immediately regardless of how long npm takes.
  */
 
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { spawn } from 'node:child_process';
+import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { valisHome } from './paths.js';
-import { join } from 'node:path';
 
 const NPM_REGISTRY_URL = 'https://registry.npmjs.org/valis-cli/latest';
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 3000;
 
 interface UpdateCacheRecord {
-  /** ISO timestamp of last successful registry check. */
   checked_at: string;
-  /** Latest version observed on the registry. */
   latest_version: string;
+}
+
+interface UpdatePendingRecord {
+  /** Version `npm i -g` was invoked for. */
+  target_version: string;
+  /** ISO timestamp when the background install was spawned. */
+  spawned_at: string;
+  /** Best-effort: where the install log is written. */
+  log_path: string;
 }
 
 function cachePath(): string {
   return join(valisHome(), 'cache', 'update-check.json');
 }
 
-/**
- * Compare two semver-shaped version strings.
- * Returns positive when `a > b`, negative when `a < b`, zero when equal.
- * Tolerant of pre-release / build suffixes — only compares the dotted
- * numeric prefix (so `0.5.3-rc.1` and `0.5.3` compare equal here, which
- * is acceptable because we never want to nag about pre-releases).
- */
+function pendingPath(): string {
+  return join(valisHome(), 'cache', 'update-pending.json');
+}
+
+function installLogPath(): string {
+  return join(valisHome(), 'cache', 'update-install.log');
+}
+
+function configPath(): string {
+  return join(valisHome(), 'config.json');
+}
+
 function compareVersions(a: string, b: string): number {
   const numericPrefix = (v: string): number[] => {
     const stripped = v.split(/[-+]/, 1)[0]!;
@@ -109,18 +123,22 @@ async function writeCache(record: UpdateCacheRecord): Promise<void> {
     await writeFile(tmp, JSON.stringify(record, null, 2), 'utf-8');
     await rename(tmp, target);
   } catch {
-    // Cache write failure is non-fatal; next session-start retries.
+    /* non-fatal — next session retries */
   }
 }
 
-/**
- * Hit the npm registry, parse the `version` field, persist to cache.
- * Hard timeout via AbortController so we never block longer than
- * `FETCH_TIMEOUT_MS` (registry usually responds in 100-500ms).
- *
- * Errors swallowed — Constitution III guarantees we never throw from
- * the notifier into the host hook.
- */
+async function writePending(record: UpdatePendingRecord): Promise<void> {
+  try {
+    const target = pendingPath();
+    await mkdir(dirname(target), { recursive: true });
+    const tmp = `${target}.tmp`;
+    await writeFile(tmp, JSON.stringify(record, null, 2), 'utf-8');
+    await rename(tmp, target);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function refreshCache(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -137,16 +155,12 @@ async function refreshCache(): Promise<void> {
       latest_version: body.version,
     });
   } catch {
-    // Network failure, parse failure, abort — all swallowed.
+    /* network / parse / abort — swallowed */
   } finally {
     clearTimeout(timer);
   }
 }
 
-/**
- * Whether the cache is older than `CHECK_INTERVAL_MS`. Missing cache
- * file also returns true (so first-run kicks off the initial fetch).
- */
 function cacheStale(record: UpdateCacheRecord | null): boolean {
   if (!record) return true;
   const ts = Date.parse(record.checked_at);
@@ -154,37 +168,166 @@ function cacheStale(record: UpdateCacheRecord | null): boolean {
   return Date.now() - ts > CHECK_INTERVAL_MS;
 }
 
+interface AutoUpdatePreferences {
+  /** True ⇒ user has not opted out of any update mechanism. */
+  notifier_enabled: boolean;
+  /** True ⇒ when a newer version is found and the env permits, try to install. */
+  auto_install_enabled: boolean;
+}
+
 /**
- * Emit a one-line notice to stderr when `currentVersion` is older than
- * `latestVersion`. Uses plain text (no ANSI colors) so logs grep cleanly.
+ * Read `~/.valis/config.json` for the `auto_update` flag and check
+ * the env overrides. Defaults: auto_install enabled, notifier enabled.
  */
-function emitNotice(currentVersion: string, latestVersion: string): void {
+async function readPreferences(): Promise<AutoUpdatePreferences> {
+  let configAutoUpdate: boolean | undefined;
   try {
+    const raw = await readFile(configPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as { auto_update?: unknown };
+    if (typeof parsed.auto_update === 'boolean') {
+      configAutoUpdate = parsed.auto_update;
+    }
+  } catch {
+    /* missing / malformed config — fall back to defaults */
+  }
+
+  const notifierOff = (process.env.VALIS_NO_UPDATE_NOTIFIER ?? '') === '1';
+  const envAutoUpdate = process.env.VALIS_AUTO_UPDATE;
+  const envOptedOutOfAuto =
+    envAutoUpdate === '0' ||
+    envAutoUpdate?.toLowerCase() === 'false' ||
+    envAutoUpdate?.toLowerCase() === 'no';
+
+  const notifierEnabled = !notifierOff;
+  // auto-install is enabled by default. Either env or config can disable it.
+  // The legacy NO_UPDATE_NOTIFIER kill-switch also disables it.
+  const autoInstallEnabled =
+    notifierEnabled &&
+    configAutoUpdate !== false &&
+    !envOptedOutOfAuto;
+
+  return { notifier_enabled: notifierEnabled, auto_install_enabled: autoInstallEnabled };
+}
+
+/**
+ * Resolve the global npm root and decide whether `npm i -g` is safe to
+ * invoke here. Returns the global root path on success, or null when
+ * (a) npm isn't on PATH, (b) the root resolves under a known version
+ * manager (volta / asdf / nvm / brew / corepack / nodebrew / fnm), or
+ * (c) the resolution fails for any reason. In all of those cases we
+ * fall back to the notice path so the user runs the right command
+ * under their manager's rules.
+ */
+async function resolveSafeNpmGlobalRoot(): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('npm', ['root', '-g'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let out = '';
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch { /* ignore */ }
+        resolve(null);
+      }, 2000);
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString('utf-8');
+      });
+      child.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return resolve(null);
+        const root = out.trim();
+        if (!root) return resolve(null);
+        // Known version-manager paths — `npm i -g` here either fails or
+        // writes to the wrong shim, so we hand control back to the user.
+        const managed =
+          /\.volta\b/.test(root) ||
+          /\.asdf\b/.test(root) ||
+          /\.nvm\b/.test(root) ||
+          /\.fnm\b/.test(root) ||
+          /\.nodebrew\b/.test(root) ||
+          /[Hh]omebrew/.test(root) ||
+          /\.corepack\b/.test(root);
+        if (managed) return resolve(null);
+        resolve(root);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Spawn `npm i -g valis-cli@latest` detached and unref'd so the host
+ * hook returns immediately. stdio is routed to the install log file
+ * so the user (and the next session-start) can inspect what happened.
+ *
+ * Returns whether the spawn itself succeeded; the install may still
+ * fail asynchronously, but that's reflected in the log file, not the
+ * boolean.
+ */
+async function spawnDetachedInstall(targetVersion: string): Promise<boolean> {
+  try {
+    const logPath = installLogPath();
+    await mkdir(dirname(logPath), { recursive: true });
+    const fh = await open(logPath, 'a');
+    const header = `\n=== ${new Date().toISOString()} — installing valis-cli@${targetVersion} ===\n`;
+    await fh.write(header);
+    const fd = fh.fd;
+
+    const child = spawn('npm', ['i', '-g', `valis-cli@${targetVersion}`], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      env: process.env,
+    });
+    child.unref();
+    // Don't await the close — we want the host hook to keep going.
+    // The fd belongs to the child now; closing here would NOT cut its
+    // pipe (the dup'd fd stays open inside the spawned process).
+    void fh.close().catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function emitNotice(
+  currentVersion: string,
+  latestVersion: string,
+  reason: 'managed' | 'opt_out',
+): void {
+  try {
+    const why =
+      reason === 'managed'
+        ? `\n  Detected a version-managed install (volta / asdf / nvm / brew). ` +
+          `Auto-install was skipped — run the upgrade under your manager.`
+        : '';
     process.stderr.write(
       `valis-cli ${latestVersion} available (you have ${currentVersion}). ` +
-        `Run: npm i -g valis-cli@latest\n`,
+        `Run: npm i -g valis-cli@latest${why}\n`,
     );
   } catch {
-    // stderr pipe closed — silent.
+    /* stderr closed — silent */
   }
 }
 
 /**
- * Main entry point. Non-blocking, safe to fire-and-forget from any hook.
- *
- *   1. Read cache.
- *   2. If we have a cached "latest" and it's newer than the running
- *      version, emit the notice immediately. This is the hot path —
- *      runs synchronously off the cache file (~1ms).
- *   3. If the cache is stale (or missing), kick off a background
- *      `refreshCache()` via `void`. It writes the new cache; the next
- *      session-start uses it.
- *
- * The decoupling means the user sees the notice immediately when the
- * cache says one's available, while registry chatter happens out of the
- * critical path.
+ * Main entry point. Branches between auto-install, notice, and no-op.
+ * Returns the action taken (for tests / telemetry); host hooks don't
+ * need to inspect this.
  */
-export async function maybeNotifyOfUpdate(currentVersion: string): Promise<void> {
+export async function maybeNotifyOfUpdate(
+  currentVersion: string,
+): Promise<'auto_installed' | 'notice_emitted' | 'noop'> {
+  let prefs: AutoUpdatePreferences;
+  try {
+    prefs = await readPreferences();
+  } catch {
+    prefs = { notifier_enabled: false, auto_install_enabled: false };
+  }
+  if (!prefs.notifier_enabled) return 'noop';
+
   let cached: UpdateCacheRecord | null = null;
   try {
     cached = await readCache();
@@ -192,18 +335,44 @@ export async function maybeNotifyOfUpdate(currentVersion: string): Promise<void>
     cached = null;
   }
 
-  // Hot path: emit notice based on existing cache.
-  if (cached && compareVersions(cached.latest_version, currentVersion) > 0) {
-    emitNotice(currentVersion, cached.latest_version);
-  }
-
-  // Cold path: refresh cache if stale, in the background. The host
-  // hook will return long before this resolves.
+  // Always refresh the cache in the background when stale — keeps the
+  // notice/auto-install accurate for the NEXT session even if this run
+  // takes no action.
   if (cacheStale(cached)) {
     void refreshCache();
   }
+
+  if (!cached || compareVersions(cached.latest_version, currentVersion) <= 0) {
+    return 'noop';
+  }
+
+  if (prefs.auto_install_enabled) {
+    const safeRoot = await resolveSafeNpmGlobalRoot();
+    if (safeRoot) {
+      const spawned = await spawnDetachedInstall(cached.latest_version);
+      if (spawned) {
+        await writePending({
+          target_version: cached.latest_version,
+          spawned_at: new Date().toISOString(),
+          log_path: installLogPath(),
+        });
+        return 'auto_installed';
+      }
+      // Spawn failed — fall through to notice as the last-resort signal.
+      emitNotice(currentVersion, cached.latest_version, 'opt_out');
+      return 'notice_emitted';
+    }
+    emitNotice(currentVersion, cached.latest_version, 'managed');
+    return 'notice_emitted';
+  }
+
+  emitNotice(currentVersion, cached.latest_version, 'opt_out');
+  return 'notice_emitted';
 }
 
-// Exported for tests so we can deterministically exercise the
-// version-compare without spinning up filesystem fixtures.
-export const __test__ = { compareVersions, cacheStale };
+export const __test__ = {
+  compareVersions,
+  cacheStale,
+  readPreferences,
+  resolveSafeNpmGlobalRoot,
+};

@@ -28,7 +28,14 @@ import { loadHookGlobalConfig } from './context.js';
 import { augment } from './augment.js';
 import { record } from './telemetry.js';
 import { buildCaptureReminder } from '../channel/push.js';
-import { composeActiveProjectBlock, composeCaptureReminderBlock } from './inject-block.js';
+import {
+  composeActiveProjectBlock,
+  composeCaptureReminderBlock,
+  composeUpdateInstalledBlock,
+} from './inject-block.js';
+import { readFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { valisHome } from './paths.js';
 import { readTranscriptTokens } from './transcript.js';
 import {
   DEFAULT_INTERVAL_TOKENS,
@@ -405,18 +412,64 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
   }
 
   // 3. Compose final additionalContext, in order:
-  //    - <valis_active_project> FIRST (~70 tokens) — standing scope every
+  //    - <valis_update_installed> if the auto-installer (update-notifier.ts)
+  //      spawned `npm i -g` since the last turn — visible signal that the
+  //      CLI was upgraded. Stderr from session-start is not reliable in
+  //      Claude Code's UI, so we surface the news via additionalContext
+  //      (which IS shown to the agent and thereby to the user). Consumed
+  //      once: the sentinel file is unlinked after we emit the block.
+  //    - <valis_active_project> NEXT (~70 tokens) — standing scope every
   //      turn so the agent knows which project_id to pass to valis_* MCP
   //      tools (BUG #176 — plugin transport doesn't propagate this).
-  //    - <valis_search_results> NEXT — relevance-driven reference material.
+  //    - <valis_search_results> — relevance-driven reference material.
   //    - <channel capture_reminder> LAST — actionable instruction (recency
   //      bias keeps it in the agent's working memory for the immediate turn).
-  const emitParts: string[] = [
-    composeActiveProjectBlock(marker.projectId, marker.projectName),
-  ];
+  const emitParts: string[] = [];
+  const updateBlock = await consumeUpdatePendingMarker();
+  if (updateBlock) emitParts.push(updateBlock);
+  emitParts.push(composeActiveProjectBlock(marker.projectId, marker.projectName));
   if (searchBlock) emitParts.push(searchBlock);
   emitParts.push(...parts);
   if (emitParts.length > 0) {
     emitContext(emitParts.join('\n\n'));
+  }
+}
+
+/**
+ * Read the auto-installer's pending-sentinel file (written by
+ * `update-notifier.ts::spawnDetachedInstall`). If present and valid,
+ * compose the <valis_update_installed> block and DELETE the sentinel —
+ * one-shot semantics so the announcement appears exactly once after each
+ * upgrade. Failures swallowed; Constitution III: never block.
+ */
+async function consumeUpdatePendingMarker(): Promise<string | null> {
+  const markerPath = join(valisHome(), 'cache', 'update-pending.json');
+  let raw: string;
+  try {
+    raw = await readFile(markerPath, 'utf-8');
+  } catch {
+    return null; // No pending update — overwhelmingly the common path.
+  }
+  let parsed: { target_version?: string; spawned_at?: string };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    // Corrupt sentinel — drop it so we don't loop on bad data.
+    void unlink(markerPath).catch(() => undefined);
+    return null;
+  }
+  const version = typeof parsed.target_version === 'string' ? parsed.target_version : null;
+  const at = typeof parsed.spawned_at === 'string' ? parsed.spawned_at : null;
+  if (!version || !at) {
+    void unlink(markerPath).catch(() => undefined);
+    return null;
+  }
+  // Best-effort delete BEFORE emitting so an exception in the composer
+  // doesn't re-announce the upgrade on every prompt.
+  void unlink(markerPath).catch(() => undefined);
+  try {
+    return composeUpdateInstalledBlock(version, at);
+  } catch {
+    return null;
   }
 }

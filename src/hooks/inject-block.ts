@@ -90,6 +90,27 @@ export function tokensForBlock(block: string): number {
 }
 
 /**
+ * Compose the `<valis_update_installed>` block — surfaced by the
+ * UserPromptSubmit hook on the first turn after the background
+ * auto-installer (`update-notifier.ts`) spawned a `npm i -g`. Tells the
+ * agent (and indirectly the user) that the CLI was upgraded so the
+ * new behavior is "expected on next Claude Code session restart".
+ *
+ * Compact (~50 tokens). Plain text, no XML escapes needed in the body
+ * because version strings are validated upstream.
+ */
+export function composeUpdateInstalledBlock(
+  installedVersion: string,
+  spawnedAt: string,
+): string {
+  return [
+    `<valis_update_installed target_version="${escapeXml(installedVersion)}" spawned_at="${escapeXml(spawnedAt)}">`,
+    `valis-cli was auto-upgraded to ${escapeXml(installedVersion)} in the background. The new binary takes effect on the next Claude Code session-start (restart the session to pick it up; the running process keeps the previous version).`,
+    `</valis_update_installed>`,
+  ].join('\n');
+}
+
+/**
  * Compose the per-prompt `<valis_active_project>` block (BUG #176).
  *
  * The plugin's MCP HTTP transport doesn't propagate the user's `.valis.json`

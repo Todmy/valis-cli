@@ -16,6 +16,7 @@ import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
 import { VERSION } from '../index.js';
+import { wrapToolWithAnalytics } from './analytics.js';
 import type { ServerConfig, ValisConfig } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -529,6 +530,7 @@ function createBaseServer(): McpServer {
 function registerToolFromDef<Name extends keyof typeof TOOL_DEFS>(
   server: McpServer,
   name: Name,
+  configOverride: ServerConfig | undefined,
   cb: (args: never) => Promise<{ content: { type: 'text'; text: string }[] }>,
 ): void {
   const def = TOOL_DEFS[name];
@@ -543,12 +545,21 @@ function registerToolFromDef<Name extends keyof typeof TOOL_DEFS>(
     inputSchema: def.schema,
     annotations: (def as { annotations?: ToolAnnotations }).annotations,
   };
+  // BUG #183: every tool handler is wrapped so each invocation emits
+  // `mcp_tool_call` with duration + success/error classification. The
+  // wrapper is a strict no-op when `configOverride.emit_funnel` is unset
+  // (local stdio path) and never throws into the handler.
+  const instrumented = wrapToolWithAnalytics(
+    name,
+    configOverride,
+    cb as unknown as (args: Record<string, unknown>) => Promise<{ content: { type: 'text'; text: string }[] }>,
+  ) as unknown as typeof cb;
   // Cast through unknown to avoid the SDK's tight Zod-shape coupling here;
   // each call site below passes a typed handler that matches its def.
   (server.registerTool as unknown as (n: string, c: typeof config, h: typeof cb) => void)(
     name,
     config,
-    cb,
+    instrumented,
   );
 }
 
@@ -572,52 +583,52 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
   // 0.1.4: registerToolFromDef wires description + schema + annotations
   // through the new server.registerTool API so harnesses see the
   // readOnlyHint/destructiveHint/idempotentHint annotations on tools/list.
-  registerToolFromDef(server, 'valis_store', async (args) => {
+  registerToolFromDef(server, 'valis_store', configOverride, async (args) => {
     const result = await handleStore(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_search', async (args) => {
+  registerToolFromDef(server, 'valis_search', configOverride, async (args) => {
     const result = await handleSearch(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_context', async (args) => {
+  registerToolFromDef(server, 'valis_context', configOverride, async (args) => {
     const result = await handleContext(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_lifecycle', async (args) => {
+  registerToolFromDef(server, 'valis_lifecycle', configOverride, async (args) => {
     const result = await handleLifecycle(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_update_outcome', async (args) => {
+  registerToolFromDef(server, 'valis_update_outcome', configOverride, async (args) => {
     const result = await handleUpdateOutcome(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_evolve', async (args) => {
+  registerToolFromDef(server, 'valis_evolve', configOverride, async (args) => {
     const result = await handleEvolve(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_check_duplicate', async (args) => {
+  registerToolFromDef(server, 'valis_check_duplicate', configOverride, async (args) => {
     const result = await handleCheckDuplicate(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_get_taxonomy_spec', async () => {
+  registerToolFromDef(server, 'valis_get_taxonomy_spec', configOverride, async () => {
     const result = await handleTaxonomy({});
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_list_projects', async () => {
+  registerToolFromDef(server, 'valis_list_projects', configOverride, async () => {
     const result = await handleListProjects(configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
-  registerToolFromDef(server, 'valis_create_project', async (args) => {
+  registerToolFromDef(server, 'valis_create_project', configOverride, async (args) => {
     const result = await handleCreateProject(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
@@ -625,7 +636,7 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
   // 019/US2: check_diff returns pre-formatted human-readable content blocks
   // instead of JSON. Forward as-is (the helper's stringify-wrapping path is
   // wrong for this one tool).
-  registerToolFromDef(server, 'valis_check_diff', async (args) => {
+  registerToolFromDef(server, 'valis_check_diff', configOverride, async (args) => {
     const result = await handleCheckDiff(args as never, configOverride);
     return result as { content: { type: 'text'; text: string }[] };
   });

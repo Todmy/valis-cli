@@ -157,6 +157,23 @@ export async function handleSearch(
     args.project_id ||
     undefined;
 
+  // Fail-closed on missing scope (2026-05-21). When the caller hasn't
+  // supplied a project_id from ANY source (JWT, .valis.json, args)
+  // AND hasn't opted into cross-project search, we surface a
+  // structured error rather than fall through to an org-wide query
+  // that leaks across projects. The error is shaped so the agent can
+  // read it as a hint to ask the user which project to use.
+  if (!projectId && !args.all_projects && !args.target_project_id) {
+    return {
+      results: [],
+      error: 'project_scope_required',
+      note:
+        'No project scope. Ask the user which project to search, then pass ' +
+        '`project_id` explicitly in args. To search across every project the ' +
+        'member can access, pass `all_projects: true`.',
+    };
+  }
+
   // Feature 033 — public-KB cross-org read gate. When `target_project_id`
   // is set, replace `projectId` with the target after access resolution.
   // Denied access returns an empty response indistinguishable from "no

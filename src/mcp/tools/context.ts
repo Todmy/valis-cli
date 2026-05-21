@@ -75,9 +75,14 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     query = `${query} ${fileTerms}`;
   }
 
-  // T022: Resolve project from per-directory config
+  // T022: Resolve project from per-directory config.
+  // 2026-05-21: args.project_id is the third source (plugin-OAuth path,
+  // see handleSearch for full rationale).
   const resolved = configOverride ? null : await resolveConfig();
-  let projectId = configOverride?.project_id || resolved?.project?.project_id;
+  let projectId =
+    configOverride?.project_id ||
+    resolved?.project?.project_id ||
+    args.project_id;
 
   // Feature 033 — public-KB cross-org gate. Mirrors handleSearch.
   if (args.target_project_id && args.target_project_id !== projectId) {
@@ -212,15 +217,31 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     }
   }
 
-  // 019/US1 (R-001 + R-006 + contracts/mcp-context.md):
-  //   When running server-side (configOverride set = HTTP MCP transport) and
-  //   no project scope is set, mirror handleSearch's cross-project fallback:
-  //   pull the caller's project memberships and search across them. If the
-  //   caller has zero accessible projects, surface
-  //   `no_accessible_projects: true` so the agent can distinguish "no data
-  //   yet" from "infrastructure failure".
+  // 2026-05-21 (cross-project leak fix): explicit cross-project search now
+  // requires `args.all_projects`. The previous behaviour silently fell back
+  // to org-wide search whenever the server-mode caller didn't provide a
+  // project scope, which leaked decisions across projects in the same org.
+  // Callers that genuinely want cross-project results must opt in.
   const isServerMode = Boolean(configOverride);
-  const wantsCrossProject = args.all_projects || (isServerMode && !projectId);
+  const wantsCrossProject = args.all_projects === true;
+
+  if (!projectId && !wantsCrossProject && !args.target_project_id) {
+    return withMismatch({
+      decisions: [],
+      constraints: [],
+      patterns: [],
+      lessons: [],
+      historical: [],
+      total_in_brain: 0,
+      error: 'project_scope_required',
+      note:
+        'No project scope. Ask the user which project to load context for, ' +
+        'then call valis_context again with `project_id`. To load context ' +
+        'across every accessible project, pass `all_projects: true`.',
+    });
+  }
+  // Silence isServerMode-only lint usage (still referenced below).
+  void isServerMode;
 
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);

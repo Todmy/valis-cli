@@ -568,6 +568,12 @@ export interface SearchResponse {
   suppressed_count?: number;
   offline?: boolean;
   note?: string;
+  /**
+   * Machine-readable error code. Surfaces structured failure conditions
+   * to the agent — currently used for `project_scope_required` when no
+   * project_id could be resolved from any source.
+   */
+  error?: string;
   project_scope_mismatch?: ProjectScopeMismatch;
   /**
    * 032/Track 6 — structured-filter diagnostics surfaced when the agent
@@ -592,6 +598,9 @@ export interface ContextResponse {
   total_in_brain: number;
   /** Number of results suppressed from default view (T050). */
   suppressed_count?: number;
+  /** Structured error code, e.g. `project_scope_required`. */
+  error?: string;
+  /** Human-readable hint paired with `error`. */
   note?: string;
   /** CLI-stdio fallback indicator. NEVER set on HTTP transport (per 019 R-001). */
   offline?: boolean;

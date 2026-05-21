@@ -137,8 +137,25 @@ export async function handleSearch(
 
   // T021: Resolve project from per-directory config when stdio CLI; HTTP MCP
   // passes project_id via configOverride.
+  //
+  // 2026-05-21 fix (cross-project leak): args.project_id is now consulted
+  // as a fallback when neither configOverride nor .valis.json carries a
+  // scope. Without this, plugin OAuth tokens that lack a project claim
+  // resolve to `undefined`, and `buildProjectFilter(orgId, undefined)`
+  // returns org-wide results — leaking decisions from other projects in
+  // the same org. The plugin's UserPromptSubmit hook explicitly injects
+  // `pass project_id explicitly in args` into the agent context, so this
+  // restores honesty between the documented behaviour and the actual
+  // filter scope. When configOverride already has a scope and args.
+  // project_id differs, `detectScopeMismatch` still raises the warning
+  // (configOverride wins, args is diagnostic) — that contract is
+  // preserved below.
   const resolved = configOverride ? null : await resolveConfig();
-  let projectId = configOverride?.project_id || resolved?.project?.project_id || undefined;
+  let projectId =
+    configOverride?.project_id ||
+    resolved?.project?.project_id ||
+    args.project_id ||
+    undefined;
 
   // Feature 033 — public-KB cross-org read gate. When `target_project_id`
   // is set, replace `projectId` with the target after access resolution.

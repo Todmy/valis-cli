@@ -89,6 +89,12 @@ const TOOL_DEFS = {
       type: z.enum(['decision', 'constraint', 'pattern', 'lesson']).optional().describe('Filter by type'),
       limit: z.number().int().min(1).max(50).default(10).optional().describe('Max results'),
       all_projects: z.boolean().optional().describe('Search across all accessible projects instead of just the active one'),
+      // BUG #118 / 2026-05-21 scope-required fix: agents in plugin mode
+      // need to pass project_id explicitly because the OAuth token does
+      // not carry a project claim. Without this schema entry the field
+      // is dropped by zod validation, and handleSearch never sees it.
+      project_id: z.string().uuid().optional().describe('Project UUID to search within. When omitted in plugin/OAuth mode the call fails closed with `project_scope_required` rather than leaking across projects.'),
+      target_project_id: z.string().uuid().optional().describe('Cross-org public-KB read target (feature 033). Replaces the default project scope when access is granted.'),
       // 0.1.7-dev / BUG #161: control how much of each matched decision is
       // returned. Default ('siblings') gives the matched chunk plus ±1
       // adjacent chunks for context — best balance of relevance vs token
@@ -132,6 +138,10 @@ const TOOL_DEFS = {
       task_description: z.string().min(1).describe('What you are working on'),
       files: z.array(z.string()).optional().describe('File paths being worked on'),
       all_projects: z.boolean().optional().describe('Load context from all accessible projects'),
+      // Same scope-required path as valis_search: agents in plugin mode
+      // must pass project_id explicitly.
+      project_id: z.string().uuid().optional().describe('Project UUID to load context from. When omitted in plugin/OAuth mode the call fails closed.'),
+      target_project_id: z.string().uuid().optional().describe('Cross-org public-KB read target (feature 033).'),
     },
   },
   valis_lifecycle: {

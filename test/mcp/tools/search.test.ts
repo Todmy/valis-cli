@@ -96,4 +96,45 @@ describe('handleSearch', () => {
     const result = await handleSearch({ query: 'database', project_id: 'project-B' });
     expect(result.project_scope_mismatch).toBeUndefined();
   });
+
+  // ---------------------------------------------------------------------------
+  // Cross-project leak fix (ec41f06 + c610422) — regression guards
+  // ---------------------------------------------------------------------------
+
+  it('fails closed with project_scope_required when no scope source is set', async () => {
+    // No configOverride.project_id, no .valis.json (CLI mode), no args.project_id.
+    // The pre-fix behaviour silently fell through to an org-wide search; the
+    // post-fix behaviour returns an empty result with a structured error so the
+    // agent knows to ask the user which project to use.
+    const overrideWithoutProject = { ...serverOverride, project_id: undefined as unknown as string };
+    const result = await handleSearch({ query: 'database' }, overrideWithoutProject);
+    expect(result.error).toBe('project_scope_required');
+    expect(result.results).toHaveLength(0);
+    expect(result.note).toMatch(/project/i);
+  });
+
+  it('uses args.project_id as a fallback when configOverride has no scope', async () => {
+    // Plugin OAuth tokens often lack a project claim. The agent's system
+    // reminder tells it to pass project_id explicitly in args; this test
+    // locks in that the args value scopes the search rather than being
+    // ignored as diagnostic-only metadata.
+    const overrideWithoutProject = { ...serverOverride, project_id: undefined as unknown as string };
+    const result = await handleSearch(
+      { query: 'database', project_id: 'project-X' },
+      overrideWithoutProject,
+    );
+    expect(result.error).toBeUndefined();
+    // Mock hybridSearch returns a result regardless of filter; we just verify
+    // the early-exit didn't fire.
+    expect(result.results.length).toBeGreaterThan(0);
+  });
+
+  it('allows explicit all_projects opt-in without a project scope', async () => {
+    const overrideWithoutProject = { ...serverOverride, project_id: undefined as unknown as string };
+    const result = await handleSearch(
+      { query: 'database', all_projects: true },
+      overrideWithoutProject,
+    );
+    expect(result.error).toBeUndefined();
+  });
 });

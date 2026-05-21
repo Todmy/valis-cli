@@ -56,14 +56,45 @@ import type { QueryAnalysis } from './query-analyzer.js';
 // Defaults
 // ---------------------------------------------------------------------------
 
-/** Default signal weights per research.md. Sum = 1.0. */
+/**
+ * Default signal weights. Sum = 1.0.
+ *
+ * 2026-05-21 rebalance: empirical inspection of live `valis_search`
+ * responses showed three of the six signals didn't differentiate
+ * results in practice:
+ *
+ *   - `bm25_score` always 0.5 — but this is by architecture, NOT a
+ *     bug. Qdrant's RRF prefetch fuses dense + BM25 into a single
+ *     `point.score` before returning. The reranker reads that as
+ *     `semantic_score`, so BM25 IS already contributing (just under
+ *     a different label). The named `bm25_score` field is empty
+ *     because the post-fusion API doesn't expose individual
+ *     prefetch ranks. To activate a TRUE second BM25 signal we
+ *     would have to run a separate BM25-only prefetch alongside —
+ *     deferred. Setting weight to 0 prevents the normalised-to-0.5
+ *     placeholder from adding a flat baseline that drowns out the
+ *     three signals that do differentiate.
+ *
+ *   - `importance` always 0.5 — most stored decisions carry the
+ *     default `confidence = 0.5` (the valis_store API default when
+ *     callers don't pass one) and `pinned = false`. The signal is
+ *     functional, it just has no variance over current data. When
+ *     confidence starts varying or pin usage picks up, bump weight
+ *     back up.
+ *
+ *   - `cluster_boost` always 0 — clustering machinery not active.
+ *
+ * Composite is now hybrid (semantic+bm25 via RRF) + recency + graph.
+ * That trio is what actually orders results. Restore the others when
+ * their data becomes informative.
+ */
 export const DEFAULT_WEIGHTS: SignalWeights = {
-  semantic: 0.30,
-  bm25: 0.20,
-  recency: 0.20,
-  importance: 0.15,
-  graph: 0.10,
-  cluster: 0.05,
+  semantic: 0.45,
+  bm25: 0.0,
+  recency: 0.30,
+  importance: 0.0,
+  graph: 0.25,
+  cluster: 0.0,
 };
 
 /** Stage 2 blending weights. Sum = 1.0. */

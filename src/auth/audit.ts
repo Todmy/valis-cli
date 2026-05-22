@@ -14,11 +14,19 @@ export function buildAuditPayload(
     previousState?: Record<string, unknown>;
     newState?: Record<string, unknown>;
     reason?: string;
+    /**
+     * Project UUID this audit row belongs to. When omitted, the row lands
+     * with `project_id = NULL`, which makes it invisible to project-scoped
+     * activity views (overview Recent Activity, per-project audit tab).
+     * Always pass when a decision-bearing context is in scope.
+     */
+    projectId?: string | null;
   },
 ): Omit<AuditEntry, 'id' | 'created_at'> {
   return {
     org_id: orgId,
     member_id: memberId,
+    project_id: opts?.projectId ?? null,
     action,
     target_type: targetType,
     target_id: targetId,

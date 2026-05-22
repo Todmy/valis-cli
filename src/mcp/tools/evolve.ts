@@ -144,6 +144,9 @@ export async function handleEvolve(
       config.member_id || 'unknown',
       config.org_id,
       {
+        // Scope the lineage audit row to the `from` decision's project — the
+        // edge "belongs" to whatever project the originating decision lives in.
+        projectId: (fromRow as { project_id?: string | null }).project_id ?? null,
         newState: {
           edge_id: insertedRow.id,
           from_id: args.from_id,

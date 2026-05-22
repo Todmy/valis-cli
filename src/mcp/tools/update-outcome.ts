@@ -157,13 +157,14 @@ export async function handleUpdateOutcome(
   // Existence + org-scope check in one read. `getDecisionById` already filters
   // by org_id, so a cross-org id falls through to the 'decision_not_found'
   // branch — the agent gets a single uniform signal instead of two.
-  let priorRow: { id: string; outcome: OutcomeStatus | null } | null = null;
+  let priorRow: { id: string; outcome: OutcomeStatus | null; project_id: string | null } | null = null;
   try {
     const fetched = await getDecisionById(supabase, config.org_id, args.decision_id);
     if (fetched) {
       priorRow = {
         id: fetched.id,
         outcome: (fetched as { outcome?: OutcomeStatus | null }).outcome ?? null,
+        project_id: (fetched as { project_id?: string | null }).project_id ?? null,
       };
     }
   } catch (err) {
@@ -221,6 +222,7 @@ export async function handleUpdateOutcome(
       config.member_id || 'unknown',
       config.org_id,
       {
+        projectId: priorRow.project_id,
         previousState: { outcome: previousOutcome },
         newState: { outcome: canonical },
         reason: reasonForWrite ?? undefined,

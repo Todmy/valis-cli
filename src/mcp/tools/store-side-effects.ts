@@ -304,6 +304,7 @@ const contradictionDetectEffect: StoreSideEffect<StoreContradictionWarning[]> = 
             ctx.config.member_id || 'unknown',
             ctx.config.org_id,
             {
+              projectId: ctx.projectId,
               newState: {
                 decision_a: ctx.decision.id,
                 decision_b: w.decision_id,
@@ -339,7 +340,10 @@ const autoLinksAuditEffect: StoreSideEffect<void> = {
         ctx.decision.id,
         ctx.config.member_id || 'unknown',
         ctx.config.org_id,
-        { newState: { auto_links: ctx.linkExtraction } },
+        {
+          projectId: ctx.projectId,
+          newState: { auto_links: ctx.linkExtraction },
+        },
       );
       await createAuditEntry(ctx.supabase, auditPayload);
     } catch {

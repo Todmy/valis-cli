@@ -60,7 +60,9 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
   const newStatus: DecisionStatus = args.action === 'deprecate' ? 'deprecated' : 'active';
 
   // Fetch the current decision to know old_status for audit trail
-  let oldDecision: { status: DecisionStatus; summary: string | null; detail: string; author: string } | null = null;
+  let oldDecision:
+    | { status: DecisionStatus; summary: string | null; detail: string; author: string; project_id: string | null }
+    | null = null;
   try {
     const fetched = await getDecisionById(supabase, config.org_id, args.decision_id);
     if (fetched) {
@@ -69,6 +71,7 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
         summary: fetched.summary,
         detail: fetched.detail,
         author: fetched.author,
+        project_id: (fetched as { project_id?: string | null }).project_id ?? null,
       };
     }
   } catch {
@@ -135,6 +138,7 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
           config.member_id || 'unknown',
           config.org_id,
           {
+            projectId: oldDecision?.project_id ?? null,
             previousState: { status: 'proposed' },
             newState: {
               status: newStatus,
@@ -254,15 +258,22 @@ async function handlePinUnpin(
   authorName: string,
   memberId?: string | null,
 ): Promise<LifecyclePinResponse> {
-  const { error } = await supabase
+  // Pull project_id back from the row we're touching so the audit row lands
+  // scoped to the right project. Without this, project-scoped Recent Activity
+  // never surfaces pin/unpin events.
+  const { data: updated, error } = await supabase
     .from('decisions')
     .update({ pinned })
     .eq('id', decisionId)
-    .eq('org_id', orgId);
+    .eq('org_id', orgId)
+    .select('project_id')
+    .single();
 
   if (error) {
     throw new Error(`Failed to ${pinned ? 'pin' : 'unpin'} decision: ${error.message}`);
   }
+
+  const pinnedProjectId = (updated as { project_id?: string | null } | null)?.project_id ?? null;
 
   // Audit trail (best-effort)
   try {
@@ -272,7 +283,7 @@ async function handlePinUnpin(
       decisionId,
       memberId || 'unknown',
       orgId,
-      { newState: { pinned } },
+      { projectId: pinnedProjectId, newState: { pinned } },
     );
     await createAuditEntry(supabase, auditPayload);
   } catch {

@@ -143,18 +143,27 @@ describe('handleContext', () => {
     expect(result).toHaveProperty('total_in_brain');
   });
 
-  // 019/US1 (R-006 test 1, T005): when called server-side with no project_id,
-  // handleContext must use the cross-project membership fallback (the same
-  // path handleSearch already uses). The proof is that hybridSearchAllProjects
-  // was called with the member's project list — not the org-wide hybridSearch.
-  it('returns same project set as handleSearch when called with no project_id', async () => {
+  // 019/US1 (R-006 test 1, T005): when called server-side WITH `all_projects:true`,
+  // handleContext uses the cross-project membership fallback (the same path
+  // handleSearch already uses). The proof is that hybridSearchAllProjects was
+  // called with the member's project list — not the org-wide hybridSearch.
+  //
+  // Updated 2026-05-27: prior to the 2026-05-21 cross-project leak fix the
+  // server-mode default WAS to fall back to the cross-project path when no
+  // project_id was supplied — that silent fallback is gone (now returns
+  // `project_scope_required`). Callers must explicitly opt in via
+  // `all_projects: true` to hit the membership path. See context.ts:220-241.
+  it('returns same project set as handleSearch when called with all_projects:true', async () => {
     vi.mocked(listMemberProjects).mockResolvedValueOnce([
       { id: 'proj-a' } as never,
       { id: 'proj-b' } as never,
     ]);
 
     const config = buildServerConfig();
-    const result = await handleContext({ task_description: 'auth' }, config);
+    const result = await handleContext(
+      { task_description: 'auth', all_projects: true },
+      config,
+    );
 
     expect(hybridSearchAllProjects).toHaveBeenCalledTimes(1);
     expect(hybridSearchAllProjects).toHaveBeenCalledWith(
@@ -170,6 +179,7 @@ describe('handleContext', () => {
 
   // 019/US1 (R-006 test 2, T005): on HTTP transport (configOverride present),
   // the response NEVER includes offline:true — even on backend failure.
+  // Updated 2026-05-27: requires all_projects:true now (see test 1 note).
   it('never returns offline:true on HTTP transport', async () => {
     vi.mocked(listMemberProjects).mockResolvedValueOnce([
       { id: 'proj-a' } as never,
@@ -177,7 +187,10 @@ describe('handleContext', () => {
     vi.mocked(hybridSearchAllProjects).mockRejectedValueOnce(new Error('qdrant error'));
 
     const config = buildServerConfig();
-    const result = await handleContext({ task_description: 'auth' }, config);
+    const result = await handleContext(
+      { task_description: 'auth', all_projects: true },
+      config,
+    );
 
     expect(result.offline).toBeUndefined();
     expect(result.infrastructure_error).toBe(true);
@@ -186,11 +199,16 @@ describe('handleContext', () => {
   // 019/US1 (R-006 test 3, T007): when caller has zero accessible projects,
   // emit no_accessible_projects:true with empty arrays — explicit "no data"
   // signal distinct from infrastructure failure.
+  // Updated 2026-05-27: requires all_projects:true (zero-projects branch
+  // lives inside the cross-project path now).
   it('returns no_accessible_projects indicator when caller has zero projects', async () => {
     vi.mocked(listMemberProjects).mockResolvedValueOnce([]);
 
     const config = buildServerConfig();
-    const result = await handleContext({ task_description: 'auth' }, config);
+    const result = await handleContext(
+      { task_description: 'auth', all_projects: true },
+      config,
+    );
 
     expect(result.decisions).toEqual([]);
     expect(result.constraints).toEqual([]);
@@ -206,6 +224,7 @@ describe('handleContext', () => {
   // 019/US1 (T068 — analyze C1 patch): infrastructure failure (search backend
   // unreachable) is distinct from `no_accessible_projects` and from `offline`.
   // Emits `infrastructure_error: true` so operators have an actionable signal.
+  // Updated 2026-05-27: requires all_projects:true (see test 1 note).
   it('returns infrastructure_error indicator when search backend is unreachable', async () => {
     vi.mocked(listMemberProjects).mockResolvedValueOnce([
       { id: 'proj-a' } as never,
@@ -215,7 +234,10 @@ describe('handleContext', () => {
     );
 
     const config = buildServerConfig();
-    const result = await handleContext({ task_description: 'auth' }, config);
+    const result = await handleContext(
+      { task_description: 'auth', all_projects: true },
+      config,
+    );
 
     expect(result.decisions).toEqual([]);
     expect(result.constraints).toEqual([]);
@@ -231,6 +253,7 @@ describe('handleContext', () => {
   // error via `console.error` only — agent callers had no way to triage
   // without prod-log access, so every backend failure looked identical.
   // Now `error_message` carries the original message to the response.
+  // Updated 2026-05-27: requires all_projects:true (see test 1 note).
   it('propagates the underlying error_message (BUG #144 regression guard)', async () => {
     vi.mocked(listMemberProjects).mockResolvedValueOnce([
       { id: 'proj-a' } as never,
@@ -240,7 +263,10 @@ describe('handleContext', () => {
     );
 
     const config = buildServerConfig();
-    const result = await handleContext({ task_description: 'auth' }, config);
+    const result = await handleContext(
+      { task_description: 'auth', all_projects: true },
+      config,
+    );
 
     expect(result.infrastructure_error).toBe(true);
     expect(result.error_message).toContain('ECONNREFUSED');

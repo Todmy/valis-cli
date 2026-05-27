@@ -64,6 +64,10 @@ vi.mock('../../../src/offline/queue.js', () => ({
 
 vi.mock('../../../src/lib/project-access.js', () => ({
   resolveProjectOrg: vi.fn(),
+  // PR #57: getServiceRoleSupabase is the typed factory. store.ts calls it
+  // to pass to resolveProjectOrg (which is mocked). Return an empty object
+  // — resolveProjectOrg never actually uses it under the mock.
+  getServiceRoleSupabase: vi.fn(() => ({})),
 }));
 
 import { handleStore } from '../../../src/mcp/tools/store.js';

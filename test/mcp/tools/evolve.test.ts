@@ -18,6 +18,7 @@ const {
   singleMock,
   createAuditEntryMock,
   getDecisionByIdMock,
+  canWriteToProjectMock,
 } = vi.hoisted(() => ({
   fromMock: vi.fn(),
   insertMock: vi.fn(),
@@ -25,6 +26,7 @@ const {
   singleMock: vi.fn(),
   createAuditEntryMock: vi.fn(),
   getDecisionByIdMock: vi.fn(),
+  canWriteToProjectMock: vi.fn(),
 }));
 
 vi.mock('../../../src/config/store.js', () => ({
@@ -55,11 +57,17 @@ vi.mock('../../../src/auth/audit.js', async () => {
   return { ...actual, createAuditEntry: createAuditEntryMock };
 });
 
+vi.mock('../../../src/lib/project-access.js', () => ({
+  canWriteToProject: canWriteToProjectMock,
+  getServiceRoleSupabase: vi.fn(() => ({ from: fromMock })),
+}));
+
 import { handleEvolve } from '../../../src/mcp/tools/evolve.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
   createAuditEntryMock.mockResolvedValue(undefined);
+  canWriteToProjectMock.mockResolvedValue(true);
   singleMock.mockResolvedValue({
     data: { id: 'edge-1', created_at: '2026-05-15T00:00:00Z' },
     error: null,
@@ -243,5 +251,112 @@ describe('handleEvolve — write failure', () => {
     expect(result.error).toBe('write_failed');
     expect(result.message).toMatch(/unique constraint/);
     expect(createAuditEntryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleEvolve — project_id scoping (issue #54 sibling)', () => {
+  // Cross-org case: both decisions live in a project whose owning org
+  // differs from the caller's auth-resolved org_id (typical OAuth plugin
+  // path after PR #55 fixes #54 for update_outcome/lifecycle/store but
+  // left valis_evolve as known-limitation).
+
+  it('rejects with project_access_denied when caller is not a project member', async () => {
+    canWriteToProjectMock.mockResolvedValueOnce(false);
+
+    const result = await handleEvolve({
+      from_id: 'a',
+      to_id: 'b',
+      type: 'builds_on',
+      project_id: 'project-mojob',
+    });
+
+    expect('error' in result).toBe(true);
+    if (!('error' in result)) return;
+    expect(result.error).toBe('project_access_denied');
+    // Critical: precheck blocks BEFORE any decision lookup or write.
+    expect(getDecisionByIdMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('passes project_id to both getDecisionById calls when membership ok', async () => {
+    canWriteToProjectMock.mockResolvedValueOnce(true);
+    getDecisionByIdMock
+      .mockResolvedValueOnce({ id: 'a', org_id: 'mojob-org', project_id: 'project-mojob' } as never)
+      .mockResolvedValueOnce({ id: 'b', org_id: 'mojob-org', project_id: 'project-mojob' } as never);
+
+    await handleEvolve({
+      from_id: 'a',
+      to_id: 'b',
+      type: 'supersedes',
+      project_id: 'project-mojob',
+    });
+
+    // Load-bearing: 4th arg (project_id) signals project-scoped lookup
+    // for BOTH endpoints. Without this, cross-org rows never match.
+    expect(getDecisionByIdMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      'org-1',
+      'a',
+      'project-mojob',
+    );
+    expect(getDecisionByIdMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      'org-1',
+      'b',
+      'project-mojob',
+    );
+  });
+
+  it('inserts edge with the resolved (project) org_id, NOT caller config.org_id', async () => {
+    canWriteToProjectMock.mockResolvedValueOnce(true);
+    getDecisionByIdMock
+      .mockResolvedValueOnce({ id: 'a', org_id: 'mojob-org', project_id: 'project-mojob' } as never)
+      .mockResolvedValueOnce({ id: 'b', org_id: 'mojob-org', project_id: 'project-mojob' } as never);
+
+    await handleEvolve({
+      from_id: 'a',
+      to_id: 'b',
+      type: 'supersedes',
+      project_id: 'project-mojob',
+    });
+
+    // The edge row must land under the same org as the decisions it
+    // links — not the caller's auth-resolved personal org.
+    expect(insertMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        org_id: 'mojob-org',
+        from_id: 'a',
+        to_id: 'b',
+        type: 'supersedes',
+      }),
+    );
+    expect(insertMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ org_id: 'org-1' }),
+    );
+  });
+
+  it('preserves legacy org_id-scoped lookup when project_id is absent', async () => {
+    getDecisionByIdMock
+      .mockResolvedValueOnce({ id: 'a', org_id: 'org-1' } as never)
+      .mockResolvedValueOnce({ id: 'b', org_id: 'org-1' } as never);
+
+    await handleEvolve({
+      from_id: 'a',
+      to_id: 'b',
+      type: 'builds_on',
+    });
+
+    // No project_id → no membership check, legacy 3-arg getDecisionById.
+    expect(canWriteToProjectMock).not.toHaveBeenCalled();
+    expect(getDecisionByIdMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      'org-1',
+      'a',
+      null,
+    );
+    // Edge org_id falls back to config.org_id (legacy behavior).
+    expect(insertMock).toHaveBeenCalledWith(
+      expect.objectContaining({ org_id: 'org-1' }),
+    );
   });
 });

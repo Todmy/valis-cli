@@ -21,6 +21,7 @@ import {
   getDecisionById,
 } from '../../cloud/supabase.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
+import { canWriteToProject, getServiceRoleSupabase } from '../../lib/project-access.js';
 import type { ServerConfig } from '../../types.js';
 import type { EdgeType } from '../../cloud/edge-walker.js';
 
@@ -40,6 +41,14 @@ export interface EvolveArgs {
   to_id: string;
   type: string;
   reason?: string;
+  /**
+   * Project UUID both decisions belong to. Required in plugin/OAuth mode
+   * when the decisions were stored cross-org. Sibling fix to PR #55
+   * (issue #54) which added the same parameter to update_outcome /
+   * lifecycle / store. Without it, the lookup filters by the auth-resolved
+   * `org_id` and the cross-org rows return `decision_not_found`.
+   */
+  project_id?: string;
 }
 
 export interface EvolveResponse {
@@ -57,6 +66,7 @@ export interface EvolveError {
     | 'invalid_type'
     | 'self_reference'
     | 'decision_not_found'
+    | 'project_access_denied'
     | 'write_failed';
   message: string;
   allowed?: readonly EdgeType[];
@@ -89,17 +99,50 @@ export async function handleEvolve(
     };
   }
 
-  const supabase =
+  // Issue #54 sibling fix: when `project_id` is provided, switch to
+  // service-role client + membership precheck and scope decision lookups
+  // by `(id, project_id)` instead of `(id, org_id)`. Without this branch,
+  // cross-org rows (the entire reason `project_id` is in the schema) would
+  // fail with `decision_not_found` even when the caller is a real member.
+  // Mirrors the pattern in update-outcome.ts and lifecycle.ts.
+  let supabase =
     config.auth_mode === 'jwt'
       ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
       : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
-  // FR-007 — both endpoints must resolve in caller's org. Run both lookups
+  if (args.project_id) {
+    if (!config.supabase_service_role_key) {
+      return {
+        error: 'write_failed',
+        message:
+          'project_id parameter requires service-role access, which is unavailable in CLI stdio mode. ' +
+          'Remove project_id and rely on the auth-resolved org, or switch to the plugin/OAuth path.',
+      };
+    }
+    if (config.member_id) {
+      const allowed = await canWriteToProject(
+        getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key),
+        config.member_id,
+        args.project_id,
+      );
+      if (!allowed) {
+        return {
+          error: 'project_access_denied',
+          message: `Not a member of project ${args.project_id}.`,
+        };
+      }
+    }
+    supabase = getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key);
+  }
+
+  // FR-007 — both endpoints must resolve in caller's scope. Run both lookups
   // in parallel; either missing → uniform "decision_not_found" error (no
   // information leak between "doesn't exist" and "exists in another org").
+  // When project_id is given, the helper filters by (id, project_id);
+  // otherwise the legacy (id, org_id) filter applies.
   const [fromRow, toRow] = await Promise.all([
-    getDecisionById(supabase, config.org_id, args.from_id).catch(() => null),
-    getDecisionById(supabase, config.org_id, args.to_id).catch(() => null),
+    getDecisionById(supabase, config.org_id, args.from_id, args.project_id ?? null).catch(() => null),
+    getDecisionById(supabase, config.org_id, args.to_id, args.project_id ?? null).catch(() => null),
   ]);
 
   if (!fromRow || !toRow) {
@@ -113,10 +156,19 @@ export async function handleEvolve(
   const reasonForWrite = args.reason?.trim();
   const reason = reasonForWrite && reasonForWrite.length > 0 ? reasonForWrite : null;
 
+  // Issue #54 sibling: the edge must land under the same org as the
+  // decisions it links. When project_id is given, both fromRow and toRow
+  // came from a cross-org lookup — use fromRow.org_id, not config.org_id
+  // (which is the auth-resolved personal org for OAuth callers).
+  const effectiveOrgId =
+    args.project_id && (fromRow as { org_id?: string }).org_id
+      ? (fromRow as { org_id: string }).org_id
+      : config.org_id;
+
   const { data: inserted, error: insertError } = await supabase
     .from('decision_edges')
     .insert({
-      org_id: config.org_id,
+      org_id: effectiveOrgId,
       from_id: args.from_id,
       to_id: args.to_id,
       type: args.type,
@@ -142,7 +194,7 @@ export async function handleEvolve(
       'decision',
       insertedRow.id,
       config.member_id || 'unknown',
-      config.org_id,
+      effectiveOrgId,
       {
         // Scope the lineage audit row to the `from` decision's project — the
         // edge "belongs" to whatever project the originating decision lives in.

@@ -206,6 +206,7 @@ const TOOL_DEFS = {
         .string()
         .optional()
         .describe('Optional plain-text reason explaining why the edge exists'),
+      project_id: z.string().uuid().optional().describe('Project UUID both decisions belong to. Required in plugin/OAuth mode when the decisions were stored cross-org (issue #54 / sibling fix) — without it, the lookup falls back to the auth-resolved org and may return decision_not_found.'),
     },
   },
   valis_check_duplicate: {

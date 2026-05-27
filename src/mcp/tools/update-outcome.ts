@@ -27,7 +27,7 @@ import {
 import { getQdrantClient } from '../../cloud/qdrant.js';
 import { setDecisionPayload } from '../../cloud/qdrant/decisions.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
-import { canWriteToProject } from '../../lib/project-access.js';
+import { canWriteToProject, getServiceRoleSupabase } from '../../lib/project-access.js';
 import type { ServerConfig } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ export async function handleUpdateOutcome(
     }
     if (config.member_id) {
       const allowed = await canWriteToProject(
-        getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+        getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key),
         config.member_id,
         args.project_id,
       );
@@ -196,7 +196,7 @@ export async function handleUpdateOutcome(
         };
       }
     }
-    supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    supabase = getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key);
   }
 
   // Existence check. When `project_id` is given, the helper filters by

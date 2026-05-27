@@ -5,7 +5,7 @@ import { canPin } from '../../auth/rbac.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import { buildProposedPromotedEvent, buildProposedRejectedEvent } from '../../channel/push.js';
 import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
-import { canWriteToProject } from '../../lib/project-access.js';
+import { canWriteToProject, getServiceRoleSupabase } from '../../lib/project-access.js';
 import type {
   LifecycleArgs,
   LifecycleResponse,
@@ -43,7 +43,7 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
     }
     if (config.member_id) {
       const allowed = await canWriteToProject(
-        getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+        getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key),
         config.member_id,
         args.project_id,
       );
@@ -51,7 +51,7 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
         throw new Error(`project_access_denied: Not a member of project ${args.project_id}.`);
       }
     }
-    supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+    supabase = getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key);
   }
 
   if (args.action === 'history') {
@@ -119,23 +119,43 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
   }
 
   try {
-    // Resolve auth token: prefer JWT (works in hosted mode), fall back to service_role key
+    // Resolve auth token for the change-status HTTP call.
+    //
+    // Three auth shapes the route's authenticateRequest accepts:
+    //   1. `tm_*` / `tmm_*` API key — needs JWT exchange via getToken
+    //   2. OAuth bearer token (plugin mode) — used directly, NO exchange
+    //   3. Supabase user JWT (dashboard) — used directly
+    //
+    // CRITICAL: `supabase_service_role_key` is NOT a valid HTTP API auth
+    // token. It's the master DB key for service-role Supabase clients. The
+    // route's authenticateRequest rejects it. The previous "fallback to
+    // service_role" branch produced 401 in OAuth mode whenever the JWT
+    // exchange silently failed (the `tm_` exchange flow does not accept
+    // OAuth bearer formats). See Valis lesson b0c47dfc.
     let bearer = '';
-    if (config.member_api_key) {
-      try {
-        const tokenCache = await getToken(config.supabase_url, config.member_api_key);
-        if (tokenCache) {
-          bearer = tokenCache.jwt.token;
+    const apiKey = config.member_api_key;
+    if (apiKey) {
+      const isTmKey = apiKey.startsWith('tm_') || apiKey.startsWith('tmm_');
+      if (isTmKey) {
+        try {
+          const tokenCache = await getToken(config.supabase_url, apiKey);
+          if (tokenCache) {
+            bearer = tokenCache.jwt.token;
+          }
+        } catch {
+          // Exchange failed — leave bearer empty so the precondition check
+          // below surfaces a clean error instead of a misleading 401.
         }
-      } catch {
-        // Token exchange failed — try service_role key
+      } else {
+        // OAuth bearer (or any non-`tm_` token format) — pass through.
+        bearer = apiKey;
       }
     }
-    if (!bearer && config.supabase_service_role_key) {
-      bearer = config.supabase_service_role_key;
-    }
     if (!bearer) {
-      throw new Error('No valid auth token available for change-status operation');
+      throw new Error(
+        'No valid auth token available for change-status operation. ' +
+        'Expected tm_/tmm_ API key (exchanged for JWT) or OAuth bearer token.',
+      );
     }
 
     const isHosted = config.supabase_url.replace(/\/$/, '') === HOSTED_SUPABASE_URL;

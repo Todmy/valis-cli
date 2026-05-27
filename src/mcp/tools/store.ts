@@ -47,7 +47,7 @@ import {
 import { appendToQueue } from '../../offline/queue.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
-import { resolveProjectOrg } from '../../lib/project-access.js';
+import { resolveProjectOrg, getServiceRoleSupabase } from '../../lib/project-access.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import {
@@ -387,7 +387,7 @@ export async function handleStore(
     configOverride?.project_id !== args.project_id
   ) {
     const resolved = await resolveProjectOrg(
-      getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+      getServiceRoleSupabase(config.supabase_url, config.supabase_service_role_key),
       config.member_id,
       args.project_id,
     );

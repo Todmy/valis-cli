@@ -76,6 +76,10 @@ vi.mock('../../../src/auth/audit.js', async () => {
 
 vi.mock('../../../src/lib/project-access.js', () => ({
   canWriteToProject: canWriteToProjectMock,
+  // PR #57: getServiceRoleSupabase is the typed factory used by the handler
+  // when args.project_id is given. Tests share one chainable mock for both
+  // JWT and service-role paths — returning the same `from` mock is fine.
+  getServiceRoleSupabase: vi.fn(() => ({ from: fromMock })),
 }));
 
 import {

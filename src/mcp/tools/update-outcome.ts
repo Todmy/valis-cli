@@ -158,27 +158,45 @@ export async function handleUpdateOutcome(
     };
   }
 
-  const supabase =
+  // Issue #54 (hotfix on top of initial fix): when `project_id` is provided,
+  // BOTH the membership precheck AND the subsequent decision lookup must run
+  // through the service-role client, not the JWT client. RLS on
+  // `project_members` and `decisions` is gated by the JWT-resolved org; for
+  // cross-org rows (the entire point of the project_id path) the JWT client
+  // returns zero rows on legitimate access, producing a misleading
+  // `project_access_denied` even when membership is real.
+  //
+  // Mirror of the pattern already used in lifecycle.ts: explicit service-role
+  // when project_id is given, with the membership precheck closing the
+  // service-role-bypass hole.
+  let supabase =
     config.auth_mode === 'jwt'
       ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
       : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
-  // Issue #54: when `project_id` is provided, gate the lookup on actual
-  // project membership BEFORE switching to project-scoped filtering. The
-  // service-role client bypasses RLS, so without this check a caller could
-  // mutate decisions in any project just by guessing UUIDs.
-  if (args.project_id && config.member_id) {
-    const allowed = await canWriteToProject(
-      supabase,
-      config.member_id,
-      args.project_id,
-    );
-    if (!allowed) {
+  if (args.project_id) {
+    if (!config.supabase_service_role_key) {
       return {
-        error: 'project_access_denied',
-        message: `Not a member of project ${args.project_id}.`,
+        error: 'write_failed',
+        message:
+          'project_id parameter requires service-role access, which is unavailable in CLI stdio mode. ' +
+          'Remove project_id and rely on the auth-resolved org, or switch to the plugin/OAuth path.',
       };
     }
+    if (config.member_id) {
+      const allowed = await canWriteToProject(
+        getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+        config.member_id,
+        args.project_id,
+      );
+      if (!allowed) {
+        return {
+          error: 'project_access_denied',
+          message: `Not a member of project ${args.project_id}.`,
+        };
+      }
+    }
+    supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
   }
 
   // Existence check. When `project_id` is given, the helper filters by

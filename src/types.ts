@@ -209,6 +209,13 @@ export interface LifecycleArgs {
   action: LifecycleAction;
   decision_id: string;
   reason?: string;
+  /**
+   * Project UUID the decision belongs to. Required in plugin/OAuth mode when
+   * the decision was stored cross-org (issue #54). When provided, the lookup
+   * and write paths switch to project-scoped (membership-gated) instead of
+   * the default org_id-scoped path.
+   */
+  project_id?: string;
 }
 
 export interface LifecycleStatusChange {

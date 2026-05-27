@@ -5,6 +5,7 @@ import { canPin } from '../../auth/rbac.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import { buildProposedPromotedEvent, buildProposedRejectedEvent } from '../../channel/push.js';
 import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
+import { canWriteToProject } from '../../lib/project-access.js';
 import type {
   LifecycleArgs,
   LifecycleResponse,
@@ -23,9 +24,35 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
     throw new Error('Not configured. Run `valis init` first.');
   }
 
-  const supabase = config.auth_mode === 'jwt'
+  // Issue #54: when `project_id` is provided, switch to the service-role
+  // client and gate the call on actual project membership. The JWT client
+  // can only see decisions in the caller's auth-resolved org — a cross-org
+  // decision (the common plugin/OAuth case) would fail with "Invalid API
+  // key" or zero-row WHERE matches. Membership precheck closes the
+  // privilege-escalation hole the service-role bypass would otherwise open.
+  let supabase = config.auth_mode === 'jwt'
     ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
     : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+
+  if (args.project_id) {
+    if (!config.supabase_service_role_key) {
+      throw new Error(
+        `project_id parameter requires service-role access, which is unavailable in CLI stdio mode. ` +
+        `Remove project_id and rely on the auth-resolved org, or switch to the plugin/OAuth path.`,
+      );
+    }
+    if (config.member_id) {
+      const allowed = await canWriteToProject(
+        getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+        config.member_id,
+        args.project_id,
+      );
+      if (!allowed) {
+        throw new Error(`project_access_denied: Not a member of project ${args.project_id}.`);
+      }
+    }
+    supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  }
 
   if (args.action === 'history') {
     return await getHistory(supabase, args.decision_id);
@@ -49,7 +76,15 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
     if (!canPin(memberRole)) {
       throw new Error('admin_required: Only admins may pin or unpin decisions.');
     }
-    return await handlePinUnpin(supabase, config.org_id, args.decision_id, args.action === 'pin', config.author_name, config.member_id);
+    return await handlePinUnpin(
+      supabase,
+      config.org_id,
+      args.decision_id,
+      args.action === 'pin',
+      config.author_name,
+      config.member_id,
+      args.project_id,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -64,7 +99,12 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
     | { status: DecisionStatus; summary: string | null; detail: string; author: string; project_id: string | null }
     | null = null;
   try {
-    const fetched = await getDecisionById(supabase, config.org_id, args.decision_id);
+    const fetched = await getDecisionById(
+      supabase,
+      config.org_id,
+      args.decision_id,
+      args.project_id ?? null,
+    );
     if (fetched) {
       oldDecision = {
         status: fetched.status,
@@ -112,6 +152,10 @@ export async function handleLifecycle(args: LifecycleArgs, configOverride?: Serv
         decision_id: args.decision_id,
         new_status: newStatus,
         reason: args.reason,
+        // Issue #54: tell the server to scope by project membership instead
+        // of the auth-resolved org. Server falls back to org-scoped when
+        // absent (legacy callers).
+        ...(args.project_id ? { project_id: args.project_id } : {}),
       }),
     });
 
@@ -257,15 +301,24 @@ async function handlePinUnpin(
   pinned: boolean,
   authorName: string,
   memberId?: string | null,
+  projectId?: string,
 ): Promise<LifecyclePinResponse> {
   // Pull project_id back from the row we're touching so the audit row lands
   // scoped to the right project. Without this, project-scoped Recent Activity
   // never surfaces pin/unpin events.
-  const { data: updated, error } = await supabase
+  //
+  // Issue #54: when caller supplies `projectId`, scope the UPDATE by it
+  // instead of `org_id` — the row may live in a different org than the
+  // auth-resolved one. Membership has already been verified at the
+  // handler entrypoint.
+  let updateQuery = supabase
     .from('decisions')
     .update({ pinned })
-    .eq('id', decisionId)
-    .eq('org_id', orgId)
+    .eq('id', decisionId);
+  updateQuery = projectId
+    ? updateQuery.eq('project_id', projectId)
+    : updateQuery.eq('org_id', orgId);
+  const { data: updated, error } = await updateQuery
     .select('project_id')
     .single();
 

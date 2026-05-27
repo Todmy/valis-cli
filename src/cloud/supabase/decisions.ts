@@ -28,21 +28,31 @@ export interface StoreExtras {
 }
 
 /**
- * Fetch a single decision by ID, scoped to an org.
+ * Fetch a single decision by ID.
+ *
+ * Default scope is `org_id` (legacy contract — every existing call-site).
+ * When `projectId` is provided, the filter switches to `(id, project_id)`
+ * — required for issue #54 where a decision was written cross-org (the
+ * row's `org_id` is the personal/auth-resolved org, but the project lives
+ * in a different team org). Project membership MUST be verified by the
+ * caller before passing `projectId` here; this helper does not gate it.
+ *
  * Returns `null` when not found.
  */
 export async function getDecisionById(
   supabase: SupabaseClient,
   orgId: string,
   decisionId: string,
+  projectId?: string | null,
 ): Promise<Decision | null> {
   await setOrgContext(supabase, orgId);
-  const { data, error } = await supabase
-    .from('decisions')
-    .select('*')
-    .eq('org_id', orgId)
-    .eq('id', decisionId)
-    .single();
+  let query = supabase.from('decisions').select('*').eq('id', decisionId);
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  } else {
+    query = query.eq('org_id', orgId);
+  }
+  const { data, error } = await query.single();
 
   if (error || !data) return null;
   return data as Decision;

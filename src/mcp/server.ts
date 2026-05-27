@@ -43,7 +43,7 @@ interface ToolAnnotations {
 const TOOL_DEFS = {
   valis_store: {
     description:
-      'Store a team decision, constraint, pattern, or lesson into the shared team brain. Call this whenever an important technical decision is made. Use status: "proposed" for decisions that need team review before becoming active.',
+      'Store a NEW team decision, constraint, pattern, or lesson. Before calling, decide WHICH tool fits the change:\n\n• `valis_store` — new independent knowledge with a distinct search intent (e.g. a different topic surfaced while shipping something else). Use when similarity to existing decisions is low.\n• `valis_update_outcome` — same decision, after-the-fact verdict arriving (success / failed / partial). Do NOT store a new entry to record an outcome; the search ranker reads `outcome` directly and silent duplicates pollute results.\n• `valis_evolve` — typed edge between two decisions (`supersedes` / `builds_on` / `synthesizes` / `contradicts`). When a NEW decision overturns or extends an existing one, store the new entry FIRST then call `valis_evolve` to make the lineage walkable — silent overwrites lose history and hide the team-attention moment of a direction change.\n\nUse status: "proposed" for decisions that need team review.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -158,11 +158,12 @@ const TOOL_DEFS = {
       action: z.enum(['deprecate', 'promote', 'history', 'pin', 'unpin']).describe('Lifecycle action to perform'),
       decision_id: z.string().describe('UUID of the target decision'),
       reason: z.string().optional().describe('Reason for the status change'),
+      project_id: z.string().uuid().optional().describe('Project UUID the decision belongs to. Required in plugin/OAuth mode when the decision was stored cross-org (issue #54) — without it, the lookup falls back to the auth-resolved org and may return decision_not_found.'),
     },
   },
   valis_update_outcome: {
     description:
-      "Record the after-the-fact outcome of a decision (success | failed | partial | unknown). Use weeks or months after a decision was taken when real-world evidence arrives. Outcome string is typo-tolerant — 'SUCCEEDED', 'OK', 'BROKE', 'regression' all normalise to the four canonical values. Search automatically deprioritises 'failed'-outcome decisions unless the query explicitly asks about failures.",
+      "Record the after-the-fact outcome of an EXISTING decision (success | failed | partial | unknown). Use when real-world evidence about an already-stored decision arrives — typically weeks or months later. Outcome string is typo-tolerant: 'SUCCEEDED', 'OK', 'BROKE', 'regression' all normalise to the four canonical values. Search downranks 'failed'-outcome decisions unless the query explicitly asks about failures.\n\nDO NOT call `valis_store` to record an outcome on a prior decision — that creates a near-duplicate (similarity ≥0.85) that pollutes search results. Use this tool instead so the verdict attaches to the original entry and the team sees one source of truth.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -182,11 +183,12 @@ const TOOL_DEFS = {
         .string()
         .optional()
         .describe('Optional plain-text reason for the outcome verdict'),
+      project_id: z.string().uuid().optional().describe('Project UUID the decision belongs to. Required in plugin/OAuth mode when the decision was stored cross-org (issue #54) — without it, the lookup falls back to the auth-resolved org and may return decision_not_found.'),
     },
   },
   valis_evolve: {
     description:
-      "Declare an explicit typed relationship between two decisions ('supersedes', 'builds_on', 'synthesizes', or 'contradicts'). Use when the team revises, builds on, fuses, or contradicts a prior decision. Both decisions must exist in the caller's org; the edge becomes walkable via `valis_search(..., depth: 1|2)`.",
+      "Declare a typed relationship between two existing decisions: 'supersedes' (new replaces old), 'builds_on' (extends prior), 'synthesizes' (fuses several into one), 'contradicts' (new conflicts with prior — no replacement intent yet). Edge becomes walkable via `valis_search(..., depth: 1|2)`.\n\nCall this AFTER `valis_store` when the new entry overturns, extends, fuses, or conflicts with a prior decision. Without the edge, the change is silent — the team loses the lineage and the attention moment of a direction shift. High similarity (≥0.85) between two decisions with opposite verdicts is the strongest signal that an edge belongs here.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,

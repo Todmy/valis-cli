@@ -27,6 +27,7 @@ import {
 import { getQdrantClient } from '../../cloud/qdrant.js';
 import { setDecisionPayload } from '../../cloud/qdrant/decisions.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
+import { canWriteToProject } from '../../lib/project-access.js';
 import type { ServerConfig } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,13 @@ export interface UpdateOutcomeArgs {
   decision_id: string;
   outcome: string;
   reason?: string;
+  /**
+   * Project UUID the decision belongs to. Required in plugin/OAuth mode when
+   * the decision was stored cross-org (issue #54): without it, the lookup
+   * filters by the auth-resolved `org_id` and may return `decision_not_found`
+   * even when the decision exists in a project the caller has access to.
+   */
+  project_id?: string;
 }
 
 export interface UpdateOutcomeResponse {
@@ -121,6 +129,7 @@ export interface UpdateOutcomeError {
     | 'decision_not_found'
     | 'not_configured'
     | 'unauthorized'
+    | 'project_access_denied'
     | 'write_failed';
   message: string;
   /** Canonical values list — present only when error === 'invalid_outcome'. */
@@ -154,12 +163,36 @@ export async function handleUpdateOutcome(
       ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
       : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 
-  // Existence + org-scope check in one read. `getDecisionById` already filters
-  // by org_id, so a cross-org id falls through to the 'decision_not_found'
-  // branch — the agent gets a single uniform signal instead of two.
+  // Issue #54: when `project_id` is provided, gate the lookup on actual
+  // project membership BEFORE switching to project-scoped filtering. The
+  // service-role client bypasses RLS, so without this check a caller could
+  // mutate decisions in any project just by guessing UUIDs.
+  if (args.project_id && config.member_id) {
+    const allowed = await canWriteToProject(
+      supabase,
+      config.member_id,
+      args.project_id,
+    );
+    if (!allowed) {
+      return {
+        error: 'project_access_denied',
+        message: `Not a member of project ${args.project_id}.`,
+      };
+    }
+  }
+
+  // Existence check. When `project_id` is given, the helper filters by
+  // (id, project_id) — cross-org rows become findable. Otherwise the
+  // legacy (id, org_id) filter applies and a cross-org id still falls
+  // through to 'decision_not_found'.
   let priorRow: { id: string; outcome: OutcomeStatus | null; project_id: string | null } | null = null;
   try {
-    const fetched = await getDecisionById(supabase, config.org_id, args.decision_id);
+    const fetched = await getDecisionById(
+      supabase,
+      config.org_id,
+      args.decision_id,
+      args.project_id ?? null,
+    );
     if (fetched) {
       priorRow = {
         id: fetched.id,
@@ -177,7 +210,9 @@ export async function handleUpdateOutcome(
   if (!priorRow) {
     return {
       error: 'decision_not_found',
-      message: `No decision with id ${args.decision_id} in this org.`,
+      message: args.project_id
+        ? `No decision with id ${args.decision_id} in project ${args.project_id}.`
+        : `No decision with id ${args.decision_id} in this org.`,
     };
   }
 
@@ -189,15 +224,23 @@ export async function handleUpdateOutcome(
   // Single UPDATE — atomic per-row. RLS / service-role policy on the supabase
   // client determines whether the write is authorised; a forbidden write
   // surfaces as a Postgres error which we map to `unauthorized`.
-  const { error: updateError } = await supabase
+  //
+  // Issue #54: when `project_id` is given, scope the WHERE by it instead of
+  // the auth-resolved `org_id`. The membership precheck above gates the call;
+  // without scoping here, a cross-org row would not match `org_id` and the
+  // UPDATE would silently affect zero rows.
+  let updateQuery = supabase
     .from('decisions')
     .update({
       outcome: canonical,
       outcome_reason: reasonForWrite,
       outcome_updated_at: now,
     })
-    .eq('id', args.decision_id)
-    .eq('org_id', config.org_id);
+    .eq('id', args.decision_id);
+  updateQuery = args.project_id
+    ? updateQuery.eq('project_id', args.project_id)
+    : updateQuery.eq('org_id', config.org_id);
+  const { error: updateError } = await updateQuery;
 
   if (updateError) {
     const message = updateError.message ?? String(updateError);

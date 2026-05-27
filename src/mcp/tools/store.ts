@@ -47,6 +47,7 @@ import {
 import { appendToQueue } from '../../offline/queue.js';
 import { canSupersede } from '../../auth/rbac.js';
 import { getToken } from '../../auth/jwt.js';
+import { resolveProjectOrg } from '../../lib/project-access.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import {
@@ -330,7 +331,7 @@ export async function handleStore(
   configOverride?: ServerConfig,
 ): Promise<StoreResponse | StoreErrorResponse> {
   // ── Phase 1: pre-write validation ─────────────────────────────────────
-  const config = configOverride ?? (await loadConfig());
+  let config = configOverride ?? (await loadConfig());
   if (!config) {
     return { error: 'not_configured', action: 'blocked' };
   }
@@ -365,6 +366,40 @@ export async function handleStore(
   // T023: Reject store if no project configured
   if (!projectId) {
     return { error: 'no_project_configured', action: 'blocked' };
+  }
+
+  // BUG #176 root-cause fix (companion to issue #54 read-path fix):
+  // When `args.project_id` is given AND we have service-role access, resolve
+  // the project's actual `org_id` and verify caller membership. This prevents
+  // cross-org writes that happen when an OAuth caller (whose `auth.orgId`
+  // resolves to the personal org because the JWT has no project claim) calls
+  // `valis_store(project_id=team_project)` — without this, the row was
+  // written with `org_id=personal, project_id=team_project`, leaving
+  // unreachable rows for org-scoped readers.
+  //
+  // Skip when the OAuth JWT already carried a matching project scope
+  // (configOverride.project_id === args.project_id): authenticateRequest
+  // already narrowed `org_id` correctly in that path.
+  if (
+    args.project_id &&
+    config.supabase_service_role_key &&
+    config.member_id &&
+    configOverride?.project_id !== args.project_id
+  ) {
+    const resolved = await resolveProjectOrg(
+      getSupabaseClient(config.supabase_url, config.supabase_service_role_key),
+      config.member_id,
+      args.project_id,
+    );
+    if ('error' in resolved) {
+      return { error: resolved.error, action: 'blocked' };
+    }
+    if (resolved.org_id !== config.org_id) {
+      // Override the org_id used by every downstream write. Cloning preserves
+      // member_id, author_name, role, supabase/qdrant creds, and the funnel
+      // emitter — only the org scope shifts to the project's owning org.
+      config = { ...config, org_id: resolved.org_id };
+    }
   }
 
   // Secret detection — both text and summary

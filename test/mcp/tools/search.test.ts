@@ -40,6 +40,29 @@ vi.mock('../../../src/billing/usage.js', () => ({
   checkUsageBeforeSearch: vi.fn().mockResolvedValue({ allowed: true }),
 }));
 
+// CI-hermeticity (#236): pin project-scope resolution. In stdio mode (no
+// configOverride) `handleSearch` calls `resolveConfig()`, which walks up for
+// `.valis.json`. That file is gitignored, so it is ABSENT in a clean CI
+// checkout — `projectId` resolves to undefined and the handler returns the
+// `project_scope_required` empty envelope BEFORE ever calling the mocked
+// `hybridSearch`, so "returns search results" sees 0 instead of 1. (Locally
+// the dev's repo-root `.valis.json` masked it.) The override-path tests below
+// pass `serverOverride`, so they bypass this mock; the "Not configured" test
+// short-circuits earlier on `loadConfig() === null` — both are unaffected.
+vi.mock('../../../src/config/project.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({
+    global: null,
+    project: { project_id: 'proj-1', project_name: 'test' },
+  }),
+}));
+
+// Mock the proxy module so a transport-selection regression can never reach a
+// live token-exchange `fetch` in CI. The stdio/service-role path used here
+// never proxies, but this fail-closes the network boundary regardless.
+vi.mock('../../../src/cloud/search-proxy.js', () => ({
+  proxySearch: vi.fn().mockResolvedValue([]),
+}));
+
 import { handleSearch } from '../../../src/mcp/tools/search.js';
 
 describe('handleSearch', () => {

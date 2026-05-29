@@ -64,6 +64,22 @@ vi.mock('../../../src/cloud/search-proxy.js', () => ({
   proxySearch: vi.fn(),
 }));
 
+// CI-hermeticity (#236): pin project-scope resolution. In stdio mode (no
+// configOverride) `handleContext` calls `resolveConfig()`, which walks up for
+// `.valis.json`. That file is gitignored, so it is ABSENT in a clean CI
+// checkout — `projectId` resolves to undefined and the handler returns the
+// `project_scope_required` empty envelope BEFORE ever calling the mocked
+// Qdrant search, breaking the "returns grouped results" assertion (0 vs 1).
+// (Locally the dev's repo-root `.valis.json` made it pass — a hidden
+// dependency on developer machine state.) Mock the resolver so a project is
+// always in scope and the deterministic Qdrant fixtures drive the grouping.
+vi.mock('../../../src/config/project.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({
+    global: null,
+    project: { project_id: 'proj-1', project_name: 'test' },
+  }),
+}));
+
 import { handleContext } from '../../../src/mcp/tools/context.js';
 import { hybridSearch, hybridSearchAllProjects } from '../../../src/cloud/qdrant.js';
 import { listMemberProjects } from '../../../src/cloud/supabase.js';

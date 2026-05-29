@@ -65,6 +65,17 @@ vi.mock('../../../src/config/store.js', () => ({
   }),
 }));
 
+// CI-hermeticity (#236): bind the hoisted mocks via wrapper fns rather than
+// passing the mock object as the export directly. The direct-identity binding
+// (`hybridSearch: hybridSearchMock`) proved fragile in a clean CI worker —
+// `search-transport.ts` resolved the REAL `hybridSearch`, made a live Qdrant
+// call, threw (ECONNREFUSED), and `handleSearch` caught it and returned
+// `{ results: [] }`. Every assertion then dereferenced `results[0]` (undefined)
+// → "Cannot read properties of undefined (reading 'related')". The wrapper
+// pattern below mirrors the PASSING sibling `search-transport.test.ts` and
+// guarantees the call always lands on our mock, with NO network attempt.
+// `mmrRerank` is kept REAL (vi.importActual) — the MMR diversity tests added
+// in #037 (now on main) exercise the genuine re-rank algorithm.
 vi.mock('../../../src/cloud/qdrant.js', async () => ({
   mmrRerank: (
     await vi.importActual<typeof import('../../../src/cloud/qdrant/search.js')>(
@@ -72,7 +83,7 @@ vi.mock('../../../src/cloud/qdrant.js', async () => ({
     )
   ).mmrRerank,
   getQdrantClient: vi.fn().mockReturnValue({}),
-  hybridSearch: hybridSearchMock,
+  hybridSearch: (...args: unknown[]) => hybridSearchMock(...args),
   hybridSearchAllProjects: vi.fn(),
   buildProjectFilter: vi.fn().mockReturnValue({ must: [] }),
   COLLECTION_NAME: 'decisions_v2',
@@ -82,7 +93,25 @@ vi.mock('../../../src/cloud/supabase.js', () => ({
   getSupabaseClient: vi.fn(() => ({ from: fromMock })),
   getSupabaseJwtClient: vi.fn(() => ({ from: fromMock })),
   listMemberProjects: vi.fn(),
-  getDecisionsByIds: getDecisionsByIdsMock,
+  getDecisionsByIds: (...args: unknown[]) => getDecisionsByIdsMock(...args),
+}));
+
+// The direct transport never proxies in this config (auth_mode='service_role'
+// is non-hosted), but mock the proxy module anyway so a future config change
+// or a transport-selection regression can never reach a live token-exchange
+// `fetch` in CI.
+vi.mock('../../../src/cloud/search-proxy.js', () => ({
+  proxySearch: vi.fn().mockResolvedValue([]),
+}));
+
+// Resolve project scope deterministically. Without this the walk-up reads a
+// (gitignored, CI-absent) `.valis.json`; mocking it pins `projectId` so the
+// search never short-circuits on `project_scope_required`.
+vi.mock('../../../src/config/project.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({
+    global: null,
+    project: { project_id: 'proj-1', project_name: 'test' },
+  }),
 }));
 
 vi.mock('../../../src/billing/usage.js', () => ({

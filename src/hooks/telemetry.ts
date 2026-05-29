@@ -45,7 +45,23 @@ export type TelemetryEvent =
   | 'capture_reminder_injected'
   | 'capture_reminder_skipped'
   | 'capture_window_opened'
-  | 'hook_failure';
+  | 'hook_failure'
+  // 034-unified-capture-policy / FR-018: SC-003 / SC-006 measurement backers.
+  // Payload lives in `metadata` (this module uses a flat string-union of event
+  // names; payload schemas are documented in
+  // specs/034-unified-capture-policy/contracts/telemetry-events.md):
+  //   capture_succeeded.metadata = { path: 'valis'|'qdrant_legacy', type, inferred_type?, inferred_project_scope? }
+  //   recall_hit.metadata        = { decision_id, score, source_tool: 'valis_search'|'valis_context' }
+  | 'capture_succeeded'
+  | 'recall_hit'
+  // 034-unified-capture-policy / FR-002: telemetry for SC-001 instrumentation.
+  //   wizard_completed.metadata = { changed_keys: string[], scope: 'user'|'project' }
+  | 'wizard_completed'
+  // 034-unified-capture-policy / FR-011 + FR-020: triage workflow telemetry.
+  //   personal_drafts_triaged.metadata = { bound, archived, deleted, skipped }
+  //   personal_drafts_restored.metadata = { decision_id }
+  | 'personal_drafts_triaged'
+  | 'personal_drafts_restored';
 
 export interface TelemetryRecord {
   ts: string;

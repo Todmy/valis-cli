@@ -32,6 +32,8 @@ import {
 import { detectContradictions } from '../../contradiction/detect.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import type { LinkExtractionResult } from './link-extractor.js';
+import type { InferenceOutput } from '../../lib/type-inference.js';
+import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import { HOSTED_SUPABASE_URL } from '../../types.js';
 import { resolveApiUrl, resolveApiPath } from '../../cloud/api-url.js';
 import type {
@@ -149,6 +151,13 @@ export interface StoreSideEffectContext {
    * sees in its store response.
    */
   linkExtraction?: LinkExtractionResult | null;
+  /**
+   * 034 / FR-005 + FR-018: content-inference output. Carried so the
+   * `capture-succeeded-telemetry` adapter can emit `inferred_type` in
+   * its event payload. Absent when handleStore did not run inference
+   * (e.g. tests calling the bus directly).
+   */
+  inference?: InferenceOutput;
 }
 
 export type StoreSideEffectStatus = 'ok' | 'skipped' | 'failed';
@@ -383,6 +392,33 @@ const firstDecisionFunnelEffect: StoreSideEffect<void> = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// 034 / FR-018: capture_succeeded telemetry. Backs SC-003 / SC-006
+// measurement. Fires after the primary write committed (we're in the
+// side-effect bus, which only runs post-write). `path` is hard-coded
+// `'valis'` here — the legacy `'qdrant_legacy'` value is emitted by the
+// soon-to-be-deleted Qdrant capture path, not from this code.
+// ---------------------------------------------------------------------------
+
+const captureSucceededTelemetryEffect: StoreSideEffect<void> = {
+  name: 'capture-succeeded-telemetry',
+  async run(ctx): Promise<void> {
+    try {
+      await recordTelemetry('capture_succeeded', {
+        org_id: ctx.config.org_id,
+        project_id: ctx.projectId,
+        metadata: {
+          path: 'valis',
+          type: ctx.decision.type ?? ctx.raw.type ?? 'pending',
+          inferred_type: ctx.inference?.inferred_type ?? false,
+        },
+      });
+    } catch {
+      // Telemetry must never crash the write path.
+    }
+  },
+};
+
 /**
  * Default registry. Order is informational only — the bus dispatches in
  * parallel via `Promise.allSettled`. Listed in the order they were inline in
@@ -397,6 +433,7 @@ export const STORE_SIDE_EFFECTS: StoreSideEffect[] = [
   contradictionDetectEffect,
   autoLinksAuditEffect,
   firstDecisionFunnelEffect,
+  captureSucceededTelemetryEffect,
 ];
 
 // ---------------------------------------------------------------------------

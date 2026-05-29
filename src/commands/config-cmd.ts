@@ -6,6 +6,21 @@ import {
   saveConsent,
   transitionConsent,
 } from '../hooks/consent.js';
+import { wizardCommand, type WizardOptions } from '../config/wizard.js';
+
+/**
+ * 034 / FR-002: interactive wizard surface. Thin wrapper that maps the
+ * commander option-object to the wizard's options shape and handles
+ * top-level errors.
+ */
+export async function configWizardCommand(opts: WizardOptions = {}): Promise<void> {
+  try {
+    await wizardCommand(opts);
+  } catch (err) {
+    console.error(pc.red(err instanceof Error ? err.message : String(err)));
+    process.exit(opts.project ? 2 : 3);
+  }
+}
 
 const WRITABLE_KEYS = [
   'api-key',

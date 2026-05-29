@@ -27,6 +27,8 @@ export { hookUserPromptSubmitCommand } from '../hooks/user-prompt-submit-handler
 export { hookFlushTelemetryCommand } from '../hooks/flush-telemetry-handler.js';
 export { hookPreCompactCommand } from '../hooks/pre-compact-handler.js';
 export { hookCaptureDoneCommand } from '../hooks/capture-done-handler.js';
+export { hookValidateCommand } from '../hooks/validate-handler.js';
+export type { ValidateOptions, ValidationResult } from '../hooks/validate-handler.js';
 
 /** Phase B silent-skip stubs. Registered for plugin compatibility (FR-029). */
 export async function hookPreToolUseCommand(): Promise<void> {

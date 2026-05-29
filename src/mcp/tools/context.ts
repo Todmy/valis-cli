@@ -8,7 +8,50 @@ import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { canReadProject } from '../../lib/project-access.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
+import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
+
+/**
+ * 034 / FR-018: emit one `recall_hit` telemetry event per result returned
+ * across all four grouped buckets (decisions/constraints/patterns/lessons)
+ * plus `historical`. Backs SC-006 quality clause. Helper threads through
+ * the response so call-sites can chain `return emitAndReturn(response, ...)`.
+ */
+function emitRecallTelemetryAndReturn(
+  response: ContextResponse,
+  orgId: string,
+): ContextResponse {
+  try {
+    const buckets = [
+      response.decisions,
+      response.constraints,
+      response.patterns,
+      response.lessons,
+      response.historical ?? [],
+    ];
+    for (const bucket of buckets) {
+      if (!bucket) continue;
+      for (const r of bucket) {
+        const score =
+          (r as unknown as { composite_score?: number }).composite_score ??
+          (r as unknown as { score?: number }).score ??
+          0;
+        void recordTelemetry('recall_hit', {
+          org_id: orgId,
+          project_id: (r as unknown as { project_id?: string }).project_id ?? '',
+          metadata: {
+            decision_id: r.id,
+            score,
+            source_tool: 'valis_context',
+          },
+        });
+      }
+    }
+  } catch {
+    /* never block the response */
+  }
+  return response;
+}
 
 interface ContextArgs {
   task_description: string;
@@ -188,16 +231,19 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         firstCall = false;
       }
 
-      return withMismatch({
-        decisions: grouped.decision.slice(0, 20),
-        constraints: grouped.constraint.slice(0, 20),
-        patterns: grouped.pattern.slice(0, 20),
-        lessons: grouped.lesson.slice(0, 20),
-        historical,
-        total_in_brain: totalInBrain,
-        suppressed_count,
-        note,
-      });
+      return emitRecallTelemetryAndReturn(
+        withMismatch({
+          decisions: grouped.decision.slice(0, 20),
+          constraints: grouped.constraint.slice(0, 20),
+          patterns: grouped.pattern.slice(0, 20),
+          lessons: grouped.lesson.slice(0, 20),
+          historical,
+          total_in_brain: totalInBrain,
+          suppressed_count,
+          note,
+        }),
+        config.org_id,
+      );
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
@@ -342,16 +388,19 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       firstCall = false;
     }
 
-    return withMismatch({
-      decisions,
-      constraints,
-      patterns,
-      lessons,
-      historical,
-      total_in_brain: totalInBrain,
-      suppressed_count,
-      note,
-    });
+    return emitRecallTelemetryAndReturn(
+      withMismatch({
+        decisions,
+        constraints,
+        patterns,
+        lessons,
+        historical,
+        total_in_brain: totalInBrain,
+        suppressed_count,
+        note,
+      }),
+      config.org_id,
+    );
   } catch (err) {
     // 019/US1 (R-001, T068): server-mode (HTTP MCP transport) must NEVER emit
     // `offline:true` — that's a CLI-stdio fallback indicator. Emit

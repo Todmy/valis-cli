@@ -91,7 +91,8 @@ export async function switchCommand(options: { project?: string }): Promise<void
       console.error(formatError(ERRORS.project_not_found));
       console.error(pc.dim(`\nAvailable projects:`));
       for (const p of projects) {
-        console.error(pc.dim(`  - ${p.name} (${p.id})`));
+        const personal = p.name === 'Personal Drafts' ? ' [personal]' : '';
+        console.error(pc.dim(`  - ${p.name}${personal} (${p.id})`));
       }
       process.exit(1);
     }
@@ -102,8 +103,13 @@ export async function switchCommand(options: { project?: string }): Promise<void
       const p = projects[i]!;
       const isCurrent = currentProject?.project_id === p.id;
       const marker = isCurrent ? pc.green(' (current)') : '';
+      // 034 / FR-012: distinguish personal-drafts in list display.
+      // FR-019 reserves `name = 'Personal Drafts'` org-wide, so name
+      // equality is a sufficient + RLS-safe check (foreign members'
+      // personal-drafts rows are RLS-filtered before reaching here).
+      const personal = p.name === 'Personal Drafts' ? pc.cyan(' [personal]') : '';
       const count = p.decision_count > 0 ? pc.dim(` — ${p.decision_count} decisions`) : '';
-      console.log(`  ${pc.bold(String(i + 1))}. ${p.name}${marker}${count}`);
+      console.log(`  ${pc.bold(String(i + 1))}. ${p.name}${marker}${personal}${count}`);
     }
 
     const answer = await prompt(`\nSelect project (1-${projects.length}): `);

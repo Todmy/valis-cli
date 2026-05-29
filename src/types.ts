@@ -130,7 +130,11 @@ export type AuditAction =
   | 'org_created'
   | 'outcome_updated'
   | 'evolve'
-  | 'cross_org_read';
+  | 'cross_org_read'
+  // 034 / FR-011 / Q1 + D6: personal-drafts entry promoted to a team
+  // project. Audit row written in the source personal-drafts project
+  // (Q6 RLS: visible only to the owning member).
+  | 'personal_drafts_promoted';
 
 export type AuditTargetType = 'decision' | 'member' | 'org' | 'project';
 
@@ -380,6 +384,24 @@ export interface StoreResponse {
     latency_ms: number;
     reason?: string;
   };
+  /**
+   * 034 / FR-005: present and `true` when `type` was inferred from content
+   * (the caller did not supply an explicit `type`). Callers can detect
+   * silent inference and override if desired.
+   */
+  inferred_type?: boolean;
+  /**
+   * 034 / FR-006 companion flag: `true` when `summary` was auto-derived
+   * from `text` because the caller did not supply one.
+   */
+  inferred_summary?: boolean;
+  /**
+   * 034 / FR-008 companion: `'personal-drafts'` when the store call landed
+   * in the caller's personal-drafts project because no project scope was
+   * resolvable from args / JWT / .valis.json. Absent when an explicit
+   * project scope was used (team project or per-call arg).
+   */
+  inferred_project_scope?: 'personal-drafts';
 }
 
 export interface StoreErrorResponse {

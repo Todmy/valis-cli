@@ -4,6 +4,33 @@ import { saveCredentials, loadCredentials } from '../config/credentials.js';
 import { HOSTED_API_URL, HOSTED_SUPABASE_URL } from '../types.js';
 import type { ExchangeTokenResponse } from '../types.js';
 import { openBrowser } from '../utils/open-browser.js';
+import { getSupabaseJwtClient } from '../cloud/supabase/client.js';
+import { ensurePersonalDrafts } from '../cloud/supabase/personal-drafts.js';
+
+/**
+ * 034 / FR-009: idempotently create the caller's personal-drafts project
+ * after a successful login. Best-effort — never fails the login flow.
+ * Logs a brief notice on first creation so the user knows the project
+ * exists. The migration partial-unique-index guarantees one row per
+ * (org, member).
+ */
+async function bootstrapPersonalDrafts(args: {
+  supabaseUrl: string;
+  memberApiKey: string;
+  orgId: string;
+  memberId: string;
+}): Promise<void> {
+  try {
+    const supabase = getSupabaseJwtClient(args.supabaseUrl, args.memberApiKey);
+    const { created } = await ensurePersonalDrafts(supabase, args.orgId, args.memberId);
+    if (created) {
+      console.log(pc.dim('  ↳ Created your "Personal Drafts" project for scope-less captures.'));
+    }
+  } catch {
+    // FR-009 is "best-effort at login" — the project will be created
+    // on first scope-less store call too. Silent on transient errors.
+  }
+}
 
 interface DeviceCodeResponse {
   user_code: string;
@@ -121,6 +148,12 @@ async function loginWithDevice(): Promise<void> {
         });
 
         console.log(pc.green(`✓ Logged in as ${auth.author_name} (${auth.org_name})`));
+        await bootstrapPersonalDrafts({
+          supabaseUrl: auth.supabase_url,
+          memberApiKey: auth.member_api_key,
+          orgId: auth.org_id,
+          memberId: auth.member_id,
+        });
         console.log(pc.dim(`\n  Next: cd <project-dir> && valis init`));
         return;
       }
@@ -195,6 +228,12 @@ async function loginWithApiKey(): Promise<void> {
     });
 
     console.log(pc.green(`\n✓ Logged in as ${result.author_name} (${result.org_name})`));
+    await bootstrapPersonalDrafts({
+      supabaseUrl: HOSTED_SUPABASE_URL,
+      memberApiKey: apiKey,
+      orgId: result.org_id,
+      memberId: result.member_id,
+    });
   } catch {
     console.log(pc.red('Cannot reach Valis Cloud. Check your internet connection.'));
   }

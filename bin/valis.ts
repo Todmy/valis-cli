@@ -7,7 +7,7 @@ import { serveCommand } from '../src/commands/serve.js';
 import { statusCommand } from '../src/commands/status.js';
 import { dashboardCommand } from '../src/commands/dashboard.js';
 import { searchCommand } from '../src/commands/search-cmd.js';
-import { configGetCommand, configSetCommand } from '../src/commands/config-cmd.js';
+import { configGetCommand, configSetCommand, configWizardCommand } from '../src/commands/config-cmd.js';
 import { uninstallCommand } from '../src/commands/uninstall.js';
 import { adminMetricsCommand } from '../src/commands/admin-metrics.js';
 import { migrateAuthCommand } from '../src/commands/migrate-auth.js';
@@ -23,6 +23,10 @@ import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
 import { switchCommand } from '../src/commands/switch.js';
 import { loginCommand } from '../src/commands/login.js';
+import {
+  triageCommand as personalDraftsTriage,
+  restoreCommand as personalDraftsRestore,
+} from '../src/commands/personal-drafts.js';
 import { logoutCommand } from '../src/commands/logout.js';
 import { whoamiCommand } from '../src/commands/whoami.js';
 import { syncCommand } from '../src/commands/sync.js';
@@ -36,6 +40,7 @@ import {
   hookStopCommand,
   hookFlushTelemetryCommand,
   hookCaptureDoneCommand,
+  hookValidateCommand,
 } from '../src/commands/hook.js';
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
@@ -233,6 +238,15 @@ configCmd
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
     }
+  });
+
+// 034 / FR-002: interactive wizard for capture-related settings.
+configCmd
+  .command('wizard')
+  .description('Interactive prompt-driven config for capture cadence + per-prompt augmentation')
+  .option('--project', 'Write to .valis.json (project scope) instead of ~/.valis/config.json')
+  .action(async (opts: { project?: boolean }) => {
+    await configWizardCommand({ project: opts.project });
   });
 
 program
@@ -493,6 +507,36 @@ const hookCmd = new Command('hook')
   });
 program.addCommand(hookCmd, { hidden: true });
 
+// 034 / FR-011 + FR-020: personal-drafts triage + restore.
+const personalDraftsCmd = new Command('personal-drafts').description(
+  'Manage your personal-drafts project (scope-less captures fallback)',
+);
+program.addCommand(personalDraftsCmd);
+
+personalDraftsCmd
+  .command('triage')
+  .description('Interactively walk active drafts — bind / archive / delete per entry')
+  .action(async () => {
+    try {
+      await personalDraftsTriage();
+    } catch (err) {
+      console.error(`personal-drafts triage failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+personalDraftsCmd
+  .command('restore <id>')
+  .description('Restore an archived draft to active state (owner-only)')
+  .action(async (id: string) => {
+    try {
+      await personalDraftsRestore(id);
+    } catch (err) {
+      console.error(`personal-drafts restore failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 hookCmd
   .command('session-start')
   .description('SessionStart hook: self-heal of Valis-managed surfaces (post-#172, no backend preload)')
@@ -568,6 +612,30 @@ hookCmd
       await hookFlushTelemetryCommand();
     } catch {
       process.exit(0);
+    }
+  });
+
+// 034 / FR-001: hook validation harness. NOT a Phase A/B Claude-Code hook;
+// this is a maintainer tool. Exit codes: 0 = STATUS PASS, 1 = STATUS FAIL.
+hookCmd
+  .command('validate')
+  .description(
+    'Validation harness — exercises the 5 active/stub Valis hooks with synthetic envelopes and writes specs/034-unified-capture-policy/validation-report.md. Gate artifact for FR-013 legacy capture deletion.',
+  )
+  .option('--report <path>', 'Override the report output path')
+  .option('--hook <name>', 'Restrict validation to a single hook (does not overwrite full report)')
+  .action(async (opts: { report?: string; hook?: string }) => {
+    try {
+      const result = await hookValidateCommand({
+        reportPath: opts.report,
+        onlyHook: opts.hook,
+      });
+      process.exit(result.status === 'PASS' ? 0 : 1);
+    } catch (err) {
+      console.error(
+        `hook validate failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(3);
     }
   });
 

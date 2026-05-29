@@ -40,6 +40,11 @@ import {
   DENSE_VECTOR_NAME,
 } from '../../cloud/embedding.js';
 import { extractLinks, type LinkExtractionResult, type SearchFn } from './link-extractor.js';
+import { applyInferenceDefaults, type InferenceOutput } from '../../lib/type-inference.js';
+import {
+  ensurePersonalDrafts,
+  PERSONAL_DRAFTS_SENTINEL,
+} from '../../cloud/supabase/personal-drafts.js';
 import {
   injectGroundTruth,
   type GroundTruthContext,
@@ -247,6 +252,7 @@ function assembleResponse(
   extras: StoreExtras,
   sideEffectResults: Map<string, StoreSideEffectResult>,
   groundTruth: GroundTruthContext | null,
+  inference?: InferenceOutput,
 ): StoreResponse {
   const response: StoreResponse = {
     id: decision.id,
@@ -254,6 +260,15 @@ function assembleResponse(
   };
   if (extras.status === 'proposed') {
     response.proposed = true;
+  }
+  // 034 / FR-005 + FR-006: surface inference flags so callers can detect
+  // and override silent inference. Omitted (not `false`) when the caller
+  // supplied the field explicitly — the response should not carry noise.
+  if (inference?.inferred_type) {
+    response.inferred_type = true;
+  }
+  if (inference?.inferred_summary) {
+    response.inferred_summary = true;
   }
   const superseded = sideEffectOutput<StoreSupersededDetail>(sideEffectResults, 'supersede');
   if (superseded) {
@@ -338,8 +353,17 @@ export async function handleStore(
 
   // T023: Resolve project from per-directory config
   const resolved = configOverride ? null : await resolveConfig();
-  const projectId =
-    args.project_id || configOverride?.project_id || resolved?.project?.project_id;
+  // 034 / FR-019: callers may pass the sentinel `--project personal-drafts`
+  // (or args.project_id === 'personal-drafts'). Strip it here so the
+  // normal resolution chain treats it as "no project supplied", which
+  // then triggers the FR-008 personal-drafts fallback below.
+  const rawArgProjectId =
+    args.project_id === PERSONAL_DRAFTS_SENTINEL ? undefined : args.project_id;
+  let projectId =
+    rawArgProjectId || configOverride?.project_id || resolved?.project?.project_id;
+  // 034 / FR-005 companion: track when projectId was resolved via the
+  // personal-drafts fallback so the response can flag it explicitly.
+  let inferredPersonalDrafts = false;
 
   // BUG #175: refuse to write when the agent-provided project_id disagrees
   // with the OAuth session's scoped project. Without this guard, the store
@@ -363,9 +387,50 @@ export async function handleStore(
     };
   }
 
-  // T023: Reject store if no project configured
+  // 034 / FR-008: scope-less fallback. When the caller has no project
+  // context (no args.project_id, no JWT-encoded scope, no .valis.json),
+  // route the write to the caller's personal-drafts project instead of
+  // returning `no_project_configured`. Requires authenticated member
+  // context — without it we fall through to the auth_required hard-fail
+  // (FR-010) below.
   if (!projectId) {
-    return { error: 'no_project_configured', action: 'blocked' };
+    const callerSentinel = args.project_id === PERSONAL_DRAFTS_SENTINEL;
+    const hasMemberCreds =
+      Boolean(config.member_id) &&
+      Boolean(config.supabase_service_role_key || config.member_api_key);
+    if (hasMemberCreds && config.member_id) {
+      try {
+        const supabase = pickSupabaseClient(config, configOverride);
+        const ensured = await ensurePersonalDrafts(
+          supabase,
+          config.org_id,
+          config.member_id,
+        );
+        projectId = ensured.projectId;
+        inferredPersonalDrafts = true;
+      } catch (err) {
+        // Fallback creation failed (network / RLS / DB error). If the
+        // caller explicitly asked for the sentinel, this is a hard error
+        // they should see. Otherwise treat as "no_project_configured" so
+        // existing CLI flows still get the legacy message.
+        if (callerSentinel) {
+          return {
+            error: 'infrastructure_error',
+            action: 'blocked',
+            error_message: `personal-drafts ensure failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        return { error: 'no_project_configured', action: 'blocked' };
+      }
+    } else {
+      // 034 / FR-010: no authenticated session AND no project context.
+      // Fail fast with an actionable message.
+      return {
+        error: 'auth_required',
+        action: 'blocked',
+        error_message: 'Run `valis login` first to capture decisions.',
+      };
+    }
   }
 
   // BUG #176 root-cause fix (companion to issue #54 read-path fix):
@@ -419,12 +484,23 @@ export async function handleStore(
     return { id: 'duplicate', status: 'duplicate' };
   }
 
-  // T023: Include resolved project_id in raw decision for both Supabase and Qdrant
-  const raw: RawDecision = {
-    text: args.text,
+  // 034 / FR-004 + FR-005 + FR-006 + FR-007: apply content-based inference
+  // defaults so the caller can supply only `text` and still get a fully
+  // classified row. Explicit args bypass inference (verified by
+  // test/lib/type-inference-defaults.test.ts case T024).
+  const inference: InferenceOutput = applyInferenceDefaults({
     type: args.type,
     summary: args.summary,
     affects: args.affects,
+    text: args.text,
+  });
+
+  // T023: Include resolved project_id in raw decision for both Supabase and Qdrant
+  const raw: RawDecision = {
+    text: args.text,
+    type: inference.type,
+    summary: inference.summary,
+    affects: inference.affects,
     confidence: args.confidence,
     project_id: projectId,
     session_id: args.session_id,
@@ -614,11 +690,16 @@ export async function handleStore(
       },
       replacesTarget,
       linkExtraction,
+      inference,
     };
 
     const sideEffectResults = await runStoreSideEffects(STORE_SIDE_EFFECTS, ctx);
 
-    return assembleResponse(decision, extras, sideEffectResults, groundTruth);
+    const response = assembleResponse(decision, extras, sideEffectResults, groundTruth, inference);
+    if (inferredPersonalDrafts) {
+      response.inferred_project_scope = 'personal-drafts';
+    }
+    return response;
   } catch (err) {
     // BUG #143: distinguish server mode (return structured error) from
     // CLI-stdio mode (legitimate offline-queue fallback).

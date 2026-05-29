@@ -26,6 +26,7 @@ import {
 } from '../../cloud/supabase.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { canReadProject } from '../../lib/project-access.js';
+import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import type {
   SearchResponse,
   RerankedResult,
@@ -290,14 +291,18 @@ export async function handleSearch(
   }
 
   const mismatch = detectScopeMismatch(args.project_id, configOverride);
-  return assembleResponse({
-    results: finalResults,
-    suppressed_count,
-    mismatch,
-    dropped_args: filterBuild.dropped_args,
-    clamped_args: filterBuild.clamped_args,
-    filter_dim_used: filterDimensions,
-  });
+  return emitRecallTelemetryAndReturn(
+    assembleResponse({
+      results: finalResults,
+      suppressed_count,
+      mismatch,
+      dropped_args: filterBuild.dropped_args,
+      clamped_args: filterBuild.clamped_args,
+      filter_dim_used: filterDimensions,
+    }),
+    config.org_id,
+    'valis_search',
+  );
 }
 
 interface MetadataOnlyArgs {
@@ -368,6 +373,42 @@ interface AssembleArgs {
   dropped_args: DroppedArg[];
   clamped_args: ClampedArg[];
   filter_dim_used: ReturnType<typeof usedFilterDimensions>;
+}
+
+/**
+ * 034 / FR-018: emit one `recall_hit` telemetry event per result returned.
+ * Backs SC-006 quality clause (mean recall_hit.score per project_id ≥95%
+ * of pre-deletion baseline). Best-effort; never blocks the response.
+ * Helper is intentionally side-effect-only — pass through the response so
+ * call-sites can chain `return emitRecallTelemetryAndReturn(response, ...)`.
+ */
+function emitRecallTelemetryAndReturn(
+  response: SearchResponse,
+  orgId: string,
+  source: 'valis_search' | 'valis_context',
+): SearchResponse {
+  try {
+    for (const r of response.results) {
+      // SearchResponse.results is typed as SearchResult; in this code path
+      // finalResults is actually RerankedResult, which adds composite_score.
+      // Read via a narrowed cast — `score` is the public field on the base
+      // SearchResult, composite_score is the reranker's enriched signal.
+      const score =
+        (r as unknown as { composite_score?: number }).composite_score ?? r.score ?? 0;
+      void recordTelemetry('recall_hit', {
+        org_id: orgId,
+        project_id: r.project_id ?? '',
+        metadata: {
+          decision_id: r.id,
+          score,
+          source_tool: source,
+        },
+      });
+    }
+  } catch {
+    /* never block the response */
+  }
+  return response;
 }
 
 function assembleResponse(p: AssembleArgs): SearchResponse {

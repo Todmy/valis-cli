@@ -70,6 +70,19 @@ vi.mock('../../../src/lib/project-access.js', () => ({
   getServiceRoleSupabase: vi.fn(() => ({})),
 }));
 
+// 034 / T033 + T034: mock the personal-drafts cloud helper so we can
+// drive the FR-008 scope-less fallback without a live Supabase. Default
+// `ensurePersonalDrafts` returns a successful row; individual tests
+// override per-case (e.g. T034 doesn't exercise it because there are no
+// member creds to even attempt the fallback).
+vi.mock('../../../src/cloud/supabase/personal-drafts.js', () => ({
+  ensurePersonalDrafts: vi.fn().mockResolvedValue({
+    projectId: 'pd-mock',
+    created: true,
+  }),
+  PERSONAL_DRAFTS_SENTINEL: 'personal-drafts',
+}));
+
 import { handleStore } from '../../../src/mcp/tools/store.js';
 
 describe('handleStore', () => {
@@ -372,5 +385,101 @@ describe('handleStore', () => {
     expect(result).toMatchObject({ error_message: expect.stringContaining('upstream Postgres timeout') });
     // Critical: server mode never touches the local-queue fs path.
     expect(appendSpy).not.toHaveBeenCalled();
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // 034 / FR-008 + FR-010: personal-drafts fallback and auth_required
+  // ────────────────────────────────────────────────────────────────────
+
+  it('T033: scope-less store with member creds routes to personal-drafts and flags inferred_project_scope', async () => {
+    // Repro the FR-008 contract: agent calls valis_store with no
+    // project_id, no JWT-encoded scope, no .valis.json. Caller has
+    // authenticated member context (member_id + service-role key).
+    // Expected: ensurePersonalDrafts is invoked exactly once, the row
+    // is written under the returned personal-drafts project_id, and
+    // the response carries `inferred_project_scope: 'personal-drafts'`
+    // so the agent (and downstream telemetry) can detect the fallback.
+    const personalDraftsMod = await import('../../../src/cloud/supabase/personal-drafts.js');
+    const ensureSpy = vi.mocked(personalDraftsMod.ensurePersonalDrafts);
+    ensureSpy.mockClear();
+    ensureSpy.mockResolvedValueOnce({ projectId: 'pd-resolved-123', created: false });
+
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore(
+      {
+        text: 'A scope-less decision authored without a configured project should land in personal-drafts.',
+        type: 'decision',
+        summary: 'scope-less store T033',
+        affects: ['scope'],
+      },
+      {
+        org_id: 'test-org-id',
+        member_id: 'member-x',
+        api_key: 'tm_test123',
+        author_name: 'tester',
+        supabase_url: 'https://test.supabase.co',
+        supabase_service_role_key: 'test-key',
+        qdrant_url: 'https://test.qdrant.io',
+        qdrant_api_key: 'test-qdrant-key',
+        // Deliberately no project_id — that is the FR-008 trigger.
+      } as never,
+    );
+
+    expect(ensureSpy).toHaveBeenCalledTimes(1);
+    expect(ensureSpy).toHaveBeenCalledWith(expect.anything(), 'test-org-id', 'member-x');
+    expect(result).not.toHaveProperty('error');
+    expect(result).toHaveProperty('id');
+    expect(result).toHaveProperty('inferred_project_scope', 'personal-drafts');
+    // The downstream write must use the ensure-returned project_id, not
+    // a leaked default. Verifies the fallback wires through cleanly.
+    expect(storeSpy).toHaveBeenCalledTimes(1);
+    const rawArg = storeSpy.mock.calls[0]![2];
+    expect(rawArg).toMatchObject({ project_id: 'pd-resolved-123' });
+  });
+
+  it('T034: scope-less store without auth returns auth_required with actionable message', async () => {
+    // FR-010 hard-fail: no project_id AND no authenticated member ⇒
+    // the only honest answer is "you cannot capture decisions in this
+    // state — log in first". The previous behaviour returned
+    // `no_project_configured` which was true but unactionable.
+    const personalDraftsMod = await import('../../../src/cloud/supabase/personal-drafts.js');
+    const ensureSpy = vi.mocked(personalDraftsMod.ensurePersonalDrafts);
+    ensureSpy.mockClear();
+
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore(
+      {
+        text: 'A scope-less decision attempted before login should fail fast with auth_required.',
+        type: 'decision',
+        summary: 'no auth T034',
+        affects: ['auth'],
+      },
+      {
+        org_id: 'test-org-id',
+        // Deliberately no member_id, no member_api_key, no
+        // supabase_service_role_key — pre-login configuration.
+        api_key: 'tm_test123',
+        author_name: 'tester',
+        supabase_url: 'https://test.supabase.co',
+        qdrant_url: 'https://test.qdrant.io',
+        qdrant_api_key: 'test-qdrant-key',
+      } as never,
+    );
+
+    expect(result).toHaveProperty('error', 'auth_required');
+    expect(result).toHaveProperty('action', 'blocked');
+    expect(result).toMatchObject({
+      error_message: expect.stringContaining('valis login'),
+    });
+    // Critical: we never reached the personal-drafts ensure call and
+    // never attempted a write. The hard-fail is structural, not best-effort.
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(storeSpy).not.toHaveBeenCalled();
   });
 });

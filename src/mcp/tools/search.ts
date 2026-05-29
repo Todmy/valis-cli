@@ -26,10 +26,17 @@ import {
 } from '../../cloud/supabase.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { canReadProject } from '../../lib/project-access.js';
+import {
+  buildScopeEnvelope,
+  buildScopeHint,
+  buildScopeInputs,
+  type ScopeInputs,
+} from './scope.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import type {
   SearchResponse,
   RerankedResult,
+  ScopeEnvelope,
   ServerConfig,
   ValisConfig,
   SearchExpand,
@@ -300,6 +307,16 @@ export async function handleSearch(
   }
 
   const mismatch = detectScopeMismatch(args.project_id, configOverride);
+  // 039/#94 — best-effort scope assembly via the shared helper (finding #6).
+  // When `projectId` resolved we name it; when the caller opted into
+  // `all_projects` with no single scope (finding #2) the helper still emits a
+  // scope with `active_project: null` + the accessible-project list.
+  const scope = await buildScopeInputs(
+    config,
+    configOverride,
+    projectId,
+    args.all_projects === true,
+  );
   return emitRecallTelemetryAndReturn(
     assembleResponse({
       results: finalResults,
@@ -308,6 +325,7 @@ export async function handleSearch(
       dropped_args: filterBuild.dropped_args,
       clamped_args: filterBuild.clamped_args,
       filter_dim_used: filterDimensions,
+      scope,
     }),
     config.org_id,
     'valis_search',
@@ -327,6 +345,13 @@ interface MetadataOnlyArgs {
 
 async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchResponse> {
   const { args, config, configOverride, projectId } = p;
+  // 039/#94 — resolve scope once; reused across the error + success returns.
+  const scope = await buildScopeInputs(
+    config,
+    configOverride,
+    projectId,
+    args.all_projects === true,
+  );
   let results;
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
@@ -349,6 +374,7 @@ async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchRespons
       dropped_args: p.dropped_args,
       clamped_args: p.clamped_args,
       filter_dim_used: p.filter_dim_used,
+      scope,
     });
   }
 
@@ -369,6 +395,7 @@ async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchRespons
     dropped_args: p.dropped_args,
     clamped_args: p.clamped_args,
     filter_dim_used: p.filter_dim_used,
+    scope,
   });
 }
 
@@ -382,6 +409,13 @@ interface AssembleArgs {
   dropped_args: DroppedArg[];
   clamped_args: ClampedArg[];
   filter_dim_used: ReturnType<typeof usedFilterDimensions>;
+  /**
+   * 039/#94 — scope inputs. When present, `assembleResponse` builds the
+   * `scope` envelope (FR-001) and the optional empty-result `scope_hint`
+   * (FR-005/FR-006). Omitted only on the `project_scope_required` fail-closed
+   * path where there is no project to name AND the query did not span all.
+   */
+  scope?: ScopeInputs;
 }
 
 /**
@@ -431,6 +465,27 @@ function assembleResponse(p: AssembleArgs): SearchResponse {
   if (p.clamped_args.length > 0) response.clamped_args = p.clamped_args;
   if (p.filter_dim_used.length > 0) {
     response.filter_dim_used = [...p.filter_dim_used];
+  }
+  // 039/#94 — attach the scope envelope + optional empty-result hint.
+  // Independent top-level keys (FR-009/FR-010); never overwrite existing
+  // fields. Skipped on the no-active-project fail-closed path.
+  if (p.scope) {
+    const scope: ScopeEnvelope = buildScopeEnvelope({
+      activeProjectId: p.scope.activeProjectId,
+      accessibleProjects: p.scope.accessibleProjects,
+      queriedAllProjects: p.scope.queriedAllProjects,
+    });
+    response.scope = scope;
+    // finding #3 — count suppressed hits as "not empty": a project with
+    // matching decisions all below the suppression threshold has NOT decided
+    // nothing, so the cross-project-retry hint must not fire.
+    const hint = buildScopeHint(
+      p.results.length,
+      scope.accessible_projects.length,
+      scope.queried_all_projects,
+      p.suppressed_count,
+    );
+    if (hint) response.scope_hint = hint;
   }
   return response;
 }

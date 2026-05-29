@@ -77,7 +77,7 @@ const TOOL_DEFS = {
   },
   valis_search: {
     description:
-      "Search the team's shared decision history. Use before making decisions to check what the team already decided. Results are scoped to the active project by default. Set all_projects to search across all accessible projects.",
+      "Search the team's shared decision history. Use before making decisions to check what the team already decided. Results are scoped to the active project by default. Set all_projects to search across all accessible projects.\n\nEvery response carries a `scope` object naming the project that was actually searched (`scope.active_project`) plus the projects the member can access (`scope.accessible_projects`). When you report findings, state which project you searched. If results are empty and the member can access other projects, the response includes a `scope_hint` — surface it and ask the user before concluding a decision was never made; retry with `all_projects: true` to search the other projects first.",
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,
@@ -127,7 +127,7 @@ const TOOL_DEFS = {
   },
   valis_context: {
     description:
-      'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases. Results are scoped to the active project by default.',
+      'Load relevant team decisions for the current task. Call at the start of every new task or when switching codebases. Results are scoped to the active project by default.\n\nEvery response carries a `scope` object naming the project that was actually loaded (`scope.active_project`) plus the projects the member can access (`scope.accessible_projects`). State which project you loaded context from. If the result is empty and the member can access other projects, the response includes a `scope_hint` — surface it and ask the user before concluding nothing was decided; retry with `all_projects: true` to load the other projects first.',
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,

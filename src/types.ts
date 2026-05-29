@@ -610,6 +610,33 @@ export interface ProjectScopeMismatch {
   action_required: 'restart_session';
 }
 
+/**
+ * 039/#94 — explicit scope descriptor attached to every successful
+ * `valis_search` / `valis_context` response. Makes the project boundary
+ * visible so the agent can name *which* knowledge base it consulted
+ * instead of silently implying the whole team brain was searched.
+ *
+ * - `active_project` — the project actually queried (id + display name).
+ *   On a granted cross-org read (feature 033 `target_project_id`) this is
+ *   the TARGET project, not the caller's JWT scope (FR-004). `name` is
+ *   `null` when the id resolves but no display name is available. The whole
+ *   field is `null` on the `all_projects` path when no single project scope
+ *   resolved — the query spanned every accessible project, so there is no
+ *   one "active" project to name (finding #2). `queried_all_projects` is the
+ *   companion signal in that case.
+ * - `accessible_projects` — the projects the authenticated member can read
+ *   (best-effort; degrades to `[active_project]` when the membership lookup
+ *   is unavailable — CLI stdio mode, missing creds, network failure — per
+ *   FR-008 / Constitution III).
+ * - `queried_all_projects` — whether the call spanned every accessible
+ *   project (i.e. `all_projects: true`).
+ */
+export interface ScopeEnvelope {
+  active_project: { id: string; name: string | null } | null;
+  accessible_projects: Array<{ id: string; name: string }>;
+  queried_all_projects: boolean;
+}
+
 export interface SearchResponse {
   results: SearchResult[];
   /** Number of results suppressed from default view. */
@@ -634,6 +661,21 @@ export interface SearchResponse {
   filter_dim_used?: string[];
   /** Note emitted when `query_mode: metadata_only` ignores a non-empty query string. */
   mode_note?: 'query_string_ignored_in_metadata_mode';
+  /**
+   * 039/#94 — explicit scope descriptor naming the active project, the
+   * member's accessible projects, and whether the query spanned all of
+   * them. Present on every successful response (including empty ones).
+   * Additive (FR-009). Feature 040/#226 will add a SEPARATE top-level
+   * `proposed_pending` field to this same envelope — do NOT add it here
+   * (FR-010); keep `scope` / `scope_hint` independent top-level keys.
+   */
+  scope?: ScopeEnvelope;
+  /**
+   * 039/#94 — advisory string present ONLY when results are empty AND the
+   * member can access >1 project AND the query did not already span all of
+   * them. Suggests retrying with `all_projects: true` (FR-005/FR-006).
+   */
+  scope_hint?: string;
 }
 
 export interface ContextResponse {
@@ -676,6 +718,20 @@ export interface ContextResponse {
    * prod-log access. Same pattern as `StoreErrorResponse.error_message`.
    */
   error_message?: string;
+  /**
+   * 039/#94 — explicit scope descriptor (same shape + semantics as
+   * `SearchResponse.scope`). Present on every successful response.
+   * Additive (FR-009); independent of feature 040/#226's future
+   * top-level `proposed_pending` field (FR-010 — do NOT add it here).
+   */
+  scope?: ScopeEnvelope;
+  /**
+   * 039/#94 — advisory string on empty multi-project responses (same
+   * semantics as `SearchResponse.scope_hint`). For context, "empty" means
+   * zero results across `decisions + constraints + patterns + lessons`
+   * (historical excluded — superseded/deprecated rows are not "results").
+   */
+  scope_hint?: string;
 }
 
 export interface DashboardStats {

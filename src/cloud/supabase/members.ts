@@ -99,6 +99,30 @@ export async function listMemberProjects(
   }));
 }
 
+/**
+ * 039/#94 — fetch a single project's display name by id, best-effort.
+ *
+ * Used by the scope-envelope assembly to name a cross-org `target_project_id`
+ * that is, by definition, NOT in the caller's own memberships (so
+ * `listMemberProjects` will never carry it). Returns `null` on any failure or
+ * when the row is absent — callers degrade to `name: null` and never throw
+ * (Constitution III). Requires a service-role client to read across org
+ * boundaries (the public-KB cross-org path always holds one).
+ */
+export async function getProjectName(
+  supabase: SupabaseClient,
+  projectId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('name')
+    .eq('id', projectId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return ((data as { name?: string | null }).name as string | null) ?? null;
+}
+
 /** Response from the create-project Edge Function. */
 export interface CreateProjectResponse {
   project_id: string;

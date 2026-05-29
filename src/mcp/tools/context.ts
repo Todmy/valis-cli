@@ -1,13 +1,21 @@
 import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects, mmrRerank } from '../../cloud/qdrant.js';
-import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
+import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
 import { proxySearch } from '../../cloud/search-proxy.js';
 import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
 import { canReadProject } from '../../lib/project-access.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
+import {
+  buildScopeEnvelope,
+  buildScopeHint,
+  buildScopeInputs,
+  selectMemberSupabaseClient,
+  type AccessibleProject,
+  type ScopeInputs,
+} from './scope.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
 
@@ -71,6 +79,35 @@ function emitRecallTelemetryAndReturn(
   return response;
 }
 
+/**
+ * 039/#94 — attach the `scope` envelope + optional empty-result `scope_hint`
+ * to a context response. "Empty" for the hint counts results across the four
+ * active buckets only (decisions + constraints + patterns + lessons);
+ * `historical` (superseded/deprecated) is excluded — those are not "results"
+ * for the cross-project-retry advisory (FR-005). Additive, independent
+ * top-level keys (FR-009/FR-010).
+ */
+function attachScope(
+  base: ContextResponse,
+  scopeInputs: ScopeInputs,
+): ContextResponse {
+  const scope = buildScopeEnvelope(scopeInputs);
+  const resultCount =
+    base.decisions.length +
+    base.constraints.length +
+    base.patterns.length +
+    base.lessons.length;
+  // finding #3 — agree with search.ts: a project whose only matches were
+  // suppressed is NOT empty. Gate the hint on visible + suppressed both zero.
+  const hint = buildScopeHint(
+    resultCount,
+    scope.accessible_projects.length,
+    scope.queried_all_projects,
+    base.suppressed_count ?? 0,
+  );
+  return hint ? { ...base, scope, scope_hint: hint } : { ...base, scope };
+}
+
 interface ContextArgs {
   task_description: string;
   files?: string[];
@@ -91,6 +128,29 @@ interface ContextArgs {
    * this undefined to preserve legacy behaviour.
    */
   target_project_id?: string;
+}
+
+/**
+ * 039/#94 / finding #4 — fetch the member's project list ONCE for scope
+ * assembly so the proxy branch (default for all plugin users) does not issue a
+ * second `listMemberProjects` RPC. Returns `undefined` when no usable creds /
+ * member_id (CLI stdio, missing service role) so the downstream scope helper
+ * falls back to its own gated lookup + active-project naming. Best-effort:
+ * any failure degrades to `undefined`, never throws (Constitution III).
+ */
+async function prefetchMemberships(
+  config: ValisConfig,
+  configOverride: ServerConfig | undefined,
+): Promise<AccessibleProject[] | undefined> {
+  if (!config.member_id) return undefined;
+  const client = selectMemberSupabaseClient(config, configOverride);
+  if (!client) return undefined;
+  try {
+    const projects = await listMemberProjects(client.supabase, config.member_id);
+    return projects.map((p) => ({ id: p.id, name: p.name }));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Statuses considered non-active (historical). */
@@ -249,19 +309,35 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         firstCall = false;
       }
 
-      return emitRecallTelemetryAndReturn(
-        withMismatch({
-          decisions: diversifyBucket(grouped.decision),
-          constraints: diversifyBucket(grouped.constraint),
-          patterns: diversifyBucket(grouped.pattern),
-          lessons: diversifyBucket(grouped.lesson),
-          historical,
-          total_in_brain: totalInBrain,
-          suppressed_count,
-          note,
-        }),
-        config.org_id,
+      // #228 — MMR diversity stays the FINAL bucket transform on the proxy
+      // path; diversifyBucket replaces the plain `.slice(0, 20)`.
+      const proxyBase = withMismatch({
+        decisions: diversifyBucket(grouped.decision),
+        constraints: diversifyBucket(grouped.constraint),
+        patterns: diversifyBucket(grouped.pattern),
+        lessons: diversifyBucket(grouped.lesson),
+        historical,
+        total_in_brain: totalInBrain,
+        suppressed_count,
+        note,
+      });
+      // 039/#94 — scope envelope on the hosted-proxy path (the default for all
+      // plugin users). finding #4 / FR-011: prefetch the membership list ONCE
+      // here and thread it into the scope assembly so the proxy branch does
+      // not issue a second `listMemberProjects` RPC per call. finding #2: when
+      // `all_projects` resolved no single project, still emit a scope.
+      const proxyMemberships = await prefetchMemberships(config, configOverride);
+      const proxyScopeInputs = await buildScopeInputs(
+        config,
+        configOverride,
+        projectId ?? undefined,
+        args.all_projects === true,
+        proxyMemberships,
       );
+      const proxyResponse = proxyScopeInputs
+        ? attachScope(proxyBase, proxyScopeInputs)
+        : proxyBase;
+      return emitRecallTelemetryAndReturn(proxyResponse, config.org_id);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[context] Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`);
@@ -307,6 +383,12 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
   // Silence isServerMode-only lint usage (still referenced below).
   void isServerMode;
 
+  // 039/#94 / FR-011 — capture the membership list the cross-project branch
+  // already fetches so the scope assembly below can reuse it instead of a
+  // second lookup. `undefined` means "not fetched here" → scope resolution
+  // falls back to its own gated lookup.
+  let crossProjectAccessible: AccessibleProject[] | undefined;
+
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     let results;
@@ -315,14 +397,15 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       // T022 + 019/US1: Cross-project context — load from all accessible projects
       let projectIds: string[] = [];
       try {
-        if (config.member_id) {
-          const supabase = (configOverride && config.supabase_service_role_key)
-            ? getSupabaseClient(config.supabase_url, config.supabase_service_role_key)
-            : config.auth_mode === 'jwt'
-              ? getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key)
-              : getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
-          const projects = await listMemberProjects(supabase, config.member_id);
+        const client = config.member_id
+          ? selectMemberSupabaseClient(config, configOverride)
+          : null;
+        if (client && config.member_id) {
+          const projects = await listMemberProjects(client.supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
+          // 039/#94 / FR-011 (finding #4): reuse this single fetch for the
+          // scope assembly below instead of issuing a second RPC.
+          crossProjectAccessible = projects.map((p) => ({ id: p.id, name: p.name }));
         }
       } catch {
         // Fall back to org-wide for CLI mode; HTTP-mode handled below.
@@ -407,19 +490,34 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       firstCall = false;
     }
 
-    return emitRecallTelemetryAndReturn(
-      withMismatch({
-        decisions,
-        constraints,
-        patterns,
-        lessons,
-        historical,
-        total_in_brain: totalInBrain,
-        suppressed_count,
-        note,
-      }),
-      config.org_id,
+    const directBase = withMismatch({
+      decisions,
+      constraints,
+      patterns,
+      lessons,
+      historical,
+      total_in_brain: totalInBrain,
+      suppressed_count,
+      note,
+    });
+    // 039/#94 — scope envelope on the direct-Qdrant path via the shared helper
+    // (finding #6). In single-project mode `projectId` (or the configured
+    // scope) anchors the active project; in cross-project mode with no single
+    // scope we still emit a scope with `active_project: null` (finding #2).
+    // `crossProjectAccessible` reuses the membership list already fetched above
+    // (FR-011, finding #4) so no second RPC is issued.
+    const activeProjectId = projectId ?? config.project_id ?? undefined;
+    const directScopeInputs = await buildScopeInputs(
+      config,
+      configOverride,
+      activeProjectId,
+      wantsCrossProject,
+      crossProjectAccessible,
     );
+    const directResponse = directScopeInputs
+      ? attachScope(directBase, directScopeInputs)
+      : directBase;
+    return emitRecallTelemetryAndReturn(directResponse, config.org_id);
   } catch (err) {
     // 019/US1 (R-001, T068): server-mode (HTTP MCP transport) must NEVER emit
     // `offline:true` — that's a CLI-stdio fallback indicator. Emit

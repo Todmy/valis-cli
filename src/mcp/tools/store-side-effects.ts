@@ -210,6 +210,12 @@ const qdrantWriteEffect: StoreSideEffect = {
       {
         project_id: ctx.raw.project_id,
         source: 'mcp_store',
+        // 036/FR-001 (#90): thread the resolved status into the Qdrant payload
+        // so proposed decisions surface as `proposed` in search. `buildExtras`
+        // always sets a concrete value ('proposed' | 'active'); if a future
+        // caller leaves it blank, upsertDecision applies its `|| 'active'`
+        // default (FR-002 — matched to storeDecision's coercion).
+        status: ctx.extras.status,
       },
     );
   },

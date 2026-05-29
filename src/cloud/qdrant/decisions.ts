@@ -121,6 +121,12 @@ export async function upsertDecision(
   // Resolve project_id from extras or raw decision
   const projectId = extras?.project_id ?? raw.project_id ?? undefined;
 
+  // 036 (#90): match storeDecision's coercion exactly — `||` treats an empty
+  // string as the default so Postgres and the Qdrant payload never diverge
+  // (storeDecision used `||`, this used `??` — an empty string would persist
+  // verbatim here but become 'active' in Postgres).
+  const status = extras?.status || 'active';
+
   // Build contextual text for richer embeddings (Q4-C)
   const contextualText = buildContextualText(raw.text, raw.type, raw.affects);
 
@@ -142,7 +148,7 @@ export async function upsertDecision(
     pinned: extras?.pinned ?? false,
     replaces: extras?.replaces ?? null as string | null,
     depends_on: extras?.depends_on ?? [] as string[],
-    status: extras?.status ?? 'active',
+    status,
     source: extras?.source ?? null,
     // 028-phase13/Track 5a — default outcome at write time so the rerank
     // multiplier can read it without a NULL guard. Updated later via

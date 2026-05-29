@@ -17,7 +17,7 @@ import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
 import { VERSION } from '../index.js';
 import { wrapToolWithAnalytics } from './analytics.js';
-import type { ServerConfig, ValisConfig } from '../types.js';
+import { normalizeStoreStatus, type ServerConfig, type ValisConfig } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Shared tool definitions — reused by both local and proxy servers
@@ -70,7 +70,7 @@ const TOOL_DEFS = {
         .describe('Confidence score 0.0–1.0 (0=uncertain, 1=high)'),
       project_id: z.string().optional().describe('Project directory name'),
       session_id: z.string().optional().describe('Session UUID for dedup'),
-      status: z.enum(['active', 'proposed']).optional().describe("Initial status — 'proposed' for team review, defaults to 'active'"),
+      status: z.enum(['active', 'proposed']).optional().describe("Initial status — 'active' or 'proposed' for team review; defaults to 'proposed'"),
       replaces: z.string().uuid().optional().describe('UUID of decision being replaced (target transitions to superseded)'),
       depends_on: z.array(z.string().uuid()).optional().describe('UUIDs of dependency decisions'),
     },
@@ -684,6 +684,9 @@ export function createProxyMcpServer(config: ValisConfig): McpServer {
               { text: args.text as string, type: args.type as 'decision' | 'constraint' | 'pattern' | 'lesson' | undefined, summary: args.summary as string | undefined, affects: args.affects as string[] | undefined },
               config.author_name,
               'mcp_store',
+              // 036/FR-003 (#90): preserve status through the offline flush
+              // (default 'proposed' per FR-018, mirroring buildExtras).
+              normalizeStoreStatus(args.status),
             );
             return { content: [{ type: 'text' as const, text: JSON.stringify({ id, status: 'stored', synced: false, note: 'offline — queued locally' }) }] };
           }

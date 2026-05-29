@@ -63,16 +63,17 @@ import {
   type StoreSideEffectResult,
   type StoreConfig,
 } from './store-side-effects.js';
-import type {
-  RawDecision,
-  StoreArgs,
-  StoreResponse,
-  StoreErrorResponse,
-  StoreSupersededDetail,
-  StoreContradictionWarning,
-  DecisionStatus,
-  Decision,
-  ServerConfig,
+import {
+  normalizeStoreStatus,
+  type RawDecision,
+  type StoreArgs,
+  type StoreResponse,
+  type StoreErrorResponse,
+  type StoreSupersededDetail,
+  type StoreContradictionWarning,
+  type DecisionStatus,
+  type Decision,
+  type ServerConfig,
 } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -182,7 +183,7 @@ async function validateDependsOn(
 function buildExtras(args: StoreArgs): StoreExtras {
   const extras: StoreExtras = {};
   // FR-018: All decisions default to 'proposed' — active requires explicit review
-  extras.status = args.status ?? 'proposed';
+  extras.status = normalizeStoreStatus(args.status);
   if (args.replaces) {
     extras.replaces = args.replaces;
   }
@@ -320,7 +321,14 @@ async function handlePrimaryWriteFailure(
 
   // CLI-stdio mode — legitimate offline fallback via local queue.
   try {
-    const id = await appendToQueue(raw, config.author_name, 'mcp_store');
+    // 036/FR-003 (#90): persist the resolved status so the next startup-sweep
+    // flush preserves it (mirrors buildExtras: default 'proposed' per FR-018).
+    const id = await appendToQueue(
+      raw,
+      config.author_name,
+      'mcp_store',
+      normalizeStoreStatus(args.status),
+    );
     markAsSeen(args.text, args.session_id);
     return {
       id,

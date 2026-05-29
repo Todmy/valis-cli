@@ -35,6 +35,9 @@ export async function startupSweep(): Promise<SweepResult> {
             entry.decision,
             entry.author,
             entry.source,
+            // 036/FR-003 (#90): preserve the queued status through the flush.
+            // Undefined for legacy entries → storeDecision defaults to active.
+            { status: entry.status },
           );
           await upsertDecision(
             qdrant,
@@ -42,7 +45,9 @@ export async function startupSweep(): Promise<SweepResult> {
             decision.id,
             entry.decision,
             entry.author,
-            { source: entry.source },
+            // 036/FR-003 (#90): thread the same status into the Qdrant payload
+            // so the offline path doesn't flatten proposed decisions to active.
+            { source: entry.source, status: entry.status },
           ).catch(() => {});
           result.queued_flushed++;
         } catch {

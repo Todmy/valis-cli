@@ -4,7 +4,15 @@
  * shouldRun gating, and structured output extraction.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// 036/US1: spy on upsertDecision so we can assert the qdrant-write adapter
+// threads the caller-supplied status into the Qdrant payload extras.
+const upsertDecisionSpy = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../../src/cloud/qdrant.js', () => ({
+  upsertDecision: (...args: unknown[]) => upsertDecisionSpy(...args),
+}));
+
 import {
   runStoreSideEffects,
   sideEffectOutput,
@@ -218,6 +226,50 @@ describe('runStoreSideEffects', () => {
     const results = await runStoreSideEffects([effect], fakeCtx);
     expect(results.get('odd')!.error).toBeInstanceOf(Error);
     expect(results.get('odd')!.error?.message).toBe('not an error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 036/US1 — qdrant-write adapter threads caller-supplied status into the
+// Qdrant payload (issue #90). Tests assert the WRITTEN extras, not the read
+// result, so the read-path `'active'` fallback cannot mask a regression.
+// ---------------------------------------------------------------------------
+
+describe('qdrant-write adapter — status threading (#90)', () => {
+  const qdrantWriteEffect = STORE_SIDE_EFFECTS.find((e) => e.name === 'qdrant-write')!;
+
+  beforeEach(() => {
+    upsertDecisionSpy.mockClear();
+  });
+
+  function ctxWith(status: string | undefined): StoreSideEffectContext {
+    return {
+      decision: { id: 'dec-1' },
+      raw: { text: 'use postgres', project_id: 'proj-1' },
+      args: { text: 'use postgres' },
+      extras: status === undefined ? {} : { status },
+      config: { org_id: 'org-1', author_name: 'olena' },
+      qdrant: () => ({}) as never,
+    } as unknown as StoreSideEffectContext;
+  }
+
+  it('passes status: proposed into upsertDecision extras when ctx.extras.status is proposed', async () => {
+    await qdrantWriteEffect.run(ctxWith('proposed'));
+    expect(upsertDecisionSpy).toHaveBeenCalledTimes(1);
+    const extras = upsertDecisionSpy.mock.calls[0][5];
+    expect(extras).toMatchObject({ status: 'proposed' });
+  });
+
+  it('passes status: active into upsertDecision extras when ctx.extras.status is active', async () => {
+    // `buildExtras` always sets a concrete status ('proposed' | 'active') — the
+    // previous "unset" case tested a state production never produces. The real
+    // reachable second case is an explicit 'active' decision; assert it threads
+    // through to the Qdrant payload verbatim so the read-path 'active' fallback
+    // cannot mask a regression where 'active' was dropped.
+    await qdrantWriteEffect.run(ctxWith('active'));
+    expect(upsertDecisionSpy).toHaveBeenCalledTimes(1);
+    const extras = upsertDecisionSpy.mock.calls[0][5];
+    expect(extras).toMatchObject({ status: 'active' });
   });
 });
 

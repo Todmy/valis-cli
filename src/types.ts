@@ -183,8 +183,21 @@ export interface StoreArgs extends RawDecision {
   replaces?: string;
   /** UUIDs of dependency decisions. */
   depends_on?: string[];
-  /** Initial status — defaults to 'active'. */
+  /** Initial status — defaults to 'proposed' (FR-018: active requires explicit review). */
   status?: 'active' | 'proposed';
+}
+
+/**
+ * 036 / FR-018: single source of truth for the store-time status default.
+ * Every entry point into a store/enqueue path (the MCP handler's `buildExtras`,
+ * the offline-queue fallback in `handleStore`, and the proxy server's offline
+ * append) must resolve an absent status to 'proposed' — `active` requires
+ * explicit review. Consolidated here so the literal lives in exactly one place.
+ */
+export function normalizeStoreStatus(
+  status: unknown,
+): 'active' | 'proposed' {
+  return status === 'active' ? 'active' : 'proposed';
 }
 
 /** Contradiction warning returned alongside a successful store. */
@@ -707,6 +720,15 @@ export interface QueueEntry {
   author: string;
   source: DecisionSource;
   queued_at: string;
+  /**
+   * 036/FR-003 (#90): the decision's intended lifecycle status at enqueue
+   * time. Persisted so the startup-sweep flush can thread it into both
+   * Postgres and the Qdrant payload instead of flattening to `active`.
+   * Optional + additive — legacy queue entries (written before this field)
+   * default to `active` downstream. Mirrors `StoreArgs.status` /
+   * `StoreExtras.status`; validation lives at the MCP-tool boundary.
+   */
+  status?: 'active' | 'proposed';
 }
 
 // ---------------------------------------------------------------------------

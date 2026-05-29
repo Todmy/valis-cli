@@ -93,6 +93,8 @@ export async function metadataOnlyScroll(
       author: (payload.author as string) ?? '',
       affects: (payload.affects as string[]) ?? [],
       created_at: (payload.created_at as string) ?? new Date(0).toISOString(),
+      // 036 (#90): post-fix points always carry their real status; this
+      // `?? 'active'` fallback now only covers legacy pre-036 Qdrant points.
       status: (payload.status as DecisionStatus) ?? 'active',
       confidence: (payload.confidence as number) ?? null,
       pinned: (payload.pinned as boolean) ?? false,

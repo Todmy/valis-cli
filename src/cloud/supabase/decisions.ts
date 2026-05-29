@@ -136,13 +136,19 @@ export async function storeDecision(
   const id = randomUUID();
   const hash = contentHash(raw.text);
 
+  // 036 (#90): compute the concrete status once and pass the same value to
+  // both writers (Postgres here, Qdrant via upsertDecision). `||` coerces an
+  // empty string to the default — keep the two writers byte-identical so a
+  // blank status can never persist as '' in Qdrant but 'active' in Postgres.
+  const status = extras?.status || 'active';
+
   const record: Record<string, unknown> = {
     id,
     org_id: orgId,
     type: raw.type || 'pending',
     summary: raw.summary || null,
     detail: raw.text,
-    status: extras?.status || 'active',
+    status,
     author,
     source,
     project_id: raw.project_id || null,

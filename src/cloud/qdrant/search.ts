@@ -382,6 +382,8 @@ function mapPointToSearchResult(
     author: payload.author as string,
     affects: (payload.affects as string[]) || [],
     created_at: payload.created_at as string,
+    // 036 (#90): post-fix points always carry their real status; this
+    // `|| 'active'` fallback now only covers legacy pre-036 Qdrant points.
     status: (payload.status as DecisionStatus) || 'active',
     replaced_by: (payload.replaces as string) || null,
     confidence: (payload.confidence as number) ?? null,

@@ -48,6 +48,10 @@ export async function appendToQueue(
   decision: RawDecision,
   author: string,
   source: DecisionSource,
+  // 036/FR-003 (#90): persist the decision's intended status so the
+  // startup-sweep flush can thread it into Postgres + the Qdrant payload
+  // instead of flattening proposed decisions to active. Optional + additive.
+  status?: 'active' | 'proposed',
 ): Promise<string> {
   const queueFile = await getQueueFile();
   const entry: QueueEntry = {
@@ -56,6 +60,7 @@ export async function appendToQueue(
     author,
     source,
     queued_at: new Date().toISOString(),
+    ...(status !== undefined ? { status } : {}),
   };
   await appendFile(queueFile, JSON.stringify(entry) + '\n');
   return entry.id;
@@ -117,6 +122,12 @@ export async function flushQueue(
               confidence: entry.decision.confidence,
               project_id: entry.decision.project_id,
               session_id: entry.decision.session_id,
+              // 036/FR-003 (#90): forward the persisted status. Without this,
+              // the server applies `status ?? 'proposed'` on flush and an
+              // explicit 'active' silently degrades to 'proposed'. Omitted
+              // (not null) for legacy entries written before the status field
+              // existed, so the server default still applies to them.
+              ...(entry.status !== undefined ? { status: entry.status } : {}),
             },
           },
         }),

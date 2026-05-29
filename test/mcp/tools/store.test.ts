@@ -102,6 +102,51 @@ describe('handleStore', () => {
     expect(result).toHaveProperty('status', 'stored');
   });
 
+  // ────────────────────────────────────────────────────────────────────
+  // 036 / FR-018 (#90): an omitted status resolves to 'proposed' — runtime
+  // contract pin matching the doc comments. Active requires explicit review.
+  // Exercises the real handleStore → buildExtras → normalizeStoreStatus chain
+  // by asserting the `extras` argument that reaches the storeDecision writer.
+  // ────────────────────────────────────────────────────────────────────
+  it("defaults an omitted status to 'proposed' (FR-018)", async () => {
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore({
+      text: 'A decision stored with no explicit status must default to proposed for review.',
+      type: 'decision',
+      summary: 'default status proposed',
+      affects: ['lifecycle'],
+    });
+
+    expect(result).toHaveProperty('id');
+    // storeDecision(supabase, orgId, raw, author, source, extras) — extras is arg[5].
+    const extras = storeSpy.mock.calls[0]![5];
+    expect(extras).toMatchObject({ status: 'proposed' });
+    // The response surfaces the proposed flag so the agent can prompt review.
+    expect(result).toHaveProperty('proposed', true);
+  });
+
+  it("preserves an explicit status: 'active'", async () => {
+    const supabaseMod = await import('../../../src/cloud/supabase.js');
+    const storeSpy = vi.mocked(supabaseMod.storeDecision);
+    storeSpy.mockClear();
+
+    const result = await handleStore({
+      text: 'A decision stored with an explicit active status must keep active.',
+      type: 'decision',
+      summary: 'explicit active',
+      affects: ['lifecycle'],
+      status: 'active',
+    });
+
+    expect(result).toHaveProperty('id');
+    const extras = storeSpy.mock.calls[0]![5];
+    expect(extras).toMatchObject({ status: 'active' });
+    expect(result).not.toHaveProperty('proposed');
+  });
+
   it('blocks secrets', async () => {
     const result = await handleStore({
       text: 'Use this key: AKIAIOSFODNN7EXAMPLE to access AWS',

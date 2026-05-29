@@ -8,7 +8,14 @@ vi.mock('../../../src/config/store.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/cloud/qdrant.js', () => ({
+vi.mock('../../../src/cloud/qdrant.js', async () => ({
+  // Keep the REAL pure `mmrRerank` — handleContext now diversifies grouped
+  // buckets with it as the final transform (side-effect-free, no I/O).
+  mmrRerank: (
+    await vi.importActual<typeof import('../../../src/cloud/qdrant/search.js')>(
+      '../../../src/cloud/qdrant/search.js',
+    )
+  ).mmrRerank,
   getQdrantClient: vi.fn().mockReturnValue({}),
   hybridSearch: vi.fn().mockResolvedValue([
     {

@@ -1,6 +1,6 @@
 import { loadConfig } from '../../config/store.js';
 import { resolveConfig } from '../../config/project.js';
-import { getQdrantClient, hybridSearch, hybridSearchAllProjects } from '../../cloud/qdrant.js';
+import { getQdrantClient, hybridSearch, hybridSearchAllProjects, mmrRerank } from '../../cloud/qdrant.js';
 import { getSupabaseClient, getSupabaseJwtClient, listMemberProjects } from '../../cloud/supabase.js';
 import { proxySearch } from '../../cloud/search-proxy.js';
 import { isHostedMode } from '../../cloud/api-url.js';
@@ -10,6 +10,24 @@ import { canReadProject } from '../../lib/project-access.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
 import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
+
+/** Per-bucket display cap for grouped context results. */
+const CONTEXT_BUCKET_LIMIT = 20;
+
+/**
+ * 037 (issue #120, PR #228 review): apply MMR diversity as the FINAL transform
+ * on an already-reranked, grouped bucket — at the bucket's display limit, over
+ * the reranked `composite_score`. Replaces the plain `.slice(0, 20)` so the
+ * diversified ordering survives to the agent (mid-pipeline MMR in hybridSearch
+ * was a no-op once `rerank()` re-sorted by composite_score). Zero-gradient
+ * pools short-circuit inside mmrRerank (finding 3).
+ */
+function diversifyBucket(bucket: RerankedResult[]): RerankedResult[] {
+  return mmrRerank(bucket, {
+    k: CONTEXT_BUCKET_LIMIT,
+    relevanceOf: (r) => r.composite_score ?? r.score ?? 0,
+  });
+}
 
 /**
  * 034 / FR-018: emit one `recall_hit` telemetry event per result returned
@@ -233,10 +251,10 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
 
       return emitRecallTelemetryAndReturn(
         withMismatch({
-          decisions: grouped.decision.slice(0, 20),
-          constraints: grouped.constraint.slice(0, 20),
-          patterns: grouped.pattern.slice(0, 20),
-          lessons: grouped.lesson.slice(0, 20),
+          decisions: diversifyBucket(grouped.decision),
+          constraints: diversifyBucket(grouped.constraint),
+          patterns: diversifyBucket(grouped.pattern),
+          lessons: diversifyBucket(grouped.lesson),
           historical,
           total_in_brain: totalInBrain,
           suppressed_count,
@@ -366,11 +384,12 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       }
     }
 
-    // Limit each group to top results (already sorted by composite_score)
-    const decisions = grouped.decision.slice(0, 20);
-    const constraints = grouped.constraint.slice(0, 20);
-    const patterns = grouped.pattern.slice(0, 20);
-    const lessons = grouped.lesson.slice(0, 20);
+    // Limit each group to top results, with MMR diversity as the final
+    // transform (037 / PR #228 review — see diversifyBucket).
+    const decisions = diversifyBucket(grouped.decision);
+    const constraints = diversifyBucket(grouped.constraint);
+    const patterns = diversifyBucket(grouped.pattern);
+    const lessons = diversifyBucket(grouped.lesson);
 
     const totalInBrain = reranked.length;
     let note: string | undefined;

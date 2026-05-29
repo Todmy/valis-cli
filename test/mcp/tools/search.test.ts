@@ -8,24 +8,33 @@ vi.mock('../../../src/config/store.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/cloud/qdrant.js', () => ({
-  getQdrantClient: vi.fn().mockReturnValue({}),
-  hybridSearch: vi.fn().mockResolvedValue([
-    {
-      id: 'result-1',
-      score: 0.95,
-      type: 'decision',
-      summary: 'Chose PostgreSQL',
-      detail: 'We chose PostgreSQL for user data',
-      author: 'olena',
-      affects: ['database'],
-      created_at: '2026-03-20T14:30:00Z',
-      confidence: 0.8,
-      pinned: false,
-      depends_on: [],
-    },
-  ]),
-}));
+// Mock the qdrant barrel but keep the REAL pure `mmrRerank` (handleSearch now
+// imports it from here as the final-transform diversifier). It's side-effect-
+// free, so wiring the genuine implementation keeps these tests production-faithful.
+vi.mock('../../../src/cloud/qdrant.js', async () => {
+  const { mmrRerank } = await vi.importActual<typeof import('../../../src/cloud/qdrant/search.js')>(
+    '../../../src/cloud/qdrant/search.js',
+  );
+  return {
+    mmrRerank,
+    getQdrantClient: vi.fn().mockReturnValue({}),
+    hybridSearch: vi.fn().mockResolvedValue([
+      {
+        id: 'result-1',
+        score: 0.95,
+        type: 'decision',
+        summary: 'Chose PostgreSQL',
+        detail: 'We chose PostgreSQL for user data',
+        author: 'olena',
+        affects: ['database'],
+        created_at: '2026-03-20T14:30:00Z',
+        confidence: 0.8,
+        pinned: false,
+        depends_on: [],
+      },
+    ]),
+  };
+});
 
 vi.mock('../../../src/billing/usage.js', () => ({
   checkUsageBeforeSearch: vi.fn().mockResolvedValue({ allowed: true }),

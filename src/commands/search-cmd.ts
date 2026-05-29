@@ -5,6 +5,7 @@ import {
   getQdrantClient,
   hybridSearch,
   hybridSearchAllProjects,
+  mmrRerank,
 } from '../cloud/qdrant.js';
 import {
   getSupabaseClient,
@@ -55,7 +56,12 @@ export async function searchCommand(
       );
 
       const limit = options.limit ? parseInt(options.limit, 10) : 10;
-      const finalResults = visible.slice(0, limit);
+      // 037 (PR #228 review): MMR diversity is the FINAL transform — after
+      // rerank + suppression, at the display limit, over composite_score.
+      const finalResults = mmrRerank(visible, {
+        k: limit,
+        relevanceOf: (r) => r.composite_score ?? r.score ?? 0,
+      });
 
       console.log(pc.bold(`\nFound ${proxyResults.length} result(s), showing ${finalResults.length}:`));
       if (suppressed_count > 0 && !options.all) {
@@ -161,7 +167,12 @@ export async function searchCommand(
     );
 
     const limit = options.limit ? parseInt(options.limit, 10) : 10;
-    const finalResults = visible.slice(0, limit);
+    // 037 (PR #228 review): MMR diversity is the FINAL transform — after
+    // rerank + suppression, at the display limit, over composite_score.
+    const finalResults = mmrRerank(visible, {
+      k: limit,
+      relevanceOf: (r) => r.composite_score ?? r.score ?? 0,
+    });
 
     console.log(pc.bold(`\nFound ${rawResults.length} result(s), showing ${finalResults.length}:`));
     if (suppressed_count > 0 && !options.all) {

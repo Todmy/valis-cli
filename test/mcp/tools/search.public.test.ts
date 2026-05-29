@@ -21,7 +21,12 @@ vi.mock('../../../src/config/store.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/cloud/qdrant.js', () => ({
+vi.mock('../../../src/cloud/qdrant.js', async () => ({
+  mmrRerank: (
+    await vi.importActual<typeof import('../../../src/cloud/qdrant/search.js')>(
+      '../../../src/cloud/qdrant/search.js',
+    )
+  ).mmrRerank,
   getQdrantClient: vi.fn().mockReturnValue({}),
   hybridSearch: vi.fn().mockResolvedValue([
     {

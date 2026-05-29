@@ -13,7 +13,7 @@ import {
   type SearchFilterArgs,
 } from '../../search/filter-builder.js';
 import { metadataOnlyScroll } from '../../cloud/qdrant/scroll.js';
-import { getQdrantClient } from '../../cloud/qdrant.js';
+import { getQdrantClient, mmrRerank } from '../../cloud/qdrant.js';
 import {
   walkEdges,
   type EdgeType,
@@ -277,7 +277,16 @@ export async function handleSearch(
 
   const reranked: RerankedResult[] = rerank(enriched);
   const { visible, suppressed_count } = suppressResults(reranked, SUPPRESSION_THRESHOLD, false);
-  const baseResults = visible.slice(0, args.limit ?? DEFAULT_LIMIT);
+  // 037 (issue #120, PR #228 review): MMR diversity is the FINAL transform —
+  // applied AFTER rerank + suppression, at the user's display limit, over the
+  // reranked composite_score. This is the only place the diversified ordering
+  // is computed for valis_search (mid-pipeline MMR was a no-op because rerank
+  // re-sorted by composite_score afterwards). The diversified top-K survives to
+  // the agent. Scroll-fallback / zero-gradient pools short-circuit inside mmrRerank.
+  const baseResults = mmrRerank(visible, {
+    k: args.limit ?? DEFAULT_LIMIT,
+    relevanceOf: (r) => (r as RerankedResult).composite_score ?? r.score ?? 0,
+  });
 
   // 031/Track 5b — enrich with typed-edge neighbours when depth >= 1.
   // Non-blocking (Constitution III): a failure here downgrades each hit's

@@ -25,6 +25,7 @@ import {
   getDecisionsByIds,
 } from '../../cloud/supabase.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
+import { resolveProposedPendingBlock } from './proposed-pending-block.js';
 import { canReadProject } from '../../lib/project-access.js';
 import {
   buildScopeEnvelope,
@@ -33,13 +34,14 @@ import {
   type ScopeInputs,
 } from './scope.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
-import type {
-  SearchResponse,
-  RerankedResult,
-  ScopeEnvelope,
-  ServerConfig,
-  ValisConfig,
-  SearchExpand,
+import {
+  type SearchResponse,
+  type RerankedResult,
+  type ScopeEnvelope,
+  type ServerConfig,
+  type ValisConfig,
+  type SearchExpand,
+  type ProposedPending,
 } from '../../types.js';
 
 interface SearchArgs {
@@ -182,11 +184,16 @@ export async function handleSearch(
     };
   }
 
+  // 040/#226 — track whether this call resolved to a cross-org public-KB read.
+  // The `proposed_pending` block is member-only triage authority, so it is
+  // OMITTED for cross-org reads (FR-006).
+  let isCrossOrgRead = false;
   // Feature 033 — public-KB cross-org read gate. When `target_project_id`
   // is set, replace `projectId` with the target after access resolution.
   // Denied access returns an empty response indistinguishable from "no
   // results" / "project does not exist" (FR-006, never leaks existence).
   if (args.target_project_id && args.target_project_id !== projectId) {
+    isCrossOrgRead = true;
     if (!configOverride?.member_id || !configOverride?.supabase_url || !configOverride?.supabase_service_role_key) {
       // stdio mode or insufficient creds — cross-org reads only work in HTTP
       // (plugin) mode where the server holds service-role auth. Deny silently.
@@ -260,20 +267,27 @@ export async function handleSearch(
       dropped_args: filterBuild.dropped_args,
       clamped_args: filterBuild.clamped_args,
       filter_dim_used: filterDimensions,
+      isCrossOrgRead,
     });
   }
 
   const transport: SearchTransport = chooseSearchTransport(config, configOverride);
 
   let enriched;
+  // finding #2 — the proxy transport returns the server-computed draft-backlog
+  // block alongside the results; capture it so we can reuse it verbatim and
+  // skip the client-side COUNT recompute below.
+  let serverProposedPending: ProposedPending | undefined;
   try {
-    enriched = await transport.search(args.query, {
+    const transportResult = await transport.search(args.query, {
       type: args.type,
       projectId,
       all_projects: args.all_projects,
       expand: args.expand,
       payload_filter: filterBuild.filter.must.length > 0 ? filterBuild.filter : undefined,
     });
+    enriched = transportResult.results;
+    serverProposedPending = transportResult.proposed_pending;
   } catch (err) {
     const tag = isHostedProxy ? 'Proxy' : 'Qdrant';
     console.error(
@@ -317,6 +331,29 @@ export async function handleSearch(
     projectId,
     args.all_projects === true,
   );
+  // 040/#226 — best-effort draft-backlog block.
+  // finding #2 — on the hosted-proxy path `/api/search` already computed this
+  // block server-side (service-role + explicit org_id+project_id filter). Reuse
+  // it verbatim instead of issuing the COUNT fan-out a second time client-side.
+  // Direct mode (`serverProposedPending` undefined) computes it in-process,
+  // reusing the already-ranked result scores for `top_3.similarity` (FR-010).
+  let proposed_pending: ProposedPending | undefined;
+  if (isHostedProxy) {
+    proposed_pending = serverProposedPending;
+  } else {
+    const similarityById = new Map<string, number>();
+    for (const r of finalResults) {
+      if (typeof r.score === 'number') similarityById.set(r.id, r.score);
+    }
+    proposed_pending = await buildProposedPendingBlock({
+      config,
+      configOverride,
+      args,
+      projectId,
+      isCrossOrgRead,
+      similarityById,
+    });
+  }
   return emitRecallTelemetryAndReturn(
     assembleResponse({
       results: finalResults,
@@ -326,6 +363,7 @@ export async function handleSearch(
       clamped_args: filterBuild.clamped_args,
       filter_dim_used: filterDimensions,
       scope,
+      proposed_pending,
     }),
     config.org_id,
     'valis_search',
@@ -341,6 +379,8 @@ interface MetadataOnlyArgs {
   dropped_args: DroppedArg[];
   clamped_args: ClampedArg[];
   filter_dim_used: ReturnType<typeof usedFilterDimensions>;
+  /** 040/#226 — true when the call resolved to a cross-org public-KB read. */
+  isCrossOrgRead: boolean;
 }
 
 async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchResponse> {
@@ -387,6 +427,15 @@ async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchRespons
     args.query && args.query.trim().length > 0
       ? 'query_string_ignored_in_metadata_mode'
       : undefined;
+  // 040/#226 — metadata-only path has no semantic score, so `top_3.similarity`
+  // is null for every entry (FR-004). Best-effort; omitted on any error.
+  const proposed_pending = await buildProposedPendingBlock({
+    config,
+    configOverride,
+    args,
+    projectId,
+    isCrossOrgRead: p.isCrossOrgRead,
+  });
   return assembleResponse({
     results,
     suppressed_count: 0,
@@ -396,6 +445,7 @@ async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchRespons
     clamped_args: p.clamped_args,
     filter_dim_used: p.filter_dim_used,
     scope,
+    proposed_pending,
   });
 }
 
@@ -416,6 +466,11 @@ interface AssembleArgs {
    * path where there is no project to name AND the query did not span all.
    */
   scope?: ScopeInputs;
+  /**
+   * 040/#226 — pre-built draft-backlog block, or undefined to OMIT it (FR-006).
+   * Independent top-level key; never overwrites the 039 `scope` envelope (FR-008).
+   */
+  proposed_pending?: ProposedPending;
 }
 
 /**
@@ -487,7 +542,33 @@ function assembleResponse(p: AssembleArgs): SearchResponse {
     );
     if (hint) response.scope_hint = hint;
   }
+  // 040/#226 — attach the draft-backlog block when present. Omission (undefined)
+  // is the honest signal on offline / cross-project / cross-org / failure paths.
+  if (p.proposed_pending) response.proposed_pending = p.proposed_pending;
   return response;
+}
+
+/**
+ * 040/#226 — build the `proposed_pending` draft-backlog block for the active
+ * project. Thin adapter over the shared `resolveProposedPendingBlock`
+ * (finding #8) — maps `SearchArgs.all_projects` into the shared input shape.
+ */
+function buildProposedPendingBlock(p: {
+  config: ValisConfig;
+  configOverride: ServerConfig | undefined;
+  args: SearchArgs;
+  projectId: string | undefined;
+  isCrossOrgRead: boolean;
+  similarityById?: Map<string, number>;
+}): Promise<ProposedPending | undefined> {
+  return resolveProposedPendingBlock({
+    config: p.config,
+    configOverride: p.configOverride,
+    allProjects: p.args.all_projects,
+    projectId: p.projectId,
+    isCrossOrgRead: p.isCrossOrgRead,
+    similarityById: p.similarityById,
+  });
 }
 
 /**

@@ -54,7 +54,7 @@ beforeEach(() => {
 describe('chooseSearchTransport', () => {
   it('selects proxy transport when auth_mode=jwt and hosted', () => {
     mockIsHostedMode.mockReturnValueOnce(true);
-    mockProxySearch.mockResolvedValueOnce([]);
+    mockProxySearch.mockResolvedValueOnce({ results: [] });
     const transport = chooseSearchTransport({ ...baseConfig, auth_mode: 'jwt' });
 
     return transport.search('q', {}).then(() => {
@@ -91,20 +91,20 @@ describe('proxy transport', () => {
     const fixture: SearchResult[] = [
       { id: 'a', score: 0.9, type: 'decision', summary: 's', detail: 'd', status_label: 'active', status: 'active' } as SearchResult,
     ];
-    mockProxySearch.mockResolvedValueOnce(fixture);
+    mockProxySearch.mockResolvedValueOnce({ results: fixture });
 
     const transport = createProxyTransport({
       ...baseConfig,
       auth_mode: 'jwt',
       member_id: 'mem-1',
     });
-    const results = await transport.search('q', {
+    const out = await transport.search('q', {
       type: 'decision',
       projectId: 'proj-1',
       all_projects: true,
     });
 
-    expect(results).toEqual(fixture);
+    expect(out.results).toEqual(fixture);
     expect(mockProxySearch).toHaveBeenCalledWith(
       expect.objectContaining({ org_id: 'org-1' }),
       'q',
@@ -117,6 +117,33 @@ describe('proxy transport', () => {
       }),
     );
   });
+
+  it('threads the server-computed proposed_pending block through (finding #2 — no client recompute)', async () => {
+    const fixture: SearchResult[] = [
+      { id: 'a', score: 0.9, type: 'decision', summary: 's', detail: 'd', status: 'active' } as SearchResult,
+    ];
+    const serverBlock = {
+      count: 4,
+      by_type: { decision: 2, pattern: 1, lesson: 1, constraint: 0 },
+      top_3: [],
+      triage_url: 'https://valis.example/projects/proj-1/decisions/triage',
+    };
+    mockProxySearch.mockResolvedValueOnce({ results: fixture, proposed_pending: serverBlock });
+
+    const transport = createProxyTransport({ ...baseConfig, auth_mode: 'jwt', member_id: 'mem-1' });
+    const out = await transport.search('q', { projectId: 'proj-1' });
+
+    // The block from the server response is surfaced verbatim — the orchestrator
+    // reuses it instead of recomputing the COUNT fan-out client-side.
+    expect(out.proposed_pending).toEqual(serverBlock);
+  });
+
+  it('leaves proposed_pending undefined when the server omitted it', async () => {
+    mockProxySearch.mockResolvedValueOnce({ results: [] });
+    const transport = createProxyTransport({ ...baseConfig, auth_mode: 'jwt', member_id: 'mem-1' });
+    const out = await transport.search('q', { all_projects: true });
+    expect(out.proposed_pending).toBeUndefined();
+  });
 });
 
 describe('direct transport', () => {
@@ -127,7 +154,7 @@ describe('direct transport', () => {
     mockHybridSearch.mockResolvedValueOnce(fixture);
 
     const transport = createDirectTransport(baseConfig);
-    const results = await transport.search('q', { projectId: 'proj-x' });
+    const { results } = await transport.search('q', { projectId: 'proj-x' });
 
     expect(mockHybridSearch).toHaveBeenCalledWith(
       expect.anything(),
@@ -151,7 +178,7 @@ describe('direct transport', () => {
     mockHybridSearchAllProjects.mockResolvedValueOnce(fixture);
 
     const transport = createDirectTransport({ ...baseConfig, member_id: 'mem-1' });
-    const results = await transport.search('q', { all_projects: true });
+    const { results } = await transport.search('q', { all_projects: true });
 
     expect(mockHybridSearchAllProjects).toHaveBeenCalledWith(
       expect.anything(),
@@ -191,7 +218,7 @@ describe('direct transport', () => {
     ] as SearchResult[]);
 
     const transport = createDirectTransport(baseConfig);
-    const results = await transport.search('q', {});
+    const { results } = await transport.search('q', {});
 
     const oldResult = results.find((r) => r.id === 'old');
     expect(oldResult?.replaced_by).toBe('new');
@@ -213,7 +240,7 @@ describe('direct transport — status-based ranking (through the port)', () => {
       { id: 'd', score: 0.5, status: 'proposed' } as SearchResult,
     ]);
     const transport = createDirectTransport(baseConfig);
-    const out = await transport.search('q', {});
+    const { results: out } = await transport.search('q', {});
     expect(out.map((r) => r.id)).toEqual(['b', 'd', 'a', 'c']);
   });
 
@@ -223,7 +250,7 @@ describe('direct transport — status-based ranking (through the port)', () => {
       { id: 'hi', score: 0.9, status: 'deprecated' } as SearchResult,
     ]);
     const transport = createDirectTransport(baseConfig);
-    const out = await transport.search('q', {});
+    const { results: out } = await transport.search('q', {});
     expect(out[0].id).toBe('hi'); // higher score wins despite worse status
   });
 });

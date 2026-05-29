@@ -44,6 +44,7 @@
     "./templates": "./dist/src/templates/index.js",
     "./templates/*.json": "./dist/src/templates/*.json",
     "./cloud/chunking": "./dist/src/cloud/chunking.js",
+    "./cloud/proposed-pending": "./dist/src/cloud/supabase/proposed-pending.js",
     "./lib/funnel-events": "./dist/src/lib/funnel-events.js",
     "./lib/project-access": "./dist/src/lib/project-access.js"
   },

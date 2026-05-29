@@ -35,7 +35,9 @@ export async function searchCommand(
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {
     try {
-      const proxyResults = await proxySearch(config, query, {
+      // 040/#226 (finding #2) — proxySearch now returns `{ results, proposed_pending }`;
+      // the CLI text view only needs the result rows.
+      const { results: proxyResults } = await proxySearch(config, query, {
         type: options.type,
         limit: 50,
         project_id: projectId ?? undefined,

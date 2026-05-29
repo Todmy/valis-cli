@@ -1,0 +1,235 @@
+/**
+ * 040/#226 — contract tests for the `proposed_pending` block on `valis_search`
+ * (US1 + omission + isolation). Asserts the block coexists with the 039 `scope`
+ * envelope (FR-008 stacking guard) and is OMITTED (never zero-filled) on the
+ * offline / cross-project / cross-org paths (FR-006).
+ *
+ * Direct-Qdrant mode (isHostedMode → false) with a service-role server override.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../src/config/store.js', () => ({
+  loadConfig: vi.fn().mockResolvedValue({
+    org_id: 'test-org-id',
+    qdrant_url: 'https://test.qdrant.io',
+    qdrant_api_key: 'test-key',
+  }),
+}));
+
+vi.mock('../../src/config/project.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({ global: null, project: null }),
+}));
+
+const POPULATED = [
+  {
+    id: 'result-1',
+    score: 0.95,
+    type: 'decision',
+    summary: 'Chose PostgreSQL',
+    detail: 'We chose PostgreSQL for user data',
+    author: 'olena',
+    affects: ['database'],
+    created_at: '2026-03-20T14:30:00Z',
+    confidence: 0.8,
+    pinned: false,
+    depends_on: [],
+  },
+];
+
+vi.mock('../../src/cloud/qdrant.js', async () => {
+  const { mmrRerank } = await vi.importActual<typeof import('../../src/cloud/qdrant/search.js')>(
+    '../../src/cloud/qdrant/search.js',
+  );
+  const rows = [
+    {
+      id: 'result-1',
+      score: 0.95,
+      type: 'decision',
+      summary: 'Chose PostgreSQL',
+      detail: 'We chose PostgreSQL for user data',
+      author: 'olena',
+      affects: ['database'],
+      created_at: '2026-03-20T14:30:00Z',
+      confidence: 0.8,
+      pinned: false,
+      depends_on: [],
+    },
+  ];
+  return {
+    getQdrantClient: vi.fn().mockReturnValue({}),
+    hybridSearch: vi.fn().mockResolvedValue(rows),
+    hybridSearchAllProjects: vi.fn().mockResolvedValue(rows),
+    mmrRerank,
+  };
+});
+
+vi.mock('../../src/billing/usage.js', () => ({
+  checkUsageBeforeSearch: vi.fn().mockResolvedValue({ allowed: true }),
+  incrementUsage: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Per-project draft counts: project-A → 7, project-B → 0, project-C → 3.
+// Inlined inside the hoisted mock factory below (vi.mock cannot reference
+// top-level vars). All fixture drafts are decisions.
+vi.mock('../../src/cloud/supabase.js', () => {
+  const draftsByProject: Record<string, number> = {
+    'project-A': 7,
+    'project-B': 0,
+    'project-C': 3,
+  };
+  function mockCountClient() {
+    function builder() {
+      const state: { projectId?: string; isDecisionBucket: boolean; typeEq?: string } = {
+        isDecisionBucket: false,
+      };
+      const chain: Record<string, unknown> = {};
+      const ret = () => chain;
+      chain.select = () => ret();
+      chain.eq = (col: string, val: unknown) => {
+        if (col === 'project_id') state.projectId = val as string;
+        if (col === 'type') state.typeEq = val as string;
+        return ret();
+      };
+      chain.or = () => ret();
+      chain.in = () => {
+        state.isDecisionBucket = true;
+        return ret();
+      };
+      chain.order = () => ret();
+      chain.limit = (n: number) => {
+        const total = draftsByProject[state.projectId ?? ''] ?? 0;
+        const rows = Array.from({ length: Math.min(n, total) }, (_v, i) => ({
+          id: `${state.projectId}-draft-${i}`,
+          type: 'decision',
+          summary: `draft ${i}`,
+        }));
+        return Promise.resolve({ data: rows, error: null, count: null });
+      };
+      chain.then = (resolve: (v: unknown) => void) => {
+        const total = draftsByProject[state.projectId ?? ''] ?? 0;
+        let count = total;
+        if (state.typeEq && state.typeEq !== 'decision') count = 0;
+        resolve({ count, data: null, error: null });
+      };
+      return chain;
+    }
+    return { from: vi.fn(() => builder()) };
+  }
+  return {
+    getSupabaseClient: vi.fn(() => mockCountClient()),
+    getSupabaseJwtClient: vi.fn(() => mockCountClient()),
+    getDecisionsByIds: vi.fn().mockResolvedValue([]),
+    listMemberProjects: vi.fn().mockResolvedValue([
+      { id: 'project-A', name: 'Alpha', role: 'project_member', decision_count: 3 },
+      { id: 'project-B', name: 'Beta', role: 'project_member', decision_count: 1 },
+      { id: 'project-C', name: 'Gamma', role: 'project_member', decision_count: 0 },
+    ]),
+  };
+});
+
+vi.mock('../../src/lib/project-access.js', () => ({
+  canReadProject: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock('../../src/cloud/supabase/audit.js', () => ({
+  storeAuditEntry: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../../src/cloud/api-url.js', () => ({
+  isHostedMode: vi.fn().mockReturnValue(false),
+}));
+
+import { handleSearch } from '../../src/mcp/tools/search.js';
+import { hybridSearch } from '../../src/cloud/qdrant.js';
+
+const serverOverride = {
+  org_id: 'test-org-id',
+  member_id: 'member-1',
+  author_name: 'Test',
+  role: 'project_admin',
+  auth_mode: 'jwt' as const,
+  supabase_url: 'https://test.supabase.co',
+  supabase_service_role_key: 'srv-key',
+  qdrant_url: 'https://test.qdrant.io',
+  qdrant_api_key: 'test-key',
+  api_key: 'tok',
+  member_api_key: 'tok',
+  project_id: 'project-A',
+};
+
+beforeEach(() => {
+  vi.mocked(hybridSearch).mockResolvedValue(POPULATED);
+});
+
+describe('handleSearch — proposed_pending (US1)', () => {
+  it('attaches count + triage_url for a healthy single-project call', async () => {
+    const res = await handleSearch({ query: 'database' }, serverOverride);
+    expect(res.proposed_pending).toBeDefined();
+    expect(res.proposed_pending!.count).toBe(7);
+    expect(res.proposed_pending!.triage_url).toMatch(/\/projects\/project-A\/decisions\/triage$/);
+  });
+
+  it('coexists with the 039 scope envelope (FR-008 — both independent top-level keys)', async () => {
+    const res = await handleSearch({ query: 'database' }, serverOverride);
+    expect(res.scope).toBeDefined();
+    expect(res.scope!.active_project.id).toBe('project-A');
+    expect(res.proposed_pending).toBeDefined();
+  });
+
+  it('emits count: 0 with empty top_3 on a healthy zero-draft project (not omitted)', async () => {
+    const res = await handleSearch(
+      { query: 'database' },
+      { ...serverOverride, project_id: 'project-B' },
+    );
+    expect(res.proposed_pending).toBeDefined();
+    expect(res.proposed_pending!.count).toBe(0);
+    expect(res.proposed_pending!.top_3).toEqual([]);
+  });
+
+  it('is still populated when the query matches no active results (project-scoped, not query-scoped)', async () => {
+    vi.mocked(hybridSearch).mockResolvedValueOnce([]);
+    const res = await handleSearch({ query: 'no match' }, serverOverride);
+    expect(res.results).toHaveLength(0);
+    expect(res.proposed_pending).toBeDefined();
+    expect(res.proposed_pending!.count).toBe(7);
+  });
+});
+
+describe('handleSearch — proposed_pending omission rules (FR-006)', () => {
+  it('OMITS the block on the offline path', async () => {
+    vi.mocked(hybridSearch).mockRejectedValueOnce(new Error('cloud down'));
+    const res = await handleSearch({ query: 'database' }, serverOverride);
+    expect(res.offline).toBe(true);
+    expect(res.proposed_pending).toBeUndefined();
+  });
+
+  it('OMITS the block on a cross-project (all_projects) call', async () => {
+    const res = await handleSearch({ query: 'database', all_projects: true }, serverOverride);
+    expect(res.proposed_pending).toBeUndefined();
+  });
+
+  it('OMITS the block on a cross-org target_project_id read', async () => {
+    const res = await handleSearch(
+      { query: 'database', target_project_id: 'project-C' },
+      serverOverride,
+    );
+    expect(res.proposed_pending).toBeUndefined();
+  });
+
+  it('OMITS the block on the project_scope_required fail-closed path', async () => {
+    const noProject = { ...serverOverride, project_id: undefined as unknown as string };
+    const res = await handleSearch({ query: 'database' }, noProject);
+    expect(res.error).toBe('project_scope_required');
+    expect(res.proposed_pending).toBeUndefined();
+  });
+});
+
+describe('handleSearch — proposed_pending project isolation (FR-009)', () => {
+  it("reflects only the active project's draft count", async () => {
+    const a = await handleSearch({ query: 'x' }, { ...serverOverride, project_id: 'project-A' });
+    const c = await handleSearch({ query: 'x' }, { ...serverOverride, project_id: 'project-C' });
+    expect(a.proposed_pending!.count).toBe(7);
+    expect(c.proposed_pending!.count).toBe(3);
+  });
+});

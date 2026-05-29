@@ -29,22 +29,25 @@ vi.mock('../../../src/cloud/qdrant.js', async () => ({
 }));
 
 vi.mock('../../../src/cloud/search-proxy.js', () => ({
-  proxySearch: vi.fn().mockResolvedValue([
-    {
-      id: 'ctx-1',
-      score: 0.9,
-      type: 'decision',
-      summary: 'Context decision',
-      detail: 'Body',
-      author: 'publisher',
-      affects: ['ux'],
-      created_at: '2026-05-01T12:00:00Z',
-      confidence: 0.9,
-      pinned: false,
-      depends_on: [],
-      status: 'active',
-    },
-  ]),
+  // 040/#226 (finding #2) — proxySearch now returns `{ results, proposed_pending }`.
+  proxySearch: vi.fn().mockResolvedValue({
+    results: [
+      {
+        id: 'ctx-1',
+        score: 0.9,
+        type: 'decision',
+        summary: 'Context decision',
+        detail: 'Body',
+        author: 'publisher',
+        affects: ['ux'],
+        created_at: '2026-05-01T12:00:00Z',
+        confidence: 0.9,
+        pinned: false,
+        depends_on: [],
+        status: 'active',
+      },
+    ],
+  }),
 }));
 
 vi.mock('../../../src/cloud/api-url.js', () => ({

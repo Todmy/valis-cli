@@ -18,6 +18,7 @@ import type {
   ServerConfig,
   ValisConfig,
   DecisionStatus,
+  ProposedPending,
 } from '../../types.js';
 
 export interface SearchTransportOptions {
@@ -37,6 +38,19 @@ export interface SearchTransportOptions {
   payload_filter?: { must: unknown[] };
 }
 
+/**
+ * 040/#226 (finding #2) — the transport return now carries the optional
+ * server-computed `proposed_pending` block alongside the results. The proxy
+ * adapter populates it from the `/api/search` response so the orchestrator can
+ * reuse the server value rather than recomputing the COUNT fan-out
+ * client-side. The direct adapter leaves it `undefined` — the orchestrator
+ * computes it in-process via the Supabase COUNT helper in that mode.
+ */
+export interface SearchTransportResult {
+  results: SearchResult[];
+  proposed_pending?: ProposedPending;
+}
+
 export interface SearchTransport {
   /**
    * Returns SearchResults that the orchestrator can pass directly to
@@ -47,7 +61,7 @@ export interface SearchTransport {
    * Throws on cloud unreachability — orchestrator translates to the
    * `offline: true` envelope.
    */
-  search(query: string, options: SearchTransportOptions): Promise<SearchResult[]>;
+  search(query: string, options: SearchTransportOptions): Promise<SearchTransportResult>;
 }
 
 /** Status priority for ranking: lower = higher priority. */
@@ -122,13 +136,16 @@ function enrichRow(
 export function createProxyTransport(config: ValisConfig): SearchTransport {
   return {
     async search(query, options) {
-      return proxySearch(config, query, {
+      // finding #2 — pass the server-computed `proposed_pending` straight
+      // through; the orchestrator reuses it instead of a second COUNT fan-out.
+      const { results, proposed_pending } = await proxySearch(config, query, {
         type: options.type,
         limit: 50,
         project_id: options.projectId,
         all_projects: options.all_projects,
         member_id: config.member_id ?? undefined,
       });
+      return { results, proposed_pending };
     },
   };
 }
@@ -202,7 +219,9 @@ export function createDirectTransport(
         raw as Array<SearchResult & { replaces?: string | null }>,
       );
       const enriched = raw.map((r) => enrichRow(r, replacedByMap, projectNameMap));
-      return rankByStatus(enriched);
+      // finding #2 — direct mode leaves `proposed_pending` undefined; the
+      // orchestrator computes it in-process (no server round-trip to reuse).
+      return { results: rankByStatus(enriched) };
     },
   };
 }

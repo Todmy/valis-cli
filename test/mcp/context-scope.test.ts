@@ -124,7 +124,7 @@ beforeEach(() => {
 describe('handleContext — scope envelope (US1)', () => {
   it('attaches scope on the hosted-proxy path', async () => {
     vi.mocked(isHostedMode).mockReturnValue(true);
-    vi.mocked(proxySearch).mockResolvedValue(POPULATED);
+    vi.mocked(proxySearch).mockResolvedValue({ results: POPULATED });
     const res = await handleContext({ task_description: 'build auth' }, buildServerConfig());
     expect(res.scope).toBeDefined();
     expect(res.scope!.active_project).toEqual({ id: 'project-A', name: 'Alpha' });
@@ -158,7 +158,7 @@ describe('handleContext — scope envelope (US1)', () => {
 describe('handleContext — scope_hint (US2)', () => {
   it('emits scope_hint on empty results with >1 accessible project (proxy path)', async () => {
     vi.mocked(isHostedMode).mockReturnValue(true);
-    vi.mocked(proxySearch).mockResolvedValue([]);
+    vi.mocked(proxySearch).mockResolvedValue({ results: [] });
     const res = await handleContext({ task_description: 'nothing matches' }, buildServerConfig());
     expect(res.scope_hint).toBeDefined();
     expect(res.scope_hint).toContain('all_projects');
@@ -220,7 +220,7 @@ describe('handleContext — all_projects with no resolvable project scope (findi
 
   it('emits a scope envelope with active_project: null on the hosted-proxy path', async () => {
     vi.mocked(isHostedMode).mockReturnValue(true);
-    vi.mocked(proxySearch).mockResolvedValue(POPULATED);
+    vi.mocked(proxySearch).mockResolvedValue({ results: POPULATED });
     const overrideNoProject = buildServerConfig({ project_id: undefined as unknown as string });
     const res = await handleContext(
       { task_description: 'build auth', all_projects: true },
@@ -236,7 +236,7 @@ describe('handleContext — all_projects with no resolvable project scope (findi
 describe('handleContext — cross-org target name (finding #1)', () => {
   it('names a granted target_project_id absent from memberships on the proxy path', async () => {
     vi.mocked(isHostedMode).mockReturnValue(true);
-    vi.mocked(proxySearch).mockResolvedValue(POPULATED);
+    vi.mocked(proxySearch).mockResolvedValue({ results: POPULATED });
     const res = await handleContext(
       { task_description: 'build auth', target_project_id: 'project-X' },
       buildServerConfig(),

@@ -631,6 +631,37 @@ export interface ProjectScopeMismatch {
  * - `queried_all_projects` — whether the call spanned every accessible
  *   project (i.e. `all_projects: true`).
  */
+/**
+ * 040/#226 — derived, read-only projection over the `decisions` table for ONE
+ * project: the unreviewed draft backlog (`status = 'proposed'`, plus legacy
+ * `type = 'pending'` rows normalized into the `decision` bucket). Attached as
+ * an independent top-level key on `SearchResponse` / `ContextResponse`. Never
+ * persisted — computed per response. OMITTED (key absent), never zero-filled,
+ * when the parent path is offline / cross-project / cross-org or the COUNT
+ * fails (FR-006). `count` MUST come from a server-side exact COUNT, never a
+ * `.length` over a fetched set (lesson `104083be`).
+ */
+export interface ProposedPending {
+  /** Total `proposed`/legacy-`pending` decisions in the active project (exact COUNT). */
+  count: number;
+  /** Per-type partition; the four counts sum to `count` (FR-003). */
+  by_type: {
+    decision: number;
+    pattern: number;
+    lesson: number;
+    constraint: number;
+  };
+  /** ≤3 preview rows. `similarity` is `null` when no semantic score is available (FR-004). */
+  top_3: Array<{
+    id: string;
+    type: string;
+    summary: string;
+    similarity: number | null;
+  }>;
+  /** Deep-link to the dashboard triage view, or `null` when no origin is resolvable (FR-005). */
+  triage_url: string | null;
+}
+
 export interface ScopeEnvelope {
   active_project: { id: string; name: string | null } | null;
   accessible_projects: Array<{ id: string; name: string }>;
@@ -661,6 +692,13 @@ export interface SearchResponse {
   filter_dim_used?: string[];
   /** Note emitted when `query_mode: metadata_only` ignores a non-empty query string. */
   mode_note?: 'query_string_ignored_in_metadata_mode';
+  /**
+   * 040/#226 — unreviewed draft backlog for the single active project. Additive,
+   * independent of the 039 `scope` envelope (both coexist as separate top-level
+   * keys). OMITTED on offline / cross-project / cross-org / COUNT-failure paths
+   * (FR-006); `{ count: 0, top_3: [] }` on a healthy zero-draft single-project call.
+   */
+  proposed_pending?: ProposedPending;
   /**
    * 039/#94 — explicit scope descriptor naming the active project, the
    * member's accessible projects, and whether the query spanned all of
@@ -732,6 +770,12 @@ export interface ContextResponse {
    * (historical excluded — superseded/deprecated rows are not "results").
    */
   scope_hint?: string;
+  /**
+   * 040/#226 — unreviewed draft backlog for the single active project. Same
+   * shape + omission semantics as `SearchResponse.proposed_pending`. Additive,
+   * independent of the 039 `scope` envelope (both coexist as separate keys).
+   */
+  proposed_pending?: ProposedPending;
 }
 
 export interface DashboardStats {

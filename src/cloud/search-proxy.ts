@@ -6,7 +6,7 @@
  * so all search traffic goes through the server-side proxy.
  */
 
-import type { SearchResult, ValisConfig } from '../types.js';
+import type { ProposedPending, SearchResult, ValisConfig } from '../types.js';
 import { resolveApiUrl, isHostedMode } from '../cloud/api-url.js';
 import { getToken } from '../auth/jwt.js';
 
@@ -19,16 +19,31 @@ export interface ProxySearchOptions {
 }
 
 /**
+ * 040/#226 (finding #2) — the proxy return now threads the server-computed
+ * `proposed_pending` block back to the orchestrator. `/api/search` already
+ * runs the truncation-proof COUNT server-side (service-role, explicit
+ * org_id+project_id filter); discarding it here forced `handleSearch` to
+ * recompute the same 6 round-trips client-side. Threading it through lets the
+ * orchestrator reuse the server value verbatim. `undefined` when the server
+ * omitted it (cross-project / no scope / COUNT failure — FR-006).
+ */
+export interface ProxySearchResult {
+  results: SearchResult[];
+  proposed_pending?: ProposedPending;
+}
+
+/**
  * Perform a search via the hosted API proxy.
  *
  * Gets a JWT via token exchange, then POSTs to /api/search on the
- * Vercel deployment. Returns parsed SearchResult[] or empty array on failure.
+ * Vercel deployment. Returns parsed results + the server-computed
+ * `proposed_pending` block, or `{ results: [] }` on failure.
  */
 export async function proxySearch(
   config: ValisConfig,
   query: string,
   options: ProxySearchOptions = {},
-): Promise<SearchResult[]> {
+): Promise<ProxySearchResult> {
   // Get JWT for authentication
   const apiKey = config.member_api_key || config.api_key;
   const tokenCache = await getToken(
@@ -39,7 +54,7 @@ export async function proxySearch(
 
   if (!tokenCache) {
     console.error('[valis] Search proxy: could not obtain JWT');
-    return [];
+    return { results: [] };
   }
 
   const isHosted = isHostedMode(config);
@@ -67,7 +82,7 @@ export async function proxySearch(
     console.error(
       `[valis] Search proxy request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return [];
+    return { results: [] };
   }
 
   if (!res.ok) {
@@ -80,16 +95,23 @@ export async function proxySearch(
     console.error(
       `[valis] Search proxy HTTP ${res.status}: ${errorText}`,
     );
-    return [];
+    return { results: [] };
   }
 
   try {
-    const data = (await res.json()) as { results: SearchResult[]; count: number };
-    return data.results ?? [];
+    const data = (await res.json()) as {
+      results: SearchResult[];
+      count: number;
+      proposed_pending?: ProposedPending;
+    };
+    // finding #2 — surface the server-computed block. `/api/search` omits the
+    // key entirely (not null) when out of scope, so `?? undefined` keeps the
+    // OMIT semantics intact (FR-006).
+    return { results: data.results ?? [], proposed_pending: data.proposed_pending };
   } catch (err) {
     console.error(
       `[valis] Search proxy response parse error: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return [];
+    return { results: [] };
   }
 }

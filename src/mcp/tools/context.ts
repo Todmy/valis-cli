@@ -3,6 +3,7 @@ import { resolveConfig } from '../../config/project.js';
 import { getQdrantClient, hybridSearch, hybridSearchAllProjects, mmrRerank } from '../../cloud/qdrant.js';
 import { getSupabaseClient, listMemberProjects } from '../../cloud/supabase.js';
 import { proxySearch } from '../../cloud/search-proxy.js';
+import { resolveProposedPendingBlock } from './proposed-pending-block.js';
 import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
@@ -17,7 +18,13 @@ import {
   type ScopeInputs,
 } from './scope.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
-import type { ContextResponse, RerankedResult, DecisionStatus, ServerConfig, ValisConfig } from '../../types.js';
+import {
+  type ContextResponse,
+  type RerankedResult,
+  type DecisionStatus,
+  type ServerConfig,
+  type ValisConfig,
+} from '../../types.js';
 
 /** Per-bucket display cap for grouped context results. */
 const CONTEXT_BUCKET_LIMIT = 20;
@@ -106,6 +113,35 @@ function attachScope(
     base.suppressed_count ?? 0,
   );
   return hint ? { ...base, scope, scope_hint: hint } : { ...base, scope };
+}
+
+/**
+ * 040/#226 — attach the `proposed_pending` draft-backlog block to a context
+ * response. Thin adapter over the shared `resolveProposedPendingBlock`
+ * (finding #8): when the block resolves it is attached additively; when the
+ * shared helper OMITS it (cross-project / cross-org / no project / COUNT
+ * failure — FR-006) the response is returned unchanged.
+ */
+async function attachProposedPending(
+  base: ContextResponse,
+  p: {
+    config: ValisConfig;
+    configOverride: ServerConfig | undefined;
+    args: ContextArgs;
+    projectId: string | undefined;
+    isCrossOrgRead: boolean;
+    similarityById?: Map<string, number>;
+  },
+): Promise<ContextResponse> {
+  const block = await resolveProposedPendingBlock({
+    config: p.config,
+    configOverride: p.configOverride,
+    allProjects: p.args.all_projects,
+    projectId: p.projectId,
+    isCrossOrgRead: p.isCrossOrgRead,
+    similarityById: p.similarityById,
+  });
+  return block ? { ...base, proposed_pending: block } : base;
 }
 
 interface ContextArgs {
@@ -205,8 +241,12 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     resolved?.project?.project_id ||
     args.project_id;
 
+  // 040/#226 — track a cross-org public-KB read; the draft-backlog block is
+  // member-only triage authority, so it is OMITTED for cross-org reads (FR-006).
+  let isCrossOrgRead = false;
   // Feature 033 — public-KB cross-org gate. Mirrors handleSearch.
   if (args.target_project_id && args.target_project_id !== projectId) {
+    isCrossOrgRead = true;
     if (
       !configOverride?.member_id ||
       !configOverride?.supabase_url ||
@@ -266,12 +306,16 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {
     try {
-      const proxyResults = await proxySearch(config, query, {
-        limit: 50,
-        project_id: projectId ?? undefined,
-        all_projects: args.all_projects,
-        member_id: config.member_id ?? undefined,
-      });
+      // finding #2 — the proxy now returns the server-computed draft-backlog
+      // block alongside the results; capture it so the hosted-proxy path reuses
+      // it verbatim instead of recomputing the COUNT fan-out client-side.
+      const { results: proxyResults, proposed_pending: serverProposedPending } =
+        await proxySearch(config, query, {
+          limit: 50,
+          project_id: projectId ?? undefined,
+          all_projects: args.all_projects,
+          member_id: config.member_id ?? undefined,
+        });
 
       // Apply reranking + suppression
       const reranked: RerankedResult[] = rerank(proxyResults);
@@ -321,6 +365,15 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         suppressed_count,
         note,
       });
+      // 040/#226 — draft-backlog block on the hosted-proxy path.
+      // finding #2 — `/api/search` already computed this block server-side
+      // (service-role + explicit org_id+project_id filter). Reuse it verbatim
+      // rather than recomputing the COUNT fan-out client-side. The same FR-006
+      // omission rules apply server-side, so `undefined` here is the honest
+      // signal for cross-project / cross-org / no-scope / COUNT-failure.
+      const proxyBaseWithDrafts: ContextResponse = serverProposedPending
+        ? { ...proxyBase, proposed_pending: serverProposedPending }
+        : proxyBase;
       // 039/#94 — scope envelope on the hosted-proxy path (the default for all
       // plugin users). finding #4 / FR-011: prefetch the membership list ONCE
       // here and thread it into the scope assembly so the proxy branch does
@@ -335,8 +388,8 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         proxyMemberships,
       );
       const proxyResponse = proxyScopeInputs
-        ? attachScope(proxyBase, proxyScopeInputs)
-        : proxyBase;
+        ? attachScope(proxyBaseWithDrafts, proxyScopeInputs)
+        : proxyBaseWithDrafts;
       return emitRecallTelemetryAndReturn(proxyResponse, config.org_id);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -507,6 +560,21 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     // `crossProjectAccessible` reuses the membership list already fetched above
     // (FR-011, finding #4) so no second RPC is issued.
     const activeProjectId = projectId ?? config.project_id ?? undefined;
+    // 040/#226 — draft-backlog block. Single-project scope only: pass the
+    // RESOLVED `projectId` (not the config fallback) so it is omitted in
+    // cross-project mode. Reuse the result scores for top_3.similarity.
+    const directSimilarityById = new Map<string, number>();
+    for (const r of reranked) {
+      if (typeof r.score === 'number') directSimilarityById.set(r.id, r.score);
+    }
+    const directBaseWithDrafts = await attachProposedPending(directBase, {
+      config,
+      configOverride,
+      args,
+      projectId,
+      isCrossOrgRead,
+      similarityById: directSimilarityById,
+    });
     const directScopeInputs = await buildScopeInputs(
       config,
       configOverride,
@@ -515,8 +583,8 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       crossProjectAccessible,
     );
     const directResponse = directScopeInputs
-      ? attachScope(directBase, directScopeInputs)
-      : directBase;
+      ? attachScope(directBaseWithDrafts, directScopeInputs)
+      : directBaseWithDrafts;
     return emitRecallTelemetryAndReturn(directResponse, config.org_id);
   } catch (err) {
     // 019/US1 (R-001, T068): server-mode (HTTP MCP transport) must NEVER emit

@@ -412,3 +412,68 @@ export async function getSimilarity(
     return 0.0;
   }
 }
+
+/**
+ * Batch variant of {@link getSimilarity}: fetch the new decision's vector and
+ * every candidate vector in a SINGLE `qdrant.retrieve` call, then compute the
+ * cosine similarity of the new decision against each candidate.
+ *
+ * This replaces the N+1 pattern in contradiction detection where the old code
+ * re-fetched the new decision's vector once per candidate. Returns a Map keyed
+ * by candidate id; candidates that are missing, belong to another org, or have
+ * no dense vector are mapped to `0.0`. On any error the returned map is empty
+ * (caller treats absent entries as "similarity unavailable").
+ */
+export async function getSimilaritiesForNewDecision(
+  qdrant: QdrantClient,
+  orgId: string,
+  newDecisionId: string,
+  candidateIds: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (candidateIds.length === 0) return out;
+
+  try {
+    // De-dup ids and exclude the new decision id from the candidate list to
+    // avoid a degenerate self-pair.
+    const uniqueCandidates = Array.from(
+      new Set(candidateIds.filter((id) => id !== newDecisionId)),
+    );
+
+    const points = await qdrant.retrieve(COLLECTION_NAME, {
+      ids: [newDecisionId, ...uniqueCandidates],
+      with_vector: true,
+      with_payload: true,
+    });
+
+    const byId = new Map(points.map((p) => [String(p.id), p]));
+
+    const newPoint = byId.get(newDecisionId);
+    if (!newPoint) return out;
+    const newPayload = newPoint.payload as Record<string, unknown> | undefined;
+    if (newPayload?.org_id !== orgId) return out;
+    const newVec = newPoint.vector;
+    if (!Array.isArray(newVec)) return out;
+    const newVecArr = newVec as number[];
+
+    for (const candidateId of uniqueCandidates) {
+      const point = byId.get(candidateId);
+      if (!point) {
+        out.set(candidateId, 0.0);
+        continue;
+      }
+      const payload = point.payload as Record<string, unknown> | undefined;
+      const vec = point.vector;
+      if (payload?.org_id !== orgId || !Array.isArray(vec)) {
+        out.set(candidateId, 0.0);
+        continue;
+      }
+      const sim = cosineSimilarity(newVecArr, vec as number[]);
+      out.set(candidateId, Math.max(0.0, Math.min(1.0, sim)));
+    }
+
+    return out;
+  } catch {
+    return new Map();
+  }
+}

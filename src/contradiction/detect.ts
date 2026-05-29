@@ -5,14 +5,51 @@ import type {
   Contradiction,
   StoreContradictionWarning,
 } from '../types.js';
-import { getSimilarity } from '../cloud/qdrant.js';
+import { getSimilaritiesForNewDecision } from '../cloud/qdrant.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Minimum cosine similarity to flag a contradiction when Qdrant is available. */
-const SIMILARITY_THRESHOLD = 0.7;
+const SIMILARITY_THRESHOLD = 0.75;
+
+/**
+ * Tier-1-only (Qdrant unavailable) precision bar. With no vector similarity to
+ * discriminate, a single shared `affects` tag is far too weak — a bulk
+ * `valis index` of N proposed decisions all tagged e.g. `postgres` would flag
+ * every O(N²) pair (issue #71 false-positive explosion). Require either a
+ * meaningful absolute overlap (≥2 shared areas) OR a high relative overlap
+ * (Jaccard ≥ {@link TIER1_JACCARD_THRESHOLD}) so two narrowly-scoped decisions
+ * sharing their only tag still flag, but broad decisions sharing one tag of
+ * many do not.
+ */
+const TIER1_MIN_OVERLAP_AREAS = 2;
+
+/** Jaccard cutoff (intersection/union of affects) for the single-overlap case. */
+const TIER1_JACCARD_THRESHOLD = 0.5;
+
+/** Max candidate decisions to fetch + compare on the store hot path. */
+const CANDIDATE_FETCH_LIMIT = 200;
+
+/**
+ * Decide whether a Tier-1-only (no Qdrant similarity) pair clears the
+ * false-positive bar. ≥2 shared areas, or a single shared area that dominates
+ * the combined tag set (Jaccard ≥ threshold).
+ */
+function passesTier1Bar(newAffects: string[], candidateAffects: string[]): boolean {
+  const a = new Set(newAffects);
+  const b = new Set(candidateAffects);
+  let intersection = 0;
+  for (const area of a) {
+    if (b.has(area)) intersection++;
+  }
+  if (intersection >= TIER1_MIN_OVERLAP_AREAS) return true;
+  if (intersection === 0) return false;
+  const union = new Set([...a, ...b]).size;
+  const jaccard = union === 0 ? 0 : intersection / union;
+  return jaccard >= TIER1_JACCARD_THRESHOLD;
+}
 
 // ---------------------------------------------------------------------------
 // T021 — Two-tier contradiction detection
@@ -20,14 +57,20 @@ const SIMILARITY_THRESHOLD = 0.7;
 
 /**
  * Detect potential contradictions between a newly stored decision and existing
- * active decisions in the same org.
+ * decisions in the same project. Detection runs for both `active` and
+ * `proposed` new decisions — `proposed` is the dominant write path (drafts
+ * queue, auto-capture, unprefixed index imports), so gating it off silently
+ * broke Constitution Principle IX for the common case (issue #71).
  *
- * **Tier 1 (always)**: Query active decisions whose `affects` arrays overlap
- * with the new decision via the Postgres `&&` (array overlap) operator.
+ * **Tier 1 (always)**: Query candidate decisions with status `active` or
+ * `proposed` whose `affects` arrays overlap with the new decision via the
+ * Postgres `&&` (array overlap) operator. `deprecated`/`superseded` decisions
+ * are resolved/retired and excluded by design.
  *
  * **Tier 2 (when Qdrant available)**: For each candidate, compute cosine
- * similarity in Qdrant.  Flag only if similarity > 0.7.  When Qdrant is
- * unavailable, area overlap alone is sufficient (Tier 1 only).
+ * similarity in Qdrant.  Flag only if similarity > {@link SIMILARITY_THRESHOLD}
+ * (0.75).  When Qdrant is unavailable, area overlap alone is sufficient
+ * (Tier 1 only).
  *
  * Detected contradictions are inserted into the `contradictions` table with
  * ordered pairs (smaller UUID as `decision_a_id`) to prevent duplicates.
@@ -47,10 +90,8 @@ export async function detectContradictions(
     return warnings;
   }
 
-  // Only compare against active decisions
-  if (newDecision.status !== 'active') {
-    return warnings;
-  }
+  // NOTE (#71): No status gate on the NEW decision. Detection must run for
+  // `proposed` writes (the default path), not only `active` ones.
 
   // T026: Resolve project_id from the decision — contradictions are scoped within
   // a single project. Cross-project contradictions are not possible by design.
@@ -60,43 +101,38 @@ export async function detectContradictions(
   // Tier 1: Find candidates with overlapping affects via SQL &&
   // ------------------------------------------------------------------
 
+  // NOTE (#71): the previous code first tried a `find_contradiction_candidates`
+  // RPC that is NOT defined in any migration (migration 004 defines a different
+  // `find_contradictions` with an incompatible signature). That RPC always
+  // failed, so EVERY store paid a guaranteed-failing round-trip before falling
+  // back to this query. There is exactly ONE candidate-status source of truth:
+  // a direct `decisions` query filtered to `active`+`proposed`. Do NOT
+  // reintroduce a status='active'-only path.
   let candidates: Decision[];
   try {
-    const rpcParams: Record<string, unknown> = {
-      p_org_id: orgId,
-      p_affects: newDecision.affects,
-      p_exclude_id: newDecision.id,
-      p_project_id: projectId || null,
-    };
+    let query = supabase
+      .from('decisions')
+      // Only the columns the detection loop + warnings need — `select('*')`
+      // pulled the full row (including large `detail`/embeddings) per candidate.
+      .select('id,affects,summary,author,detail')
+      .eq('org_id', orgId)
+      .in('status', ['active', 'proposed'])
+      .neq('id', newDecision.id)
+      .overlaps('affects', newDecision.affects)
+      .limit(CANDIDATE_FETCH_LIMIT);
 
-    const { data, error } = await supabase.rpc('find_contradiction_candidates', rpcParams);
+    // T026: Scope candidate query to project
+    if (projectId) {
+      query = query.eq('project_id', projectId);
+    }
+
+    const { data, error } = await query;
 
     if (error) throw error;
     candidates = (data || []) as Decision[];
   } catch {
-    // RPC may not exist yet — fall back to client-side filtering
-    try {
-      let query = supabase
-        .from('decisions')
-        .select('*')
-        .eq('org_id', orgId)
-        .eq('status', 'active')
-        .neq('id', newDecision.id)
-        .overlaps('affects', newDecision.affects);
-
-      // T026: Scope fallback query to project
-      if (projectId) {
-        query = query.eq('project_id', projectId);
-      }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
-      candidates = (data || []) as Decision[];
-    } catch {
-      // If both approaches fail, skip contradiction detection
-      return warnings;
-    }
+    // If the candidate query fails, skip contradiction detection
+    return warnings;
   }
 
   if (candidates.length === 0) {
@@ -107,6 +143,21 @@ export async function detectContradictions(
   // Tier 2: Compute similarity + insert contradictions
   // ------------------------------------------------------------------
 
+  // Batch-retrieve every candidate vector (plus the new decision's vector) in
+  // ONE Qdrant round-trip rather than one retrieve per candidate (N+1). An
+  // empty map means Qdrant was unavailable / errored → Tier-1-only path.
+  let similarityById = new Map<string, number>();
+  let qdrantAvailable = false;
+  if (qdrant) {
+    similarityById = await getSimilaritiesForNewDecision(
+      qdrant,
+      orgId,
+      newDecision.id,
+      candidates.map((c) => c.id),
+    );
+    qdrantAvailable = similarityById.size > 0;
+  }
+
   for (const candidate of candidates) {
     // Compute overlap areas between the two decisions
     const overlapAreas = (newDecision.affects || []).filter((area) =>
@@ -115,24 +166,21 @@ export async function detectContradictions(
 
     if (overlapAreas.length === 0) continue;
 
-    let similarity = 0;
-    let qdrantAvailable = false;
+    // similarity is the real cosine value when Qdrant is available, else null
+    // (mirrors the DB `similarity_score` column — never a misleading 0).
+    const similarity: number | null = qdrantAvailable
+      ? similarityById.get(candidate.id) ?? 0
+      : null;
 
-    // Try Qdrant similarity if client is available
-    if (qdrant) {
-      try {
-        similarity = await getSimilarity(qdrant, orgId, newDecision.id, candidate.id);
-        qdrantAvailable = true;
-      } catch {
-        // Qdrant unavailable — proceed with Tier 1 only
-      }
-    }
-
-    // Decision: flag if (Qdrant available AND similarity > threshold) OR
-    // (Qdrant unavailable AND area overlap exists)
+    // Decision:
+    //  - Qdrant available  → flag iff cosine similarity > threshold (0.75).
+    //  - Qdrant unavailable → flag iff the affects overlap clears the Tier-1
+    //    precision bar (≥2 shared areas or Jaccard ≥ 0.5). A single shared tag
+    //    out of many is NOT enough — that path caused the bulk-index
+    //    false-positive explosion (#71).
     const shouldFlag = qdrantAvailable
-      ? similarity > SIMILARITY_THRESHOLD
-      : true; // area overlap alone is sufficient when Qdrant is unavailable
+      ? (similarity as number) > SIMILARITY_THRESHOLD
+      : passesTier1Bar(newDecision.affects || [], candidate.affects || []);
 
     if (!shouldFlag) continue;
 
@@ -174,7 +222,9 @@ export async function detectContradictions(
         decision_a_id: decisionAId,
         decision_b_id: decisionBId,
         overlap_areas: overlapAreas,
-        similarity_score: qdrantAvailable ? similarity : null,
+        // `similarity` is already null on the Tier-1-only path, so the
+        // in-memory warning, the audit event, and this DB row all agree.
+        similarity_score: similarity,
         status: 'open',
       };
       if (projectId) {

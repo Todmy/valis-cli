@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   runStoreSideEffects,
   sideEffectOutput,
+  STORE_SIDE_EFFECTS,
   type StoreSideEffect,
   type StoreSideEffectContext,
 } from '../../../src/mcp/tools/store-side-effects.js';
@@ -103,6 +104,106 @@ describe('runStoreSideEffects', () => {
     // If serial we'd see ~150ms; parallel should land around 50ms plus a
     // healthy safety margin to keep CI stable on slow runners.
     expect(elapsed).toBeLessThan(120);
+  });
+
+  // Fix 1 (#71 race): an effect with `dependsOn` must not start until its
+  // dependency has fully settled. This is what guarantees contradiction
+  // detection reads an already-upserted Qdrant vector.
+  it('holds a dependent effect until its dependency settles', async () => {
+    const order: string[] = [];
+    const effects: StoreSideEffect[] = [
+      {
+        name: 'qdrant-write',
+        async run() {
+          await new Promise((r) => setTimeout(r, 40));
+          order.push('qdrant-write:done');
+        },
+      },
+      {
+        name: 'contradiction-detect',
+        dependsOn: ['qdrant-write'],
+        async run() {
+          order.push('contradiction-detect:start');
+        },
+      },
+    ];
+    await runStoreSideEffects(effects, fakeCtx);
+    // The dependent must START only after the dependency is DONE.
+    expect(order).toEqual(['qdrant-write:done', 'contradiction-detect:start']);
+  });
+
+  // Dependency ordering must hold even when the dependency is declared LATER
+  // in the array than the dependent (order-independent registration).
+  it('resolves a dependency declared after the dependent', async () => {
+    const order: string[] = [];
+    const effects: StoreSideEffect[] = [
+      {
+        name: 'dependent',
+        dependsOn: ['producer'],
+        async run() {
+          order.push('dependent:start');
+        },
+      },
+      {
+        name: 'producer',
+        async run() {
+          await new Promise((r) => setTimeout(r, 30));
+          order.push('producer:done');
+        },
+      },
+    ];
+    await runStoreSideEffects(effects, fakeCtx);
+    expect(order).toEqual(['producer:done', 'dependent:start']);
+  });
+
+  // A dependent still runs even if its dependency FAILS (settle = ok/failed),
+  // so a Qdrant-write failure does not silently skip contradiction detection.
+  it('runs a dependent after a failed dependency settles', async () => {
+    const order: string[] = [];
+    const effects: StoreSideEffect[] = [
+      {
+        name: 'producer',
+        async run() {
+          await new Promise((r) => setTimeout(r, 20));
+          order.push('producer:failed');
+          throw new Error('boom');
+        },
+      },
+      {
+        name: 'dependent',
+        dependsOn: ['producer'],
+        async run() {
+          order.push('dependent:ran');
+        },
+      },
+    ];
+    const results = await runStoreSideEffects(effects, fakeCtx);
+    expect(order).toEqual(['producer:failed', 'dependent:ran']);
+    expect(results.get('producer')!.status).toBe('failed');
+    expect(results.get('dependent')!.status).toBe('ok');
+  });
+
+  // Production wiring: the real registry must declare the qdrant-write →
+  // contradiction-detect edge so detection never reads an unindexed vector.
+  it('wires contradiction-detect to depend on qdrant-write in the default registry', () => {
+    const detect = STORE_SIDE_EFFECTS.find((e) => e.name === 'contradiction-detect');
+    expect(detect).toBeDefined();
+    expect(detect!.dependsOn).toContain('qdrant-write');
+  });
+
+  // An unknown dependency name must not deadlock the bus.
+  it('does not deadlock on an unknown dependency name', async () => {
+    const effects: StoreSideEffect[] = [
+      {
+        name: 'lonely',
+        dependsOn: ['does-not-exist'],
+        async run() {
+          return 'ok';
+        },
+      },
+    ];
+    const results = await runStoreSideEffects(effects, fakeCtx);
+    expect(results.get('lonely')!.status).toBe('ok');
   });
 
   it('captures non-Error throws as Error instances', async () => {

@@ -193,7 +193,13 @@ export interface StoreContradictionWarning {
   summary: string;
   author: string;
   overlap_areas: string[];
-  similarity: number;
+  /**
+   * Cosine similarity in [0,1] when Qdrant was available; `null` when the
+   * pair was flagged on the Tier-1 (area-overlap) path with no vector
+   * similarity computed. Mirrors `contradictions.similarity_score` in
+   * Postgres — never a misleading `0`.
+   */
+  similarity: number | null;
 }
 
 /** Supersession detail returned when `replaces` triggers a transition. */

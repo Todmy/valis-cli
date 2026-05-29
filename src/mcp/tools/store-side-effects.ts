@@ -175,6 +175,18 @@ export interface StoreSideEffect<T = unknown> {
   name: string;
   /** Conditional gate — skipped adapters are recorded with status='skipped'. */
   shouldRun?(ctx: StoreSideEffectContext): boolean;
+  /**
+   * Names of other adapters that MUST complete before this one runs. The bus
+   * still dispatches in parallel, but an adapter listing a dependency is held
+   * back until every named dependency has settled (ok / failed / skipped).
+   *
+   * This is required for correctness, not just ordering: contradiction
+   * detection reads the new decision's vector from Qdrant, so it MUST run after
+   * `qdrant-write` has upserted that vector — otherwise `getSimilarity` reads a
+   * not-yet-indexed point, returns 0.0, and silently drops the contradiction
+   * on the Qdrant-present path (issue #71 race).
+   */
+  dependsOn?: string[];
   run(ctx: StoreSideEffectContext): Promise<T | void>;
 }
 
@@ -273,6 +285,10 @@ const channelPushEffect: StoreSideEffect = {
 
 const contradictionDetectEffect: StoreSideEffect<StoreContradictionWarning[]> = {
   name: 'contradiction-detect',
+  // Must run AFTER the new decision's vector is upserted to Qdrant, otherwise
+  // similarity reads a missing point (returns 0.0) and the contradiction is
+  // silently dropped on the Qdrant-present path (#71 race).
+  dependsOn: ['qdrant-write'],
   async run(ctx) {
     // Qdrant client is optional here — detectContradictions falls back to
     // Tier 1 (area overlap) when Qdrant is unavailable.
@@ -441,9 +457,12 @@ export const STORE_SIDE_EFFECTS: StoreSideEffect[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Run all eligible side-effects in parallel. Each adapter is isolated:
- * failures become structured `StoreSideEffectResult` entries, never thrown.
- * Returns a name-keyed map so callers can extract per-adapter output.
+ * Run all eligible side-effects, respecting `dependsOn` ordering. Adapters with
+ * no declared dependency run in parallel; an adapter that declares dependencies
+ * is held until each named dependency has settled (regardless of ok/failed/
+ * skipped). Each adapter is isolated: failures become structured
+ * `StoreSideEffectResult` entries, never thrown. Returns a name-keyed map so
+ * callers can extract per-adapter output.
  */
 export async function runStoreSideEffects(
   effects: StoreSideEffect[],
@@ -451,37 +470,67 @@ export async function runStoreSideEffects(
 ): Promise<Map<string, StoreSideEffectResult>> {
   const results = new Map<string, StoreSideEffectResult>();
 
-  await Promise.allSettled(
-    effects.map(async (effect) => {
-      if (effect.shouldRun && !effect.shouldRun(ctx)) {
-        results.set(effect.name, {
-          name: effect.name,
-          status: 'skipped',
-          durationMs: 0,
-        });
-        return;
-      }
+  // One promise per effect that resolves when that effect has fully settled.
+  // Dependent effects await their dependencies' settle-promises before running,
+  // which serializes only the declared edges and keeps the rest parallel.
+  // A `start` gate ensures every settle-promise is registered before any
+  // effect reads its dependencies — so a dependency declared LATER in the
+  // array is still resolvable (order-independent).
+  const settled = new Map<string, Promise<void>>();
+  let releaseStart!: () => void;
+  const start = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
 
-      const startedAt = Date.now();
-      try {
-        const output = await effect.run(ctx);
-        results.set(effect.name, {
-          name: effect.name,
-          status: 'ok',
-          durationMs: Date.now() - startedAt,
-          output: output ?? undefined,
-        });
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        results.set(effect.name, {
-          name: effect.name,
-          status: 'failed',
-          durationMs: Date.now() - startedAt,
-          error,
-        });
-      }
-    }),
-  );
+  const runOne = async (effect: StoreSideEffect): Promise<void> => {
+    await start;
+    // Wait for declared dependencies to settle first. Unknown dependency names
+    // are ignored (defensive — a typo must not deadlock the bus).
+    if (effect.dependsOn && effect.dependsOn.length > 0) {
+      await Promise.all(
+        effect.dependsOn
+          .map((dep) => settled.get(dep))
+          .filter((p): p is Promise<void> => p !== undefined),
+      );
+    }
+
+    if (effect.shouldRun && !effect.shouldRun(ctx)) {
+      results.set(effect.name, {
+        name: effect.name,
+        status: 'skipped',
+        durationMs: 0,
+      });
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const output = await effect.run(ctx);
+      results.set(effect.name, {
+        name: effect.name,
+        status: 'ok',
+        durationMs: Date.now() - startedAt,
+        output: output ?? undefined,
+      });
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      results.set(effect.name, {
+        name: effect.name,
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        error,
+      });
+    }
+  };
+
+  // Register every effect's settle-promise up front so dependents can await
+  // dependencies declared later in the array, then release the start gate.
+  for (const effect of effects) {
+    settled.set(effect.name, runOne(effect));
+  }
+  releaseStart();
+
+  await Promise.allSettled(settled.values());
 
   return results;
 }

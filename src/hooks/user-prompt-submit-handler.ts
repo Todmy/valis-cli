@@ -64,6 +64,8 @@ interface PerPromptOverrides {
   per_prompt_augmentation?: boolean;
   per_prompt_threshold?: number;
   per_prompt_budget?: number;
+  /** #242: backend-search hard timeout in ms. Default 2500 (augment.ts). */
+  per_prompt_timeout_ms?: number;
 }
 
 interface CaptureReminderOverrides {
@@ -83,6 +85,8 @@ function readOverrides(raw: Record<string, unknown>): PerPromptOverrides {
       typeof raw.per_prompt_threshold === 'number' ? raw.per_prompt_threshold : undefined,
     per_prompt_budget:
       typeof raw.per_prompt_budget === 'number' ? raw.per_prompt_budget : undefined,
+    per_prompt_timeout_ms:
+      typeof raw.per_prompt_timeout_ms === 'number' ? raw.per_prompt_timeout_ms : undefined,
   };
 }
 
@@ -365,6 +369,8 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
   if (!augmentDisabled && cfg.apiKey) {
     const threshold = projectOverrides.per_prompt_threshold ?? userOverrides.per_prompt_threshold;
     const budgetTokens = projectOverrides.per_prompt_budget ?? userOverrides.per_prompt_budget;
+    const timeoutMs =
+      projectOverrides.per_prompt_timeout_ms ?? userOverrides.per_prompt_timeout_ms;
 
     void record('prompt_search_served', {
       org_id: cfg.orgId,
@@ -377,6 +383,7 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
       projectId: marker.projectId,
       threshold,
       budgetTokens,
+      timeoutMs,
     });
 
     switch (outcome.reason) {

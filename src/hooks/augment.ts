@@ -32,7 +32,15 @@ export interface AugmentOptions {
 
 const DEFAULT_THRESHOLD = 0.4;
 const DEFAULT_BUDGET_TOKENS = 800;
-const DEFAULT_TIMEOUT_MS = 1500;
+/**
+ * #242: retuned 1500 → 2500. Telemetry (post-#177) showed ~86% of live
+ * `/api/search` calls aborting at the old 1500ms ceiling while the p50
+ * latency of a *successful* hit was 1409ms — the budget was set just below
+ * the real round-trip, so most reads were discarded. 2500ms clears the
+ * observed p95 (1580ms) with headroom, paired with the `enrich:false`
+ * hot-path below that strips three wasted server-side round-trips.
+ */
+export const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_FETCH_LIMIT = 10;
 
 function hashPrompt(prompt: string): string {
@@ -94,6 +102,12 @@ export async function augment(
         query: prompt,
         project_id: opts.projectId,
         limit: fetchLimit,
+        // #242: this path injects only `<hit>` summaries (see inject-block
+        // SearchResultRow). enrich:false tells the backend to skip the
+        // sibling-chunk scroll, violation-counter SELECT, and proposed-pending
+        // round-trips — all computed-then-discarded here. Cuts the hot path
+        // from 4 network round-trips to 1 (the irreducible hybrid query).
+        enrich: false,
       }),
       signal: controller.signal,
     });

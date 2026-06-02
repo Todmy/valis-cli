@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { augment } from '../../src/hooks/augment.js';
+import { augment, DEFAULT_TIMEOUT_MS } from '../../src/hooks/augment.js';
 
 describe('hooks/augment — backend wiring', () => {
   const fetchMock = vi.fn();
@@ -124,6 +124,25 @@ describe('hooks/augment — backend wiring', () => {
     });
     expect(out.reason).toBe('served');
     expect(out.block).not.toBeNull();
+  });
+
+  // #242 — read-hook hot-path retune. The hook consumes only summaries, so it
+  // asks the backend to skip server-side enrichment (sibling scroll, violation
+  // counters, proposed-pending) that it would otherwise compute and discard.
+  it('requests the lightweight enrich:false path (#242)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([{ id: 'a', summary: 's', type: 'decision', score: 0.9 }]),
+    );
+    await augment('q', { apiBaseUrl: 'http://t', apiKey: 'k', projectId: 'p' });
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const sent = JSON.parse(init.body as string);
+    expect(sent.enrich).toBe(false);
+  });
+
+  // #242 — the 1500ms default left ~86% of live searches timing out (p50 hit
+  // latency was 1409ms, right at the old ceiling). Retuned to 2500ms.
+  it('defaults the backend timeout to 2500ms (#242)', () => {
+    expect(DEFAULT_TIMEOUT_MS).toBe(2500);
   });
 });
 

@@ -256,19 +256,18 @@ async function buildDrafts(
 }
 
 function renderPreview(drafts: DraftDecision[]): void {
-  const proposedCount = drafts.filter((d) => !d.typeFromPrefix).length;
-  const activeCount = drafts.length - proposedCount;
+  // #255: every import lands in the proposed review queue. typeFromPrefix only
+  // splits "recognized type" (higher confidence, skips enrichment) from
+  // "untyped draft" (needs enrichment) — it no longer affects status.
+  const untypedCount = drafts.filter((d) => !d.typeFromPrefix).length;
+  const typedCount = drafts.length - untypedCount;
   console.log(pc.bold(`\nPreview — ${drafts.length} draft decision(s):\n`));
-  if (proposedCount > 0) {
-    console.log(
-      pc.dim(`  → ${activeCount} will be `) +
-        pc.green('active') +
-        pc.dim(' (typed via filename prefix), ') +
-        pc.dim(`${proposedCount} `) +
-        pc.yellow('proposed') +
-        pc.dim(' (drafts; promote/dismiss in dashboard)\n'),
-    );
-  }
+  console.log(
+    pc.dim('  → all ') +
+      pc.yellow('proposed') +
+      pc.dim(` (review/promote in dashboard) — ${typedCount} typed, `) +
+      pc.dim(`${untypedCount} untyped draft(s) needing enrichment\n`),
+  );
   const maxRows = 20;
   const rows = drafts.slice(0, maxRows);
   for (let i = 0; i < rows.length; i++) {
@@ -462,7 +461,11 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
     );
     const qdrant = getQdrantClient(config.qdrant_url ?? '', config.qdrant_api_key ?? '');
     for (const d of drafts) {
-      const status: 'active' | 'proposed' = d.typeFromPrefix ? 'active' : 'proposed';
+      // #255: imports always land in 'proposed' for review — a file is not a
+      // human review pass. typeFromPrefix still controls confidence/enrichment
+      // (a recognized type is trusted enough to skip auto-classification), but
+      // NOT status. Promote via the dashboard/triage queue.
+      const status: 'active' | 'proposed' = 'proposed';
       const raw: RawDecision = {
         text: d.detail,
         type: d.type,
@@ -492,13 +495,17 @@ export async function indexCommand(folder: string, options: IndexOptions): Promi
   }
 
   console.log();
-  const activeCount = stored - storedProposed;
   console.log(pc.green(`✓ Stored ${stored} decision(s)`));
-  if (storedProposed > 0) {
+  if (stored > 0) {
+    // #255: all imports are 'proposed' now. storedProposed counts the untyped
+    // subset that still needs enrichment (type/summary/affects/confidence).
     console.log(
-      pc.dim(`    ${activeCount} active (typed via filename prefix), `) +
-        pc.yellow(`${storedProposed} proposed`) +
-        pc.dim(' (drafts — review in dashboard before promote)'),
+      pc.dim('    all ') +
+        pc.yellow('proposed') +
+        pc.dim(' — review/promote in dashboard') +
+        (storedProposed > 0
+          ? pc.dim(` · ${storedProposed} untyped draft(s) need enrichment`)
+          : ''),
     );
   }
   // BUG #174: report duplicates / invalid separately from real failures so
@@ -627,7 +634,8 @@ async function storeDraftsHosted(
         type: d.type,
         summary: d.summary,
         affects: d.affects,
-        status: d.typeFromPrefix ? 'active' : 'proposed',
+        // #255: imports always go to 'proposed' for review (see stdio path).
+        status: 'proposed',
         // Lower confidence on auto-classified untyped imports so the
         // reranker doesn't promote them above organic captures.
         confidence: d.typeFromPrefix ? undefined : 0.5,

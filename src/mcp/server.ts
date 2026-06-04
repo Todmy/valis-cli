@@ -5,6 +5,11 @@ import { handleStore } from './tools/store.js';
 import { handleSearch } from './tools/search.js';
 import { handleContext } from './tools/context.js';
 import { handleLifecycle } from './tools/lifecycle.js';
+import {
+  handleVerdictList,
+  handleVerdictResolve,
+  handleVerdictReverse,
+} from './tools/verdict-queue.js';
 import { handleUpdateOutcome } from './tools/update-outcome.js';
 import { handleEvolve } from './tools/evolve.js';
 import { handleCheckDuplicate } from './tools/check-duplicate.js';
@@ -282,6 +287,55 @@ const TOOL_DEFS = {
         actor: z.string().optional().describe('Free-text actor label (e.g. "alice in IDE")'),
         commit_sha: z.string().optional().describe('Optional — if the diff is against a specific commit'),
       }).optional().describe('Optional metadata. `pr_url` is intentionally not accepted — its presence would re-classify the check as PR-time.'),
+    },
+  },
+  valis_verdict_list: {
+    description:
+      'List open Stage-A review-queue items for a project (proposed-decision keep/dismiss verdicts; contradiction verdicts in a later release). Read-only. Each item carries a machine recommendation + confidence and the full bounded action set.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'List verdict-review queue',
+    } as ToolAnnotations,
+    schema: {
+      project_id: z.string().uuid().describe('Project UUID to list the review queue for'),
+      kind: z.enum(['contradiction', 'proposed_relevance', 'all']).optional().describe("Verdict kind filter; default 'all'"),
+    },
+  },
+  valis_verdict_resolve: {
+    description:
+      'Apply a Stage-A resolution to one review-queue item (maintainer/admin only). Escalate-first: this call IS the explicit human confirm — never auto-fire it from assessment. Conditional write: a lost race returns already_resolved.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Resolve a verdict-queue item',
+    } as ToolAnnotations,
+    schema: {
+      project_id: z.string().uuid().describe('Project UUID the item belongs to'),
+      kind: z.enum(['contradiction', 'proposed_relevance']).describe('Verdict kind'),
+      item_id: z.string().describe('Subject id (decision id | contradiction id)'),
+      action: z.string().describe("Action from the item's validActions (e.g. 'keep' | 'dismiss')"),
+      reason: z.string().optional().describe('Optional reviewer rationale'),
+    },
+  },
+  valis_verdict_reverse: {
+    description:
+      'Undo a prior Stage-A resolution (maintainer/admin only), restoring the prior state. FR-017 reversibility — an explicit, audited human action.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+      title: 'Reverse a verdict-queue resolution',
+    } as ToolAnnotations,
+    schema: {
+      project_id: z.string().uuid().describe('Project UUID the item belongs to'),
+      kind: z.enum(['contradiction', 'proposed_relevance']).describe('Verdict kind'),
+      item_id: z.string().describe('Subject id to restore'),
     },
   },
 } as const;
@@ -623,6 +677,21 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
 
   registerToolFromDef(server, 'valis_evolve', configOverride, async (args) => {
     const result = await handleEvolve(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_verdict_list', configOverride, async (args) => {
+    const result = await handleVerdictList(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_verdict_resolve', configOverride, async (args) => {
+    const result = await handleVerdictResolve(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_verdict_reverse', configOverride, async (args) => {
+    const result = await handleVerdictReverse(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 

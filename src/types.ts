@@ -1,3 +1,5 @@
+import type { OppositionClassifier } from './contradiction/classify.js';
+
 export interface Organization {
   id: string;
   name: string;
@@ -384,6 +386,14 @@ export interface ServerConfig {
    * analytics is a pure server-side concern.
    */
   emit_funnel?: (event: string, properties: Record<string, unknown>) => void;
+  /**
+   * 044: optional opposition classifier injected by the web layer
+   * (`buildServerConfig*`) — backed by the AI Gateway (`llm.ts`, cost-tracked +
+   * budget-guarded). CLI stdio leaves it undefined; the contradiction
+   * side-effect then falls back to a raw-`ANTHROPIC_API_KEY` classifier for
+   * self-hosters, and to OFF when no key is present (Constitution IV).
+   */
+  opposition_classifier?: OppositionClassifier;
 }
 
 export interface StoreResponse {

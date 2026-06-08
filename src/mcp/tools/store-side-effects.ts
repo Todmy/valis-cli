@@ -304,11 +304,18 @@ const contradictionDetectEffect: StoreSideEffect<StoreContradictionWarning[]> = 
       ...ctx.decision,
       project_id: ctx.decision.project_id || ctx.projectId,
     };
-    // 044/T009: build the opposition classifier where an API key is available
-    // (server mode). Absent (stdio) → undefined → the gate degrades OFF
-    // (Constitution IV: opposition detection is an optional LLM feature).
+    // 044/T009: resolve the opposition classifier. Prefer the web-injected
+    // AI-Gateway classifier (cost-tracked + budget-guarded, the proven prod
+    // path); fall back to a raw-`ANTHROPIC_API_KEY` classifier for self-hosters;
+    // absent both → undefined → the gate degrades OFF (Constitution IV).
+    const injectedClassifier =
+      'opposition_classifier' in ctx.config &&
+      typeof (ctx.config as ServerConfig).opposition_classifier === 'function'
+        ? (ctx.config as ServerConfig).opposition_classifier
+        : undefined;
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    const classifier = apiKey ? makeHaikuClassifier({ apiKey }) : undefined;
+    const classifier =
+      injectedClassifier ?? (apiKey ? makeHaikuClassifier({ apiKey }) : undefined);
     const warnings = await detectContradictions(
       ctx.supabase,
       q,

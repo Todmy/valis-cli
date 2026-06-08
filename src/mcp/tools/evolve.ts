@@ -192,7 +192,13 @@ export async function handleEvolve(
     const auditPayload = buildAuditPayload(
       'evolve',
       'decision',
-      insertedRow.id,
+      // target_id MUST be a real decision id (the lineage's destination), not
+      // the edge id: the activity feed enriches + links audit rows via
+      // `decisions WHERE id = target_id`. Pointing it at the edge id left the
+      // row blank (no decision matched) and 500'd the detail page on click
+      // ("Cannot coerce the result to a single JSON object"). The edge id is
+      // still recoverable from new_state.edge_id below.
+      args.to_id,
       config.member_id || 'unknown',
       effectiveOrgId,
       {

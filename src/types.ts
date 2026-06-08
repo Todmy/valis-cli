@@ -213,6 +213,19 @@ export interface StoreContradictionWarning {
    * Postgres — never a misleading `0`.
    */
   similarity: number | null;
+  /**
+   * 044: the opposition-gate verdict that surfaced this pair, when the gate ran.
+   * Absent on legacy/abstain-disabled paths (backward-compatible, FR-013).
+   */
+  verdict_classification?: 'replacement' | 'genuine_conflict' | 'compatible' | 'uncertain';
+  /** 044: gate confidence 0–1 (null when abstained). */
+  verdict_confidence?: number | null;
+  /**
+   * 044: present only on a `replacement` verdict — the gate PROPOSES (does not
+   * apply) that the newer decision supersede the older. Escalate-first: the
+   * deprecate/edge/exclusion happen only on human confirmation (FR-004).
+   */
+  propose_supersede?: { superseded_id: string; supersedes_id: string };
 }
 
 /** Supersession detail returned when `replaces` triggers a transition. */

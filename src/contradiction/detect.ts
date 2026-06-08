@@ -1,79 +1,71 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
-import type {
-  Decision,
-  Contradiction,
-  StoreContradictionWarning,
-} from '../types.js';
+import type { Decision, StoreContradictionWarning } from '../types.js';
 import { getSimilaritiesForNewDecision } from '../cloud/qdrant.js';
+import type { OppositionClassifier, DecisionLite } from './classify.js';
 
 // ---------------------------------------------------------------------------
-// Constants
+// 044 — Opposition-gate constants
 // ---------------------------------------------------------------------------
 
-/** Minimum cosine similarity to flag a contradiction when Qdrant is available. */
-const SIMILARITY_THRESHOLD = 0.75;
-
-/**
- * Tier-1-only (Qdrant unavailable) precision bar. With no vector similarity to
- * discriminate, a single shared `affects` tag is far too weak — a bulk
- * `valis index` of N proposed decisions all tagged e.g. `postgres` would flag
- * every O(N²) pair (issue #71 false-positive explosion). Require either a
- * meaningful absolute overlap (≥2 shared areas) OR a high relative overlap
- * (Jaccard ≥ {@link TIER1_JACCARD_THRESHOLD}) so two narrowly-scoped decisions
- * sharing their only tag still flag, but broad decisions sharing one tag of
- * many do not.
- */
-const TIER1_MIN_OVERLAP_AREAS = 2;
-
-/** Jaccard cutoff (intersection/union of affects) for the single-overlap case. */
-const TIER1_JACCARD_THRESHOLD = 0.5;
-
-/** Max candidate decisions to fetch + compare on the store hot path. */
+/** Max candidate decisions to fetch (recall) on the store hot path. */
 const CANDIDATE_FETCH_LIMIT = 200;
 
+/** Top-K most-similar survivors classified inline per store (FR-011). */
+const CLASSIFY_TOP_K = 5;
+
 /**
- * Decide whether a Tier-1-only (no Qdrant similarity) pair clears the
- * false-positive bar. ≥2 shared areas, or a single shared area that dominates
- * the combined tag set (Jaccard ≥ threshold).
+ * Temporal-cue phrases that signal a direction change ("we dropped X, moving to
+ * Y"). A nominee carrying a cue is force-classified even if it falls outside the
+ * top-K cosine cut — NLI/LLM opposition signals are weak on temporal reversal,
+ * so the cue is the cheap recall lever (research R3 / SC-002).
  */
-function passesTier1Bar(newAffects: string[], candidateAffects: string[]): boolean {
-  const a = new Set(newAffects);
-  const b = new Set(candidateAffects);
-  let intersection = 0;
-  for (const area of a) {
-    if (b.has(area)) intersection++;
-  }
-  if (intersection >= TIER1_MIN_OVERLAP_AREAS) return true;
-  if (intersection === 0) return false;
-  const union = new Set([...a, ...b]).size;
-  const jaccard = union === 0 ? 0 : intersection / union;
-  return jaccard >= TIER1_JACCARD_THRESHOLD;
+const TEMPORAL_CUES: RegExp[] = [
+  /\bdropping\b/i,
+  /\bmoving to\b/i,
+  /\bswitch(?:ed|ing)?\s+(?:from|to)\b/i,
+  /\bno longer\b/i,
+  /\binstead of\b/i,
+  /\breplac(?:e|ed|ing)\b/i,
+  /\bdeprecat/i,
+];
+
+function hasTemporalCue(text: string): boolean {
+  return TEMPORAL_CUES.some((re) => re.test(text));
+}
+
+function toLite(d: Pick<Decision, 'id' | 'summary' | 'detail'>): DecisionLite {
+  return { id: d.id, summary: d.summary ?? null, detail: d.detail };
 }
 
 // ---------------------------------------------------------------------------
-// T021 — Two-tier contradiction detection
+// 044 — Opposition-gate detection (replaces the similarity-only trigger)
 // ---------------------------------------------------------------------------
 
 /**
- * Detect potential contradictions between a newly stored decision and existing
- * decisions in the same project. Detection runs for both `active` and
- * `proposed` new decisions — `proposed` is the dominant write path (drafts
- * queue, auto-capture, unprefixed index imports), so gating it off silently
- * broke Constitution Principle IX for the common case (issue #71).
+ * Detect contradictions between a newly stored decision and existing decisions
+ * in the same project, using an **opposition gate** (feature 044) instead of
+ * the old similarity-only trigger.
  *
- * **Tier 1 (always)**: Query candidate decisions with status `active` or
- * `proposed` whose `affects` arrays overlap with the new decision via the
- * Postgres `&&` (array overlap) operator. `deprecated`/`superseded` decisions
- * are resolved/retired and excluded by design.
+ * Cascade:
+ *  - **Stage 0 (recall)**: query `active`+`proposed` candidates whose `affects`
+ *    overlap, and (when Qdrant is up) their cosine similarity. Tag overlap and
+ *    cosine are *nominators only* — neither flags a contradiction by itself
+ *    (FR-001/FR-002).
+ *  - **Cap**: classify only the top-K (5) most-similar survivors, plus any
+ *    nominee carrying a temporal cue (FR-011).
+ *  - **Stage 1 (verdict)**: classify each capped pair via `classifier`.
+ *  - **Stage 2 (act by branch)**: `compatible` → suppress (no row);
+ *    `genuine_conflict`/`replacement` → contradiction row + cached verdict
+ *    (replacement also carries a propose-supersede signal — escalate-first, no
+ *    auto state change); `uncertain` → row surfaced low-confidence (FR-008).
  *
- * **Tier 2 (when Qdrant available)**: For each candidate, compute cosine
- * similarity in Qdrant.  Flag only if similarity > {@link SIMILARITY_THRESHOLD}
- * (0.75).  When Qdrant is unavailable, area overlap alone is sufficient
- * (Tier 1 only).
+ * **Constitution IV (no LLM dependency for core ops)**: the `classifier` is
+ * optional. Without it the gate degrades OFF — no opposition signal means no
+ * contradiction claims — rather than flagging on similarity alone. The store
+ * write is never blocked: a throwing classifier resolves to an abstention.
  *
- * Detected contradictions are inserted into the `contradictions` table with
- * ordered pairs (smaller UUID as `decision_a_id`) to prevent duplicates.
+ * Detection runs for both `active` and `proposed` new decisions (#71).
  *
  * @returns List of {@link StoreContradictionWarning} for the store response.
  */
@@ -82,72 +74,43 @@ export async function detectContradictions(
   qdrant: QdrantClient | null,
   orgId: string,
   newDecision: Decision,
+  classifier?: OppositionClassifier,
 ): Promise<StoreContradictionWarning[]> {
   const warnings: StoreContradictionWarning[] = [];
 
-  // Nothing to compare if the new decision has no affects areas
   if (!newDecision.affects || newDecision.affects.length === 0) {
     return warnings;
   }
 
-  // NOTE (#71): No status gate on the NEW decision. Detection must run for
-  // `proposed` writes (the default path), not only `active` ones.
+  // Constitution IV: opposition detection is an optional LLM feature. Absent a
+  // classifier the gate is OFF (no opposition signal → no contradiction claims).
+  if (!classifier) {
+    return warnings;
+  }
 
-  // T026: Resolve project_id from the decision — contradictions are scoped within
-  // a single project. Cross-project contradictions are not possible by design.
   const projectId = newDecision.project_id || undefined;
 
-  // ------------------------------------------------------------------
-  // Tier 1: Find candidates with overlapping affects via SQL &&
-  // ------------------------------------------------------------------
-
-  // NOTE (#71): the previous code first tried a `find_contradiction_candidates`
-  // RPC that is NOT defined in any migration (migration 004 defines a different
-  // `find_contradictions` with an incompatible signature). That RPC always
-  // failed, so EVERY store paid a guaranteed-failing round-trip before falling
-  // back to this query. There is exactly ONE candidate-status source of truth:
-  // a direct `decisions` query filtered to `active`+`proposed`. Do NOT
-  // reintroduce a status='active'-only path.
+  // --- Stage 0: candidate recall (unchanged query; nominators only) ---
   let candidates: Decision[];
   try {
     let query = supabase
       .from('decisions')
-      // Only the columns the detection loop + warnings need — `select('*')`
-      // pulled the full row (including large `detail`/embeddings) per candidate.
       .select('id,affects,summary,author,detail')
       .eq('org_id', orgId)
       .in('status', ['active', 'proposed'])
       .neq('id', newDecision.id)
       .overlaps('affects', newDecision.affects)
       .limit(CANDIDATE_FETCH_LIMIT);
-
-    // T026: Scope candidate query to project
-    if (projectId) {
-      query = query.eq('project_id', projectId);
-    }
-
+    if (projectId) query = query.eq('project_id', projectId);
     const { data, error } = await query;
-
     if (error) throw error;
     candidates = (data || []) as Decision[];
   } catch {
-    // If the candidate query fails, skip contradiction detection
     return warnings;
   }
+  if (candidates.length === 0) return warnings;
 
-  if (candidates.length === 0) {
-    return warnings;
-  }
-
-  // ------------------------------------------------------------------
-  // Tier 2: Compute similarity + insert contradictions
-  // ------------------------------------------------------------------
-
-  // Batch-retrieve every candidate vector (plus the new decision's vector) in
-  // ONE Qdrant round-trip rather than one retrieve per candidate (N+1). An
-  // empty map means Qdrant was unavailable / errored → Tier-1-only path.
   let similarityById = new Map<string, number>();
-  let qdrantAvailable = false;
   if (qdrant) {
     similarityById = await getSimilaritiesForNewDecision(
       qdrant,
@@ -155,93 +118,122 @@ export async function detectContradictions(
       newDecision.id,
       candidates.map((c) => c.id),
     );
-    qdrantAvailable = similarityById.size > 0;
   }
 
-  for (const candidate of candidates) {
-    // Compute overlap areas between the two decisions
-    const overlapAreas = (newDecision.affects || []).filter((area) =>
-      (candidate.affects || []).includes(area),
-    );
+  type Nominee = { c: Decision; overlap: string[]; sim: number | null };
+  const nominees: Nominee[] = candidates
+    .map((c) => ({
+      c,
+      overlap: (newDecision.affects || []).filter((a) => (c.affects || []).includes(a)),
+      sim: similarityById.has(c.id) ? (similarityById.get(c.id) as number) : null,
+    }))
+    .filter((n) => n.overlap.length > 0);
 
-    if (overlapAreas.length === 0) continue;
+  // --- Cap: top-K by cosine + temporal-cue force-include (FR-011) ---
+  const newCarriesCue = hasTemporalCue(`${newDecision.summary ?? ''} ${newDecision.detail}`);
+  const sorted = [...nominees].sort((a, b) => (b.sim ?? -1) - (a.sim ?? -1));
+  const capped = new Map<string, Nominee>();
+  for (const n of sorted.slice(0, CLASSIFY_TOP_K)) capped.set(n.c.id, n);
+  for (const n of nominees) {
+    // A temporal change in the NEW decision, or a cue in the candidate, forces
+    // classification even below the cosine cut.
+    if (newCarriesCue || hasTemporalCue(`${n.c.summary ?? ''} ${n.c.detail}`)) {
+      capped.set(n.c.id, n);
+    }
+  }
 
-    // similarity is the real cosine value when Qdrant is available, else null
-    // (mirrors the DB `similarity_score` column — never a misleading 0).
-    const similarity: number | null = qdrantAvailable
-      ? similarityById.get(candidate.id) ?? 0
-      : null;
+  // --- Stage 1: classify the capped set in parallel ---
+  // Defensive: a misbehaving classifier MUST NOT block the store (Constitution
+  // III/IV). A throw maps to an abstention, never propagates.
+  const safeClassify = async (cand: Decision) => {
+    try {
+      return await classifier(toLite(newDecision), toLite(cand));
+    } catch {
+      return {
+        classification: 'uncertain' as const,
+        confidence: 0,
+        abstained: true,
+        reason: 'classifier_error',
+      };
+    }
+  };
+  const assessed = await Promise.all(
+    [...capped.values()].map(async (n) => ({ n, verdict: await safeClassify(n.c) })),
+  );
 
-    // Decision:
-    //  - Qdrant available  → flag iff cosine similarity > threshold (0.75).
-    //  - Qdrant unavailable → flag iff the affects overlap clears the Tier-1
-    //    precision bar (≥2 shared areas or Jaccard ≥ 0.5). A single shared tag
-    //    out of many is NOT enough — that path caused the bulk-index
-    //    false-positive explosion (#71).
-    const shouldFlag = qdrantAvailable
-      ? (similarity as number) > SIMILARITY_THRESHOLD
-      : passesTier1Bar(newDecision.affects || [], candidate.affects || []);
+  // --- Stage 2: act by branch ---
+  for (const { n, verdict } of assessed) {
+    const candidate = n.c;
 
-    if (!shouldFlag) continue;
+    // Defensive: a "no classifier" abstention means the gate had no signal at
+    // all → do not surface (degrade OFF, not flood `uncertain`).
+    if (verdict.abstained && verdict.reason === 'no_classifier') continue;
 
-    // Enforce ordered pair: smaller UUID as decision_a_id per data-model.md
+    // `compatible` → suppress at source (the core false-positive fix).
+    if (verdict.classification === 'compatible') continue;
+
     const [decisionAId, decisionBId] =
       newDecision.id < candidate.id
         ? [newDecision.id, candidate.id]
         : [candidate.id, newDecision.id];
 
-    // Check if this contradiction pair already exists
+    // Honour the existing pair (dedup + 042 `suppressed`, FR-010).
+    let existing: { id: string; suppressed: boolean | null } | null = null;
     try {
-      const { data: existing } = await supabase
+      const { data } = await supabase
         .from('contradictions')
-        .select('id')
+        .select('id,suppressed')
         .eq('decision_a_id', decisionAId)
         .eq('decision_b_id', decisionBId)
-        .eq('status', 'open')
         .maybeSingle();
-
-      if (existing) {
-        // Already tracked — still include in warnings for the store response
-        warnings.push({
-          decision_id: candidate.id,
-          summary: candidate.summary || candidate.detail.substring(0, 80),
-          author: candidate.author,
-          overlap_areas: overlapAreas,
-          similarity,
-        });
-        continue;
-      }
+      existing = (data as unknown as { id: string; suppressed: boolean | null } | null) ?? null;
     } catch {
-      // If check fails, attempt insert anyway (unique constraint will catch dupes)
+      // Non-fatal — fall through to insert (unique constraint catches dupes).
     }
+    if (existing?.suppressed) continue; // FR-010 — dismissed-compatible stays dismissed.
 
-    // INSERT into contradictions table — T026: include project_id
-    try {
-      const contradictionRecord: Record<string, unknown> = {
-        org_id: orgId,
-        decision_a_id: decisionAId,
-        decision_b_id: decisionBId,
-        overlap_areas: overlapAreas,
-        // `similarity` is already null on the Tier-1-only path, so the
-        // in-memory warning, the audit event, and this DB row all agree.
-        similarity_score: similarity,
-        status: 'open',
-      };
-      if (projectId) {
-        contradictionRecord.project_id = projectId;
-      }
-      await supabase.from('contradictions').insert(contradictionRecord);
-    } catch {
-      // Unique constraint violation or other failure — non-fatal
-    }
-
-    warnings.push({
+    const confidence = verdict.abstained ? null : verdict.confidence;
+    const warning: StoreContradictionWarning = {
       decision_id: candidate.id,
       summary: candidate.summary || candidate.detail.substring(0, 80),
       author: candidate.author,
-      overlap_areas: overlapAreas,
-      similarity,
-    });
+      overlap_areas: n.overlap,
+      similarity: n.sim,
+      verdict_classification: verdict.classification,
+      verdict_confidence: confidence,
+    };
+    // `replacement`: propose (never apply) that the NEWER decision supersede the
+    // older — escalate-first, FR-004 (Graphiti recency: the new decision wins).
+    if (verdict.classification === 'replacement') {
+      warning.propose_supersede = {
+        superseded_id: candidate.id,
+        supersedes_id: newDecision.id,
+      };
+    }
+
+    if (existing) {
+      warnings.push(warning);
+      continue;
+    }
+
+    const record: Record<string, unknown> = {
+      org_id: orgId,
+      decision_a_id: decisionAId,
+      decision_b_id: decisionBId,
+      overlap_areas: n.overlap,
+      similarity_score: n.sim,
+      status: 'open',
+      verdict_classification: verdict.classification,
+      verdict_confidence: confidence,
+      verdict_assessed_at: new Date().toISOString(),
+    };
+    if (projectId) record.project_id = projectId;
+    try {
+      await supabase.from('contradictions').insert(record);
+    } catch {
+      // Unique-constraint or other failure — non-fatal.
+    }
+    warnings.push(warning);
   }
 
   return warnings;

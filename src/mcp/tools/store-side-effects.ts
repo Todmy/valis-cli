@@ -30,6 +30,7 @@ import {
   buildContradictionEvent,
 } from '../../channel/push.js';
 import { detectContradictions } from '../../contradiction/detect.js';
+import { makeHaikuClassifier } from '../../contradiction/classify.js';
 import { buildAuditPayload, createAuditEntry } from '../../auth/audit.js';
 import type { LinkExtractionResult } from './link-extractor.js';
 import type { InferenceOutput } from '../../lib/type-inference.js';
@@ -296,18 +297,24 @@ const contradictionDetectEffect: StoreSideEffect<StoreContradictionWarning[]> = 
   // silently dropped on the Qdrant-present path (#71 race).
   dependsOn: ['qdrant-write'],
   async run(ctx) {
-    // Qdrant client is optional here — detectContradictions falls back to
-    // Tier 1 (area overlap) when Qdrant is unavailable.
+    // Qdrant nominates candidates (cosine recall); the opposition classifier
+    // (044) decides. Both are optional — detectContradictions degrades safely.
     const q = ctx.qdrant();
     const decisionWithProject = {
       ...ctx.decision,
       project_id: ctx.decision.project_id || ctx.projectId,
     };
+    // 044/T009: build the opposition classifier where an API key is available
+    // (server mode). Absent (stdio) → undefined → the gate degrades OFF
+    // (Constitution IV: opposition detection is an optional LLM feature).
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const classifier = apiKey ? makeHaikuClassifier({ apiKey }) : undefined;
     const warnings = await detectContradictions(
       ctx.supabase,
       q,
       ctx.config.org_id,
       decisionWithProject,
+      classifier,
     );
 
     if (warnings.length > 0) {

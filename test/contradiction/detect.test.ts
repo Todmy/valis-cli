@@ -299,6 +299,25 @@ describe('opposition-gate — top-K cap + temporal-cue (FR-011)', () => {
     expect(seen).toHaveLength(5); // capped
   });
 
+  it('cost ceiling: a temporal-cue store with many candidates never exceeds the hard cap (8)', async () => {
+    const cands = manyCandidates(20);
+    getSimilaritiesMock.mockResolvedValue(new Map(cands.map((c, i) => [c.id, 0.9 - i * 0.04])));
+    let calls = 0;
+    const classifier: OppositionClassifier = async () => {
+      calls++;
+      return COMPATIBLE;
+    };
+    const { supabase } = makeSupabase({ decisionRows: cands });
+    // The cue would, in the buggy version, blanket-include all 20 candidates.
+    const newDecision = makeDecision({
+      summary: 'We are dropping X, moving to Y',
+      detail: 'switched from X',
+      affects: ['postgres'],
+    });
+    await detectContradictions(supabase, QDRANT, ORG_ID, newDecision, classifier);
+    expect(calls).toBeLessThanOrEqual(8); // CLASSIFY_HARD_CAP — bounds per-store LLM cost
+  });
+
   it('temporal cue in the NEW decision force-includes a low-cosine candidate', async () => {
     const cands = manyCandidates(8);
     getSimilaritiesMock.mockResolvedValue(

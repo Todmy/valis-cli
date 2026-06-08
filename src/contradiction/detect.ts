@@ -15,6 +15,13 @@ const CANDIDATE_FETCH_LIMIT = 200;
 const CLASSIFY_TOP_K = 5;
 
 /**
+ * Absolute per-store ceiling on classify calls (×2 Haiku passes each). The
+ * temporal-cue path may extend beyond the top-K, but never past this — bounds
+ * worst-case per-store LLM cost at CLASSIFY_HARD_CAP × 2 calls.
+ */
+const CLASSIFY_HARD_CAP = 8;
+
+/**
  * Temporal-cue phrases that signal a direction change ("we dropped X, moving to
  * Y"). A nominee carrying a cue is force-classified even if it falls outside the
  * top-K cosine cut — NLI/LLM opposition signals are weak on temporal reversal,
@@ -129,16 +136,23 @@ export async function detectContradictions(
     }))
     .filter((n) => n.overlap.length > 0);
 
-  // --- Cap: top-K by cosine + temporal-cue force-include (FR-011) ---
+  // --- Cap: top-K by cosine + temporal-cue force-include, HARD-bounded (FR-011) ---
+  // Cost ceiling: at most CLASSIFY_HARD_CAP classify calls per store (×2 passes
+  // each). The temporal-cue path may pull in lower-cosine candidates, but MUST
+  // NOT blanket-include all nominees — a single cue-carrying store with many
+  // overlapping candidates would otherwise blow the per-store LLM cost.
   const newCarriesCue = hasTemporalCue(`${newDecision.summary ?? ''} ${newDecision.detail}`);
   const sorted = [...nominees].sort((a, b) => (b.sim ?? -1) - (a.sim ?? -1));
   const capped = new Map<string, Nominee>();
   for (const n of sorted.slice(0, CLASSIFY_TOP_K)) capped.set(n.c.id, n);
-  for (const n of nominees) {
-    // A temporal change in the NEW decision, or a cue in the candidate, forces
-    // classification even below the cosine cut.
-    if (newCarriesCue || hasTemporalCue(`${n.c.summary ?? ''} ${n.c.detail}`)) {
-      capped.set(n.c.id, n);
+  if (capped.size < CLASSIFY_HARD_CAP) {
+    // Extend for temporal cues, most-similar first, never past the hard cap.
+    for (const n of sorted) {
+      if (capped.size >= CLASSIFY_HARD_CAP) break;
+      if (capped.has(n.c.id)) continue;
+      if (newCarriesCue || hasTemporalCue(`${n.c.summary ?? ''} ${n.c.detail}`)) {
+        capped.set(n.c.id, n);
+      }
     }
   }
 

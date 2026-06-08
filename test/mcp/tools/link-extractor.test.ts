@@ -34,12 +34,12 @@ describe('extractLinks — T-LE-001 top-3 all above threshold', () => {
     expect(result.status).toBe('ok');
     expect(result.chosen).toEqual(['a', 'b', 'c']);
     expect(result.candidates.map((x) => x.id)).toEqual(['a', 'b', 'c']);
-    expect(result.threshold).toBe(0.6);
+    expect(result.threshold).toBe(0.7);
   });
 });
 
 describe('extractLinks — T-LE-002 mixed candidates above + below threshold', () => {
-  it('chooses top-3 above threshold but records all five in candidates', async () => {
+  it('chooses only candidates >= 0.7 (#282: the 0.6–0.7 weak band is excluded) but records all five', async () => {
     const search = fakeSearch([
       { id: 'a', similarity: 0.9 },
       { id: 'b', similarity: 0.75 },
@@ -48,7 +48,9 @@ describe('extractLinks — T-LE-002 mixed candidates above + below threshold', (
       { id: 'e', similarity: 0.4 },
     ]);
     const result = await extractLinks('text', search);
-    expect(result.chosen).toEqual(['a', 'b', 'c']);
+    // c (0.65) was chosen under the old 0.6 bar; #282 raised the bar to 0.7
+    // so weak-band similarity no longer becomes a dependency edge.
+    expect(result.chosen).toEqual(['a', 'b']);
     expect(result.candidates).toHaveLength(5);
     expect(result.candidates.map((c) => c.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
   });

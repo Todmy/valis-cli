@@ -23,7 +23,7 @@ export type SearchFn = (text: string) => Promise<Array<{
 }>>;
 
 export interface LinkExtractionOptions {
-  /** Cosine threshold; default 0.6. Clamped to [0.0, 1.0]. */
+  /** Cosine threshold; default 0.7. Clamped to [0.0, 1.0]. */
   threshold?: number;
   /** Maximum chosen candidates; default 3. Clamped to [1, 10]. */
   maxCandidates?: number;
@@ -40,7 +40,13 @@ export interface LinkExtractionResult {
   reason?: string;
 }
 
-const DEFAULT_THRESHOLD = 0.6;
+// #282: raised 0.6 → 0.7 to align the auto-`depends_on` bar with the
+// ground-truth neighbour band. The old 0.6 floor attached the weak 0.6–0.7
+// similarity band as dependencies, which read as noise, not deliberate edges
+// (slug-named lessons auto-linked to unrelated decisions). Cosine is a recall
+// filter, not a relationship signal — a real dependency must clear the same
+// bar a trusted neighbour does.
+const DEFAULT_THRESHOLD = 0.7;
 const DEFAULT_MAX_CANDIDATES = 3;
 const DEFAULT_TIMEOUT_MS = 1500;
 const HARD_CANDIDATE_CAP = 10;
@@ -87,7 +93,7 @@ function sanitiseReason(err: unknown): string {
 
 /**
  * Run `search` against `text` with a hard `opts.timeoutMs` budget. Filter the
- * results by `opts.threshold` (defaults to 0.6), cap the `candidates` record
+ * results by `opts.threshold` (defaults to 0.7), cap the `candidates` record
  * at the hard ceiling of 10 (so analytics can measure precision vs recall),
  * and slice `chosen` to `opts.maxCandidates` (defaults to 3).
  *

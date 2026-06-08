@@ -607,7 +607,7 @@ export async function handleStore(
       linkExtraction = {
         chosen: [],
         candidates: [],
-        threshold: 0.6,
+        threshold: 0.7,
         latency_ms: 0,
         status: 'skipped',
         reason: 'caller_supplied_depends_on',
@@ -616,7 +616,7 @@ export async function handleStore(
       linkExtraction = {
         chosen: [],
         candidates: [],
-        threshold: 0.6,
+        threshold: 0.7,
         latency_ms: 0,
         status: 'skipped',
         reason: 'replaces_supplied',
@@ -651,7 +651,7 @@ export async function handleStore(
       linkExtraction = {
         chosen: [],
         candidates: [],
-        threshold: 0.6,
+        threshold: 0.7,
         latency_ms: 0,
         status: 'failed',
         reason: 'qdrant_unavailable',

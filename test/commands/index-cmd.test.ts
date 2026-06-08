@@ -26,6 +26,41 @@ describe('valis index — markdown helpers', () => {
   });
 });
 
+describe('valis index — deriveSummary (#280: no slug summaries)', () => {
+  it('uses the H1 heading when present', async () => {
+    const { deriveSummary } = await import('../../src/commands/index-cmd.js');
+    const s = deriveSummary('# Real Title\n\nbody text', '/x/lesson_some-slug_b989f2ed.md');
+    expect(s).toBe('Real Title');
+  });
+
+  it('derives from the first body line when there is no H1 — NEVER the filename slug', async () => {
+    const { deriveSummary } = await import('../../src/commands/index-cmd.js');
+    const slugPath = '/x/lesson_research_autoresearch-vs-ralph-loop-comparison_b989f2ed.md';
+    const s = deriveSummary('Autoresearch beats a naive Ralph loop for search-heavy tasks.', slugPath);
+    expect(s).toBe('Autoresearch beats a naive Ralph loop for search-heavy tasks.');
+    expect(s).not.toContain('b989f2ed');
+    expect(s).not.toContain('lesson_');
+  });
+
+  it('strips leading markdown markers from the first meaningful line (H2, list, quote)', async () => {
+    const { deriveSummary } = await import('../../src/commands/index-cmd.js');
+    expect(deriveSummary('## Section\n\nmore', '/x/note_entry_4e426caf.md')).toBe('Section');
+    expect(deriveSummary('- first bullet\n- second', '/x/slug.md')).toBe('first bullet');
+    expect(deriveSummary('> a quote line', '/x/slug.md')).toBe('a quote line');
+  });
+
+  it('skips fenced code blocks when picking the first meaningful line', async () => {
+    const { deriveSummary } = await import('../../src/commands/index-cmd.js');
+    const s = deriveSummary('```ts\nconst x = 1;\n```\n\nThe actual point.', '/x/slug.md');
+    expect(s).toBe('The actual point.');
+  });
+
+  it('falls back to the basename only when the body has no usable text', async () => {
+    const { deriveSummary } = await import('../../src/commands/index-cmd.js');
+    expect(deriveSummary('   \n\n  ', '/x/empty-file.md')).toBe('empty-file');
+  });
+});
+
 describe('valis index — markdown parsing (smoke via tmpdir)', () => {
   // We can't easily unit-test internal helpers since they're not exported.
   // Instead, build a tmp folder and rely on the CLI's --dry-run path

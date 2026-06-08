@@ -159,6 +159,46 @@ function summarize(text: string, max = 100): string {
   return trimmed.slice(0, max - 1).trimEnd() + '…';
 }
 
+/**
+ * First non-empty body line with leading markdown markers stripped (heading
+ * hashes, list bullets, block-quote). Fenced code blocks are skipped — a line
+ * of code is not a summary. Returns null when the body has no usable prose.
+ */
+function firstMeaningfulLine(content: string): string | null {
+  let inFence = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !line) continue;
+    const stripped = line
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^[>\-*+]\s+/, '')
+      .replace(/^\d+\.\s+/, '')
+      .trim();
+    if (stripped) return stripped;
+  }
+  return null;
+}
+
+/**
+ * #280: derive a human-readable summary for an indexed markdown file. Order:
+ * H1 heading → first meaningful body line → basename (last resort only). The
+ * old code fell straight to `basename` when no H1 existed, so files with
+ * slug-style names and no H1 (a common export shape) landed a machine slug as
+ * their `summary`, polluting every surface that renders it (search, activity
+ * feed, relationships, hook injection) and weakening BM25/semantic relevance.
+ */
+export function deriveSummary(content: string, filePath: string): string {
+  const h1 = extractH1(content);
+  if (h1) return summarize(h1);
+  const bodyLine = firstMeaningfulLine(content);
+  if (bodyLine) return summarize(bodyLine);
+  return summarize(basename(filePath, extname(filePath)));
+}
+
 interface GitMeta {
   author: string;
   createdAt: string;
@@ -238,11 +278,10 @@ async function buildDrafts(
     // One file → one decision. The body is chunked by Qdrant ingestion at
     // store time so retrieval still hits sub-document chunks via siblings
     // expand. See header docstring for the rationale.
-    const h1 = extractH1(content);
     drafts.push({
       filePath,
       relativePath,
-      summary: summarize(h1 ?? basename(filePath, extname(filePath))),
+      summary: deriveSummary(content, filePath),
       detail: content.trim(),
       author,
       createdAt,

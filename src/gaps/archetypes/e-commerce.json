@@ -1,0 +1,20 @@
+{
+  "domain": "e-commerce",
+  "version": "1.0.0",
+  "components": [
+    { "component": "cart-checkout", "importance": 5, "commonly_forgotten": false, "platform_provided_by": ["Shopify", "WooCommerce", "Magento", "BigCommerce"] },
+    { "component": "payment-processing", "importance": 5, "commonly_forgotten": false, "platform_provided_by": ["Stripe", "Shopify Payments", "PayPal", "Adyen"] },
+    { "component": "order-management", "importance": 5, "commonly_forgotten": false },
+    { "component": "product-catalog", "importance": 4, "commonly_forgotten": false },
+    { "component": "inventory-tracking", "importance": 4, "commonly_forgotten": false },
+    { "component": "shipping-fulfillment", "importance": 4, "commonly_forgotten": false, "platform_provided_by": ["ShipStation", "Shopify", "Shippo"] },
+    { "component": "returns-refunds", "importance": 4, "commonly_forgotten": true },
+    { "component": "tax-calculation", "importance": 4, "commonly_forgotten": true, "platform_provided_by": ["TaxJar", "Avalara", "Stripe Tax"] },
+    { "component": "fraud-prevention", "importance": 3, "commonly_forgotten": true, "platform_provided_by": ["Stripe Radar", "Signifyd"] },
+    { "component": "pricing-discounts", "importance": 3, "commonly_forgotten": false },
+    { "component": "customer-accounts", "importance": 3, "commonly_forgotten": false },
+    { "component": "abandoned-cart-recovery", "importance": 2, "commonly_forgotten": true },
+    { "component": "international-multicurrency", "importance": 3, "commonly_forgotten": true, "conditional_on": "selling to customers outside the home country" },
+    { "component": "age-restricted-goods-verification", "importance": 2, "commonly_forgotten": true, "conditional_on": "selling regulated goods such as alcohol, tobacco, or weapons" }
+  ]
+}

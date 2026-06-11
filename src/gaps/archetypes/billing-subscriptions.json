@@ -1,0 +1,20 @@
+{
+  "domain": "billing-subscriptions",
+  "version": "1.0.0",
+  "components": [
+    { "component": "plan-catalog", "importance": 5, "commonly_forgotten": false },
+    { "component": "subscription-lifecycle", "importance": 5, "commonly_forgotten": false, "platform_provided_by": ["Stripe Billing", "Paddle", "Chargebee"] },
+    { "component": "payment-collection", "importance": 5, "commonly_forgotten": false, "platform_provided_by": ["Stripe", "Paddle"] },
+    { "component": "entitlement-feature-gating", "importance": 4, "commonly_forgotten": true },
+    { "component": "invoicing-receipts", "importance": 4, "commonly_forgotten": true, "platform_provided_by": ["Stripe", "Paddle"] },
+    { "component": "proration-upgrades-downgrades", "importance": 4, "commonly_forgotten": true },
+    { "component": "dunning-failed-payments", "importance": 4, "commonly_forgotten": true },
+    { "component": "tax-vat-compliance", "importance": 4, "commonly_forgotten": true, "platform_provided_by": ["Stripe Tax", "Paddle", "Avalara"] },
+    { "component": "refunds-credits", "importance": 3, "commonly_forgotten": true },
+    { "component": "chargeback-handling", "importance": 3, "commonly_forgotten": true },
+    { "component": "trial-management", "importance": 3, "commonly_forgotten": false },
+    { "component": "coupon-discounts", "importance": 2, "commonly_forgotten": false },
+    { "component": "usage-based-metering", "importance": 3, "commonly_forgotten": true, "conditional_on": "any plan is metered or usage-based" },
+    { "component": "revenue-recognition", "importance": 3, "commonly_forgotten": true, "conditional_on": "reporting under accrual accounting / ASC 606" }
+  ]
+}

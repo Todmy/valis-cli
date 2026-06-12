@@ -193,6 +193,24 @@ export async function upsertDecision(
   try {
     const points = await Promise.all(chunks.map(buildPointForChunk));
     await qdrant.upsert(COLLECTION_NAME, { points });
+
+    // #293: chunk point IDs are deterministic, so re-upserting a shrunken
+    // body overwrites chunks 0..N-1 but leaves old chunks N..M orphaned —
+    // stale text that keeps matching searches. Delete the tail by filter.
+    // Best-effort: cleanup failure must not fail the store (Constitution III
+    // Non-Blocking); the next re-upsert retries the same idempotent delete.
+    try {
+      await qdrant.delete(COLLECTION_NAME, {
+        filter: {
+          must: [
+            { key: 'decision_id', match: { value: decisionId } },
+            { key: 'chunk_index', range: { gte: chunks.length } },
+          ],
+        },
+      } as never);
+    } catch {
+      // Ignored — orphans stay until the next successful resync.
+    }
   } catch (err) {
     const quota = parseQuotaError(err, strategy.mode);
     if (quota) {

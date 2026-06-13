@@ -7,8 +7,7 @@
  * tool name fired) and whether the prompt carried an injected
  * `<valis_search_results>` block with `<hit` children.
  *
- * Task 3 implements `parseLog` only; `detectToolCall` / `deployTarget` are
- * added in Task 4.
+ * `parseLog` (Task 3); `detectToolCall` / `deployTarget` (Task 4).
  */
 
 import type { AgentAdapter, ParsedSession, PatchDescriptor } from '../types.js';
@@ -97,12 +96,54 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     return { sessionId, version, prompts };
   }
 
-  // Implemented in Task 4.
-  detectToolCall(_workerResponse: unknown): { tool: string | null; fired: boolean } {
-    throw new Error('detectToolCall not implemented (Task 4)');
+  /**
+   * Inspect a worker chat-completion response (OpenAI-compatible) for a
+   * tool/function call to a valis tool. Returns `{ tool, fired }` where
+   * `fired` is true iff `choices[].message.tool_calls[].function.name`
+   * matches `VALIS_CALL` (namespace-agnostic). Malformed / non-valis
+   * responses return `{ tool: null, fired: false }` (never throws).
+   */
+  detectToolCall(workerResponse: unknown): { tool: string | null; fired: boolean } {
+    const choices = (workerResponse as { choices?: unknown } | undefined)?.choices;
+    if (!Array.isArray(choices)) return { tool: null, fired: false };
+
+    for (const choice of choices) {
+      const toolCalls = (choice as { message?: { tool_calls?: unknown } } | undefined)?.message
+        ?.tool_calls;
+      if (!Array.isArray(toolCalls)) continue;
+      for (const call of toolCalls) {
+        const name = (call as { function?: { name?: unknown } } | undefined)?.function?.name;
+        if (typeof name === 'string' && VALIS_CALL.test(name)) {
+          return { tool: name, fired: true };
+        }
+      }
+    }
+    return { tool: null, fired: false };
   }
 
-  deployTarget(_surface: PatchDescriptor['surface']): PatchDescriptor {
-    throw new Error('deployTarget not implemented (Task 4)');
+  /**
+   * Map an optimizer surface to the real edit site (file + unique anchor).
+   * The harness EMITS a patch against these descriptors; a human applies it
+   * (const XII). Anchors are verified against the live source in recon.
+   */
+  deployTarget(surface: PatchDescriptor['surface']): PatchDescriptor {
+    switch (surface) {
+      case 'pull_tool_description':
+        return {
+          surface,
+          file: 'packages/cli/src/mcp/server.ts',
+          anchor: "Search the team's shared decision history",
+        };
+      case 'push_injection_template':
+        return {
+          surface,
+          file: 'packages/cli/src/hooks/inject-block.ts',
+          anchor: 'composeSearchResultsBlock',
+        };
+      default: {
+        const exhaustive: never = surface;
+        throw new Error(`unknown deploy surface: ${String(exhaustive)}`);
+      }
+    }
   }
 }

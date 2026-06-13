@@ -113,3 +113,81 @@ describe('ClaudeCodeAdapter.parseLog', () => {
     expect(session.prompts[0].consulted).toBe(true);
   });
 });
+
+/**
+ * Real-transcript shapes (verified against ~/.claude/projects/.../*.jsonl,
+ * 2026-06-13): the hook injection lives in a SEPARATE `type:"attachment"`
+ * event (`attachment.hookEvent === 'UserPromptSubmit'`, `attachment.content[]`),
+ * NOT inside the user message; and `type:"user"` events with array content are
+ * tool_result echoes, not prompts. A parser that ignores these reports
+ * injectRate = 0 against logs that demonstrably inject (the bug this guards).
+ */
+const promptSubmitInjection = (sessionId = 's1') =>
+  j({
+    type: 'attachment',
+    sessionId,
+    parentUuid: 'unreliable-uuid',
+    attachment: {
+      type: 'hook',
+      hookName: 'UserPromptSubmit',
+      hookEvent: 'UserPromptSubmit',
+      content: [
+        '<valis_search_results purpose="x" for_prompt="abc">\n  <hit id="d1" score="0.7">a decision</hit>\n</valis_search_results>',
+      ],
+    },
+  });
+
+const toolResultUser = (sessionId = 's1') =>
+  j({
+    type: 'user',
+    sessionId,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+  });
+
+describe('ClaudeCodeAdapter.parseLog — real transcript shapes', () => {
+  it('detects injection from a UserPromptSubmit attachment (not user content)', () => {
+    const jsonl = [userPrompt('execute the PRD'), promptSubmitInjection()].join('\n');
+
+    const session = new ClaudeCodeAdapter().parseLog(jsonl);
+    expect(session.prompts).toHaveLength(1);
+    expect(session.prompts[0].injected).toBe(true);
+  });
+
+  it('does NOT count tool_result user events as prompts', () => {
+    const jsonl = [
+      userPrompt('a real typed prompt'),
+      assistantToolUse('mcp__valis__valis_search'),
+      toolResultUser(),
+      toolResultUser(),
+    ].join('\n');
+
+    const session = new ClaudeCodeAdapter().parseLog(jsonl);
+    expect(session.prompts).toHaveLength(1); // only the typed prompt, not the 2 tool_results
+    expect(session.prompts[0].consulted).toBe(true);
+  });
+
+  it('attaches injection to the most recent prompt', () => {
+    const jsonl = [
+      userPrompt('first prompt'),
+      userPrompt('second prompt'),
+      promptSubmitInjection(),
+    ].join('\n');
+
+    const session = new ClaudeCodeAdapter().parseLog(jsonl);
+    expect(session.prompts).toHaveLength(2);
+    expect(session.prompts[0].injected).toBe(false);
+    expect(session.prompts[1].injected).toBe(true);
+  });
+
+  it('attachment without an injection block does not mark injected', () => {
+    const sessionStart = j({
+      type: 'attachment',
+      sessionId: 's1',
+      attachment: { type: 'hook', hookEvent: 'SessionStart', content: ['no injection here'] },
+    });
+    const jsonl = [userPrompt('hi'), sessionStart].join('\n');
+
+    const session = new ClaudeCodeAdapter().parseLog(jsonl);
+    expect(session.prompts[0].injected).toBe(false);
+  });
+});

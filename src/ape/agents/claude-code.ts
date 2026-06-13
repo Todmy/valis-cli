@@ -24,21 +24,41 @@ const VALIS_CALL = /mcp__[a-z_]*valis[a-z_]*__valis_(search|context|store|evolve
 const INJECTION_OPEN = /<valis_search_results\b/;
 const INJECTION_HIT = /<hit\b/; // NOT <result> — verified in recon
 
-/** Coerce arbitrary user-message `content` into a flat string for matching. */
-function userContentToString(content: unknown): string {
+/**
+ * The hook-injected `<valis_search_results>` block is NOT stored inside the
+ * user message — Claude Code records it as a separate `type:"attachment"`
+ * event whose `attachment.hookEvent === 'UserPromptSubmit'` and whose
+ * `attachment.content[]` holds the injected string. Verified against real
+ * transcripts under `~/.claude/projects` (2026-06-13): a session with
+ * demonstrable injections had 0 user-content matches and N attachment matches.
+ * A parser that only scans user content reports injectRate = 0 — a silent lie.
+ */
+const HOOK_INJECT_EVENT = 'UserPromptSubmit';
+
+/** Stringify an `attachment.content` (array of strings/parts) for matching. */
+function attachmentContentToString(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
-          return (part as { text: string }).text;
-        }
-        return '';
-      })
+      .map((part) =>
+        typeof part === 'string'
+          ? part
+          : part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+            ? (part as { text: string }).text
+            : '',
+      )
       .join('\n');
   }
   return '';
+}
+
+/** True iff a `type:"attachment"` event is a UserPromptSubmit hook carrying an injection block. */
+function attachmentInjected(obj: Record<string, unknown>): boolean {
+  const att = obj.attachment;
+  if (!att || typeof att !== 'object') return false;
+  if ((att as { hookEvent?: unknown }).hookEvent !== HOOK_INJECT_EVENT) return false;
+  const text = attachmentContentToString((att as { content?: unknown }).content);
+  return INJECTION_OPEN.test(text) && INJECTION_HIT.test(text);
 }
 
 /** True iff an assistant message contains a `tool_use` to a valis tool. */
@@ -60,8 +80,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   /**
    * Stream JSONL lines and fold them into a single ParsedSession.
    *
-   * Each user message opens a new prompt slot; a subsequent assistant
-   * `tool_use` to a valis tool marks the most recent prompt as consulted.
+   * A *prompt* is a `type:"user"` event with STRING content — a typed user
+   * turn. `type:"user"` events with array content are tool-result echoes
+   * (`list:tool_result`), NOT prompts, and are excluded so the consult/inject
+   * rates aren't diluted by them. A subsequent assistant `tool_use` to a valis
+   * tool marks the most recent prompt as consulted. A `UserPromptSubmit`
+   * attachment carrying a `<valis_search_results>`/`<hit>` block marks the most
+   * recent prompt as injected (the injection is a sibling event, not inline in
+   * the user message — see HOOK_INJECT_EVENT). An inline injection inside a
+   * string user message is also honoured as a fallback (older transcript shape).
    * Blank and non-JSON lines are skipped without throwing (version-tolerant).
    */
   parseLog(jsonl: string): ParsedSession {
@@ -83,10 +110,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       if (typeof obj.sessionId === 'string' && !sessionId) sessionId = obj.sessionId;
       if (typeof obj.version === 'string') version = obj.version;
 
-      if (obj.type === 'user') {
-        const text = userContentToString((obj.message as { content?: unknown } | undefined)?.content);
-        const injected = INJECTION_OPEN.test(text) && INJECTION_HIT.test(text);
-        prompts.push({ text, consulted: false, injected });
+      const rawContent = (obj.message as { content?: unknown } | undefined)?.content;
+
+      if (obj.type === 'user' && typeof rawContent === 'string') {
+        // A typed user turn. Array-content user events are tool_result echoes — skip.
+        const injected = INJECTION_OPEN.test(rawContent) && INJECTION_HIT.test(rawContent);
+        prompts.push({ text: rawContent, consulted: false, injected });
+      } else if (obj.type === 'attachment' && attachmentInjected(obj)) {
+        // Hook-injected block — attribute to the most recent prompt.
+        if (prompts.length > 0) prompts[prompts.length - 1].injected = true;
       } else if (obj.type === 'assistant' && assistantConsulted(obj.message)) {
         // Attribute the consult to the most recent user prompt.
         if (prompts.length > 0) prompts[prompts.length - 1].consulted = true;

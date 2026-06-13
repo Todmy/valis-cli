@@ -6,7 +6,8 @@
   "main": "./dist/src/index.js",
   "bin": {
     "valis": "./dist/bin/valis.js",
-    "valis-bench": "./dist/bin/valis-bench.js"
+    "valis-bench": "./dist/bin/valis-bench.js",
+    "valis-ape": "./dist/bin/valis-ape.js"
   },
   "scripts": {
     "build": "tsc",
@@ -15,6 +16,7 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "bench": "node dist/bin/valis-bench.js",
+    "ape": "node dist/bin/valis-ape.js",
     "corpus:fetch:longmemeval": "node --experimental-strip-types scripts/fetch-longmemeval.ts",
     "prepublishOnly": "pnpm run build && pnpm run test"
   },

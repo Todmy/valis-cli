@@ -1,14 +1,18 @@
 /**
- * 285/T005: gold-set corpus schema + loader + stratified split.
+ * 285/RT2: ApeScenario corpus schema + loader + stratified split.
  *
- * Contract (plan.md Task 5):
- * - `ApeCorpusItemSchema` (zod) validates the `ApeCorpusItem` shape from Task 1.
- * - `parseApeCorpusLine(line, n?)` → item, or `null` for blank/comment lines,
- *   throws on malformed JSON / schema violation.
- * - `loadApeCorpus(path)` reads JSONL → `{ items, contentHash }` with a SHA-256
- *   provenance hash over the raw file bytes.
- * - `splitTrainTest(items, seed)` is a deterministic stratified split (each
- *   stratum represented in both train and test).
+ * Contract (plan.md RT2):
+ * - `ApeScenarioSchema` (zod) = `{ id, turns: string[] (min 1), stratum,
+ *   should_consult, should_inject, label_source, needs_human_confirm,
+ *   source_session? }`.
+ * - `parseApeScenarioLine(line, n?)` → scenario, or `null` for blank/comment
+ *   lines, throws on malformed JSON / schema violation.
+ * - `loadApeCorpus(path)` reads JSONL → `{ scenarios, contentHash }` with a
+ *   SHA-256 provenance hash over the raw file bytes.
+ * - `splitTrainTest(scenarios, seed)` is a deterministic stratified split,
+ *   stratified by BOTH content stratum AND turn-length bucket (each present in
+ *   train and test).
+ * - `DEFAULT_SCENARIO_MIX` = `{ 1: 3, 2: 2, 3: 1 }`.
  *
  * Pattern mirrors `benchmarks/corpus-types.ts` (zod line schema + parse/skip)
  * and `benchmarks/corpus.ts` (load + SHA-256 provenance).
@@ -20,17 +24,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
-  ApeCorpusItemSchema,
-  parseApeCorpusLine,
+  ApeScenarioSchema,
+  parseApeScenarioLine,
   loadApeCorpus,
   splitTrainTest,
+  DEFAULT_SCENARIO_MIX,
+  type ApeScenario,
 } from '../../../src/ape/corpus/schema.js';
-import type { ApeCorpusItem } from '../../../src/ape/types.js';
 
-function item(overrides: Partial<ApeCorpusItem> = {}): ApeCorpusItem {
+function scenario(overrides: Partial<ApeScenario> = {}): ApeScenario {
   return {
-    id: 'i1',
-    prompt: 'implement the auth flow per our PRD',
+    id: 's1',
+    turns: ['implement the auth flow per our PRD'],
     should_consult: true,
     should_inject: true,
     stratum: 'normal',
@@ -40,44 +45,50 @@ function item(overrides: Partial<ApeCorpusItem> = {}): ApeCorpusItem {
   };
 }
 
-describe('ape/corpus/schema — ApeCorpusItemSchema', () => {
-  it('valid item parses', () => {
-    const parsed = ApeCorpusItemSchema.parse(item());
-    expect(parsed.id).toBe('i1');
+describe('ape/corpus/schema — ApeScenarioSchema', () => {
+  it('multi-turn scenario parses', () => {
+    const parsed = ApeScenarioSchema.parse(
+      scenario({ turns: ['set up the repo', 'add CI', 'now ship the auth flow'] }),
+    );
+    expect(parsed.turns).toHaveLength(3);
+    expect(parsed.turns[2]).toBe('now ship the auth flow');
     expect(parsed.stratum).toBe('normal');
-    expect(parsed.should_consult).toBe(true);
+  });
+
+  it('turns min 1 enforced', () => {
+    expect(() => ApeScenarioSchema.parse(scenario({ turns: [] }))).toThrow();
   });
 
   it('missing axis → throws', () => {
-    const { should_consult, ...withoutAxis } = item();
+    const { should_consult, ...withoutAxis } = scenario();
     void should_consult;
-    expect(() => ApeCorpusItemSchema.parse(withoutAxis)).toThrow();
+    expect(() => ApeScenarioSchema.parse(withoutAxis)).toThrow();
   });
 });
 
-describe('ape/corpus/schema — parseApeCorpusLine', () => {
-  it('valid item parses', () => {
-    const line = JSON.stringify(item());
-    const parsed = parseApeCorpusLine(line, 1);
+describe('ape/corpus/schema — parseApeScenarioLine', () => {
+  it('valid scenario parses', () => {
+    const line = JSON.stringify(scenario());
+    const parsed = parseApeScenarioLine(line, 1);
     expect(parsed).not.toBeNull();
-    expect(parsed?.id).toBe('i1');
+    expect(parsed?.id).toBe('s1');
   });
 
   it('blank line → null', () => {
-    expect(parseApeCorpusLine('', 1)).toBeNull();
-    expect(parseApeCorpusLine('   ', 2)).toBeNull();
-    expect(parseApeCorpusLine('# a comment', 3)).toBeNull();
+    expect(parseApeScenarioLine('', 1)).toBeNull();
+    expect(parseApeScenarioLine('   ', 2)).toBeNull();
+    expect(parseApeScenarioLine('# a comment', 3)).toBeNull();
   });
 
   it('missing axis → throws', () => {
-    const { should_inject, ...withoutAxis } = item();
+    const { should_inject, ...withoutAxis } = scenario();
     void should_inject;
     const line = JSON.stringify(withoutAxis);
-    expect(() => parseApeCorpusLine(line, 7)).toThrow();
+    expect(() => parseApeScenarioLine(line, 7)).toThrow();
   });
 
   it('malformed JSON → throws', () => {
-    expect(() => parseApeCorpusLine('{ not json', 4)).toThrow();
+    expect(() => parseApeScenarioLine('{ not json', 4)).toThrow();
   });
 });
 
@@ -91,10 +102,10 @@ describe('ape/corpus/schema — loadApeCorpus', () => {
     path = join(dir, 'corpus.jsonl');
     raw = [
       '# bootstrap corpus',
-      JSON.stringify(item({ id: 'a', stratum: 'normal' })),
+      JSON.stringify(scenario({ id: 'a', stratum: 'normal' })),
       '',
-      JSON.stringify(item({ id: 'b', stratum: 'store' })),
-      JSON.stringify(item({ id: 'c', stratum: 'near_boundary' })),
+      JSON.stringify(scenario({ id: 'b', stratum: 'store' })),
+      JSON.stringify(scenario({ id: 'c', stratum: 'near_boundary' })),
     ].join('\n');
     writeFileSync(path, raw);
   });
@@ -103,9 +114,9 @@ describe('ape/corpus/schema — loadApeCorpus', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('reads JSONL into items, skipping blank/comment lines', async () => {
-    const { items } = await loadApeCorpus(path);
-    expect(items.map((i) => i.id)).toEqual(['a', 'b', 'c']);
+  it('reads JSONL into scenarios, skipping blank/comment lines', async () => {
+    const { scenarios } = await loadApeCorpus(path);
+    expect(scenarios.map((s) => s.id)).toEqual(['a', 'b', 'c']);
   });
 
   it('attaches a SHA-256 provenance hash over the raw bytes', async () => {
@@ -119,13 +130,28 @@ describe('ape/corpus/schema — loadApeCorpus', () => {
   });
 });
 
+describe('ape/corpus/schema — DEFAULT_SCENARIO_MIX', () => {
+  it('scenarioMix default is 3/2/1', () => {
+    expect(DEFAULT_SCENARIO_MIX).toEqual({ 1: 3, 2: 2, 3: 1 });
+  });
+});
+
 describe('ape/corpus/schema — splitTrainTest', () => {
-  function corpus(): ApeCorpusItem[] {
-    const out: ApeCorpusItem[] = [];
-    // Enough per stratum so a stratified split puts at least one in each side.
+  function corpus(): ApeScenario[] {
+    const out: ApeScenario[] = [];
+    // Cross every content stratum with every length bucket, enough per cell so
+    // a doubly-stratified split puts at least one in each side.
     for (const stratum of ['normal', 'store', 'near_boundary'] as const) {
-      for (let i = 0; i < 6; i++) {
-        out.push(item({ id: `${stratum}-${i}`, stratum }));
+      for (const len of [1, 2, 3] as const) {
+        for (let i = 0; i < 4; i++) {
+          out.push(
+            scenario({
+              id: `${stratum}-${len}-${i}`,
+              stratum,
+              turns: Array.from({ length: len }, (_, t) => `turn ${t}`),
+            }),
+          );
+        }
       }
     }
     return out;
@@ -135,38 +161,40 @@ describe('ape/corpus/schema — splitTrainTest', () => {
     const items = corpus();
     const a = splitTrainTest(items, 42);
     const b = splitTrainTest(items, 42);
-    expect(a.train.map((i) => i.id)).toEqual(b.train.map((i) => i.id));
-    expect(a.test.map((i) => i.id)).toEqual(b.test.map((i) => i.id));
+    expect(a.train.map((s) => s.id)).toEqual(b.train.map((s) => s.id));
+    expect(a.test.map((s) => s.id)).toEqual(b.test.map((s) => s.id));
   });
 
   it('different seeds can produce different splits', () => {
     const items = corpus();
     const a = splitTrainTest(items, 1);
     const b = splitTrainTest(items, 999);
-    // Not a hard guarantee, but with 18 items and distinct PRNGs the train
-    // membership should differ for at least one item.
-    expect(a.train.map((i) => i.id)).not.toEqual(b.train.map((i) => i.id));
+    expect(a.train.map((s) => s.id)).not.toEqual(b.train.map((s) => s.id));
   });
 
-  it('near_boundary present in both train and test', () => {
+  it('split keeps near_boundary AND each length bucket in both halves', () => {
     const { train, test } = splitTrainTest(corpus(), 7);
-    expect(train.some((i) => i.stratum === 'near_boundary')).toBe(true);
-    expect(test.some((i) => i.stratum === 'near_boundary')).toBe(true);
+    expect(train.some((s) => s.stratum === 'near_boundary')).toBe(true);
+    expect(test.some((s) => s.stratum === 'near_boundary')).toBe(true);
+    for (const len of [1, 2, 3]) {
+      expect(train.some((s) => s.turns.length === len)).toBe(true);
+      expect(test.some((s) => s.turns.length === len)).toBe(true);
+    }
   });
 
-  it('every stratum is represented in both splits', () => {
+  it('every content stratum is represented in both splits', () => {
     const { train, test } = splitTrainTest(corpus(), 13);
     for (const stratum of ['normal', 'store', 'near_boundary'] as const) {
-      expect(train.some((i) => i.stratum === stratum)).toBe(true);
-      expect(test.some((i) => i.stratum === stratum)).toBe(true);
+      expect(train.some((s) => s.stratum === stratum)).toBe(true);
+      expect(test.some((s) => s.stratum === stratum)).toBe(true);
     }
   });
 
   it('train + test partition the input (no loss, no dup)', () => {
     const items = corpus();
     const { train, test } = splitTrainTest(items, 5);
-    const allIds = [...train, ...test].map((i) => i.id).sort();
-    expect(allIds).toEqual(items.map((i) => i.id).sort());
+    const allIds = [...train, ...test].map((s) => s.id).sort();
+    expect(allIds).toEqual(items.map((s) => s.id).sort());
     expect(new Set(allIds).size).toBe(items.length);
   });
 });

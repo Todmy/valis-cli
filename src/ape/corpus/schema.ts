@@ -1,24 +1,53 @@
 /**
- * 285/T005: gold-set corpus schema, loader, and deterministic stratified split.
+ * 285/RT2: ApeScenario corpus schema, loader, and deterministic stratified split.
+ *
+ * Reshaped from the single-prompt `ApeCorpusItem` to a multi-step `ApeScenario`
+ * (design.md §1, amended 2026-06-14). A scenario carries `turns: string[]`; the
+ * consult/inject decision is measured at the LAST turn, with turns `[0..n-2]` as
+ * real conversational context.
  *
  * Mirrors `benchmarks/corpus-types.ts` (zod line schema + parse/skip) and
  * `benchmarks/corpus.ts` (load + SHA-256 provenance). The corpus is a JSONL
- * file where each non-blank, non-`#`-comment line is one `ApeCorpusItem`.
+ * file where each non-blank, non-`#`-comment line is one `ApeScenario`.
+ *
+ * NOTE: `ApeScenario`, `Stratum`, `LabelSource`, and `ScenarioMix` are defined
+ * locally here; RT9 promotes the canonical types into `ape/types.ts`.
  */
 
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { ApeCorpusItem, Stratum } from '../types.js';
+
+export type Stratum = 'store' | 'near_boundary' | 'normal';
+export type LabelSource = 'llm_proposed' | 'human_confirmed';
+
+/** A multi-step eval unit: context turns + a final decision turn. */
+export interface ApeScenario {
+  id: string;
+  /** Conversation turns; the consult/inject decision is measured at the last. */
+  turns: string[];
+  should_consult: boolean;
+  should_inject: boolean;
+  stratum: Stratum;
+  label_source: LabelSource;
+  needs_human_confirm: boolean;
+  source_session?: string;
+}
+
+/** Length-bucket → target count, e.g. `{ 1: 3, 2: 2, 3: 1 }`. */
+export type ScenarioMix = Record<number, number>;
+
+/** Default smoke mix: lean multi-step but keep a 1-turn cold-start floor. */
+export const DEFAULT_SCENARIO_MIX: ScenarioMix = { 1: 3, 2: 2, 3: 1 };
 
 const StratumSchema = z.enum(['store', 'near_boundary', 'normal']);
 const LabelSourceSchema = z.enum(['llm_proposed', 'human_confirmed']);
 
-/** Zod validator for the `ApeCorpusItem` shape from Task 1 (`types.ts`). */
-export const ApeCorpusItemSchema = z
+/** Zod validator for the `ApeScenario` shape. */
+export const ApeScenarioSchema = z
   .object({
     id: z.string().min(1),
-    prompt: z.string().min(1),
+    turns: z.array(z.string().min(1)).min(1),
     should_consult: z.boolean(),
     should_inject: z.boolean(),
     stratum: StratumSchema,
@@ -40,16 +69,16 @@ export class ApeCorpusError extends Error {
 }
 
 /**
- * Parse a single JSONL line into an `ApeCorpusItem`.
+ * Parse a single JSONL line into an `ApeScenario`.
  *
  * Returns `null` for blank lines and `#`-prefixed comment lines so callers can
  * stream and ignore non-data lines uniformly. Throws `ApeCorpusError` for
  * malformed JSON or a schema violation, attaching the 1-based line number.
  */
-export function parseApeCorpusLine(
+export function parseApeScenarioLine(
   line: string,
   lineNumber?: number,
-): ApeCorpusItem | null {
+): ApeScenario | null {
   const trimmed = line.trim();
   if (trimmed.length === 0) return null;
   if (trimmed.startsWith('#')) return null;
@@ -64,11 +93,11 @@ export function parseApeCorpusLine(
     );
   }
 
-  const result = ApeCorpusItemSchema.safeParse(raw);
+  const result = ApeScenarioSchema.safeParse(raw);
   if (!result.success) {
     const issue = result.error.issues[0];
     throw new ApeCorpusError(
-      `invalid item shape: ${issue.path.join('.')} — ${issue.message}`,
+      `invalid scenario shape: ${issue.path.join('.')} — ${issue.message}`,
       lineNumber,
     );
   }
@@ -76,15 +105,15 @@ export function parseApeCorpusLine(
 }
 
 export interface LoadedApeCorpus {
-  items: ApeCorpusItem[];
+  scenarios: ApeScenario[];
   /** SHA-256 over the raw file bytes — provenance for reproducible runs. */
   contentHash: string;
 }
 
 /**
- * Read a corpus JSONL file into `ApeCorpusItem[]`, skipping blank/comment
- * lines, and attach a SHA-256 provenance hash over the raw bytes. Throws on a
- * missing file or any malformed line (fail-loud, 021 pattern).
+ * Read a corpus JSONL file into `ApeScenario[]`, skipping blank/comment lines,
+ * and attach a SHA-256 provenance hash over the raw bytes. Throws on a missing
+ * file or any malformed line (fail-loud, 021 pattern).
  */
 export async function loadApeCorpus(path: string): Promise<LoadedApeCorpus> {
   let raw: string;
@@ -96,21 +125,21 @@ export async function loadApeCorpus(path: string): Promise<LoadedApeCorpus> {
     );
   }
 
-  const items: ApeCorpusItem[] = [];
+  const scenarios: ApeScenario[] = [];
   const lines = raw.split('\n');
   for (let i = 0; i < lines.length; i++) {
-    const parsed = parseApeCorpusLine(lines[i], i + 1);
+    const parsed = parseApeScenarioLine(lines[i], i + 1);
     if (parsed === null) continue;
-    items.push(parsed);
+    scenarios.push(parsed);
   }
 
   const contentHash = createHash('sha256').update(raw).digest('hex');
-  return { items, contentHash };
+  return { scenarios, contentHash };
 }
 
 export interface TrainTestSplit {
-  train: ApeCorpusItem[];
-  test: ApeCorpusItem[];
+  train: ApeScenario[];
+  test: ApeScenario[];
 }
 
 /**
@@ -136,39 +165,42 @@ function seededShuffle<T>(arr: T[], rand: () => number): T[] {
 }
 
 /**
- * Deterministic stratified train/test split, ~20% to test.
+ * Deterministic doubly-stratified train/test split, ~20% to test.
  *
- * Groups by `stratum`, shuffles each group with a seeded PRNG, then takes the
- * test share per group. When a stratum has ≥2 items, at least one lands in each
- * split so every stratum is represented on both sides (the #290 boundary
- * stratum must appear in test). With a fixed `seed` the result is reproducible.
+ * Groups by the composite key `(content stratum × turn-length bucket)`, shuffles
+ * each cell with a seeded PRNG, then takes the test share per cell. When a cell
+ * has ≥2 scenarios, at least one lands in each split — so every content stratum
+ * AND every length bucket is represented on both sides (the #290 boundary
+ * stratum and each multi-turn bucket must appear in test). With a fixed `seed`
+ * the result is reproducible.
  */
 export function splitTrainTest(
-  items: ApeCorpusItem[],
+  scenarios: ApeScenario[],
   seed: number,
   testFraction = 0.2,
 ): TrainTestSplit {
-  const groups = new Map<Stratum, ApeCorpusItem[]>();
-  for (const it of items) {
-    const bucket = groups.get(it.stratum) ?? [];
-    bucket.push(it);
-    groups.set(it.stratum, bucket);
+  const groups = new Map<string, ApeScenario[]>();
+  for (const s of scenarios) {
+    const key = `${s.stratum}:${s.turns.length}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push(s);
+    groups.set(key, bucket);
   }
 
-  const train: ApeCorpusItem[] = [];
-  const test: ApeCorpusItem[] = [];
+  const train: ApeScenario[] = [];
+  const test: ApeScenario[] = [];
 
-  // Iterate strata in a stable order so the seeded stream is reproducible
+  // Iterate cells in a stable order so the seeded stream is reproducible
   // regardless of input ordering.
-  const strata = [...groups.keys()].sort();
-  for (const stratum of strata) {
-    const group = groups.get(stratum)!;
-    const rand = makeLcg(seed + hashStratum(stratum));
+  const keys = [...groups.keys()].sort();
+  for (const key of keys) {
+    const group = groups.get(key)!;
+    const rand = makeLcg(seed + hashKey(key));
     const shuffled = seededShuffle(group, rand);
 
     let testCount = Math.round(shuffled.length * testFraction);
     if (shuffled.length >= 2) {
-      // Guarantee both splits get at least one from this stratum.
+      // Guarantee both splits get at least one from this cell.
       testCount = Math.min(Math.max(testCount, 1), shuffled.length - 1);
     }
 
@@ -179,11 +211,11 @@ export function splitTrainTest(
   return { train, test };
 }
 
-/** Deterministic small offset so each stratum draws a distinct PRNG stream. */
-function hashStratum(stratum: Stratum): number {
+/** Deterministic small offset so each cell draws a distinct PRNG stream. */
+function hashKey(key: string): number {
   let h = 0;
-  for (let i = 0; i < stratum.length; i++) {
-    h = (Math.imul(h, 31) + stratum.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < key.length; i++) {
+    h = (Math.imul(h, 31) + key.charCodeAt(i)) >>> 0;
   }
   return h;
 }

@@ -14,7 +14,12 @@
  * No network/LLM call lives here — these are deterministic, no mocks needed.
  */
 import { describe, it, expect } from 'vitest';
-import { buildPushBrief, parsePushDecision } from '../../../src/ape/trial/push.js';
+import {
+  buildPushBrief,
+  parsePushDecision,
+  scorePushAnswer,
+  PUSH_ACTED_THRESHOLD,
+} from '../../../src/ape/trial/push.js';
 import type { ApeScenario } from '../../../src/ape/corpus/schema.js';
 import type { PromptVariant } from '../../../src/ape/types.js';
 
@@ -78,9 +83,18 @@ describe('buildPushBrief', () => {
     expect(brief.decisionTurn).toContain('<valis_search_results');
   });
 
-  it('exposes a structured-output schema with acts_on_injection', () => {
+  // RT20 (F10): push is two-stage — worker ANSWERS, judge scores adherence.
+  it('schema asks the worker for a free-text answer (not a self-report bool)', () => {
     const brief = buildPushBrief(scenario, variant);
-    expect(brief.schema).toContain('acts_on_injection');
+    expect(brief.schema.toLowerCase()).toContain('answer');
+    expect(brief.schema).not.toContain('acts_on_injection');
+  });
+
+  it('carries a judge scaffold (system + task) for stage 2', () => {
+    const brief = buildPushBrief(scenario, variant);
+    expect(brief.judge).toBeDefined();
+    expect(typeof brief.judge!.system).toBe('string');
+    expect(brief.judge!.task).toBe(scenario.turns[scenario.turns.length - 1]);
   });
 
   it('offers a valis tool the worker can act with', () => {
@@ -138,5 +152,27 @@ describe('parsePushDecision', () => {
 
   it('missing acts_on_injection → throws', () => {
     expect(() => parsePushDecision('{"other": true}')).toThrow();
+  });
+});
+
+// RT20 (F10): stage 2 — the judge's numeric score → mechanical `acted`.
+describe('scorePushAnswer', () => {
+  it('score above threshold → acted true', () => {
+    const { acted, score } = scorePushAnswer('0.9');
+    expect(score).toBe(0.9);
+    expect(acted).toBe(true);
+  });
+
+  it('score below threshold → acted false', () => {
+    const { acted } = scorePushAnswer('0.1');
+    expect(acted).toBe(false);
+  });
+
+  it('exactly at threshold → acted true', () => {
+    expect(scorePushAnswer(String(PUSH_ACTED_THRESHOLD)).acted).toBe(true);
+  });
+
+  it('non-numeric judge reply → throws (fail-loud)', () => {
+    expect(() => scorePushAnswer('the answer follows the decision')).toThrow();
   });
 });

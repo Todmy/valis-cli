@@ -85,6 +85,15 @@ export interface WorkerBrief {
   decisionTurn: string;
   tools: WorkerTool[];
   schema: string;
+  /**
+   * RT20 (F10): present on PUSH (inject) briefs only. The push trial is two-stage
+   * — the worker produces a free-text ANSWER, then an Opus judge scores how well
+   * that answer FOLLOWS the injected decision (inject-action is a quality
+   * judgement, not a tool-call). The session builds the judge prompt from
+   * `judge.system` + `judge.task` + the worker's answer, spawns the judge, and
+   * records the judge's numeric score (see `push.ts::scorePushAnswer`).
+   */
+  judge?: { system: string; task: string };
 }
 
 export interface MechanicalLabels {

@@ -217,7 +217,7 @@ export function recordWorkerResult(run, dispatch, rawWorkerReply) {
   if (dispatch.axis === 'consult') {
     entry.consulted = lib.pull.parsePullDecision(rawWorkerReply).consulted;
   } else {
-    entry.acted = lib.push.parsePushDecision(rawWorkerReply).acted;
+    entry.acted = lib.push.scorePushAnswer(rawWorkerReply).acted;
   }
   run.mechanical.set(dispatch.scenarioId, entry);
 }
@@ -445,7 +445,7 @@ export function recordVariantResult(opt, dispatch, rawWorkerReply) {
   if (dispatch.axis === 'consult') {
     entry.consulted = lib.pull.parsePullDecision(rawWorkerReply).consulted;
   } else {
-    entry.acted = lib.push.parsePushDecision(rawWorkerReply).acted;
+    entry.acted = lib.push.scorePushAnswer(rawWorkerReply).acted;
   }
   opt.mechanical.set(dispatch.key, entry);
 }
@@ -842,8 +842,9 @@ export async function dryCheck() {
     const consult = s.should_consult;
     recordWorkerResult(run, { scenarioId: s.id, axis: 'consult', brief: pullBrief },
       JSON.stringify({ would_consult: consult, tool: consult ? 'mcp__valis__valis_search' : null }));
+    // RT20: push reply is now a JUDGE SCORE (stage 2), not a self-report bool.
     recordWorkerResult(run, { scenarioId: s.id, axis: 'inject', brief: pushBrief },
-      JSON.stringify({ acts_on_injection: s.should_inject }));
+      String(s.should_inject ? 0.9 : 0.1));
   }
 
   const summary = aggregateEval(run);
@@ -929,7 +930,7 @@ export async function optimizeDryCheck() {
     const yes = perfect ? isPos : false; // weak baseline never fires
     return dispatch.axis === 'consult'
       ? JSON.stringify({ would_consult: yes, tool: yes ? 'mcp__valis__valis_search' : null })
-      : JSON.stringify({ acts_on_injection: yes });
+      : String(yes ? 0.9 : 0.1); // RT20: push reply is a judge score (stage 2)
   };
   const runBatch = (dispatches, perfect) => {
     for (const d of dispatches) recordVariantResult(opt, d, replyFor(d, perfect));

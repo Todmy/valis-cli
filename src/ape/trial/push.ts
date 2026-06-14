@@ -24,6 +24,7 @@ import {
   composeSearchResultsBlock,
   type SearchResultRow,
 } from '../../hooks/inject-block.js';
+import { JUDGE_SYSTEM, parseJudgeScore } from './judge.js';
 import type { ApeScenario, PromptVariant, WorkerBrief, WorkerTool } from '../types.js';
 
 /**
@@ -71,14 +72,20 @@ const VALIS_TOOL: WorkerTool = {
 };
 
 /**
- * Structured-output schema the worker must reply with. The orchestration forces
- * this shape; `parsePushDecision` reads it back. Kept as a stable string so it is
- * embeddable verbatim in the subagent brief.
+ * RT20 (F10): the push worker now produces a real ANSWER, not a self-reported
+ * boolean. "Acting on an injection" is whether the answer is SHAPED by the
+ * injected decision — a quality judgement an Opus judge makes (`scorePushAnswer`),
+ * not a tool-call the worker self-reports. (Self-report measured the wrong thing:
+ * a relevant injected decision that merely confirms the answer needs no tool call,
+ * so the old `acts_on_injection` collapsed to ~0 regardless of relevance.)
  */
 const PUSH_SCHEMA =
-  '{ "acts_on_injection": boolean } — ' +
-  'set acts_on_injection=true ONLY if you would call a valis tool / follow the ' +
-  'injected team-decision block before answering the last turn; otherwise false.';
+  'Answer the developer\'s current message in 1-3 sentences (a brief plan or ' +
+  'direct answer). If the injected team-decision block is relevant, your answer ' +
+  'should reflect it. Reply with ONLY your answer text — no preamble, no JSON.';
+
+/** Push "acted" threshold: judge score ≥ this counts as acting on the injection. */
+export const PUSH_ACTED_THRESHOLD = 0.5;
 
 /**
  * Build the push-trial worker brief from a scenario + candidate variant.
@@ -107,7 +114,22 @@ export function buildPushBrief(scenario: ApeScenario, variant: PromptVariant): W
     decisionTurn,
     tools: [VALIS_TOOL],
     schema: PUSH_SCHEMA,
+    // RT20: judge scaffold for stage 2 — the session builds the judge prompt as
+    // JUDGE_SYSTEM + `AXIS inject / TASK <task> / OUTPUT <worker answer> / SCORE:`
+    // (mirrors judge.ts::buildJudgeBrief) and records the judge's numeric reply.
+    judge: { system: JUDGE_SYSTEM, task: lastTurn },
   };
+}
+
+/**
+ * RT20 (F10) — stage 2: interpret the JUDGE's score of the worker's answer into
+ * the mechanical `acted` label. `acted` = the judge scored the answer's adherence
+ * to the injected decision at or above `PUSH_ACTED_THRESHOLD`. Fail-loud on a
+ * non-numeric / out-of-range judge reply (via `parseJudgeScore`).
+ */
+export function scorePushAnswer(judgeReply: unknown): { acted: boolean; score: number } {
+  const score = parseJudgeScore(typeof judgeReply === 'string' ? judgeReply : String(judgeReply));
+  return { acted: score >= PUSH_ACTED_THRESHOLD, score };
 }
 
 /** The worker's structured push decision once parsed. */

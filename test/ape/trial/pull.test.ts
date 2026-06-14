@@ -1,22 +1,29 @@
 /**
- * 285/T008: pull-axis trial.
+ * 285/RT4: pull-axis trial — brief-builder + decision-parser.
  *
- * runPullTrial(variant, item, deps) builds a worker chat request: a minimal
- * agent harness system prompt PLUS the candidate `valis_search` tool schema
- * whose `description` = variant.text; user = item.prompt. It calls the worker
- * (Haiku via the injected gateway), runs adapter.detectToolCall over the raw
- * response → mechanical.consulted, and records costUsd.
+ * The pull trial is split into its two PURE halves (the LLM call is a subagent
+ * the orchestration layer spawns, not TS):
+ *  - `buildPullBrief(scenario, variant)` builds a `WorkerBrief` carrying the
+ *    multi-turn context, the final decision turn (last), the candidate
+ *    `valis_search`/`valis_context` description as available tools, and a
+ *    structured-output schema `{ would_consult, tool }`.
+ *  - `parsePullDecision(raw)` reads the worker's structured decision → `{ consulted }`,
+ *    failing loud on unparseable input.
  *
- * No live calls — the gateway is a stub returning a canned worker response.
+ * No network/LLM call lives here — these are deterministic, no mocks needed.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { runPullTrial } from '../../../src/ape/trial/pull.js';
-import { ClaudeCodeAdapter } from '../../../src/ape/agents/claude-code.js';
-import type { ApeCorpusItem, PromptVariant } from '../../../src/ape/types.js';
+import { describe, it, expect } from 'vitest';
+import { buildPullBrief, parsePullDecision } from '../../../src/ape/trial/pull.js';
+import type { ApeScenario } from '../../../src/ape/corpus/schema.js';
+import type { PromptVariant } from '../../../src/ape/types.js';
 
-const item: ApeCorpusItem = {
-  id: 'item-1',
-  prompt: 'How did we decide to handle auth tokens?',
+const scenario: ApeScenario = {
+  id: 'scn-1',
+  turns: [
+    'We are executing the auth PRD.',
+    'Now wire up the token refresh path.',
+    'How did we decide to handle auth tokens?',
+  ],
   should_consult: true,
   should_inject: false,
   stratum: 'normal',
@@ -30,62 +37,59 @@ const variant: PromptVariant = {
   text: 'UNIQUE-DESC-MARKER search the team decision history before acting',
 };
 
-const toolCallResponse = (name: string) => ({
-  choices: [
-    {
-      message: {
-        role: 'assistant',
-        content: null,
-        tool_calls: [{ type: 'function', function: { name, arguments: '{"query":"x"}' } }],
-      },
-    },
-  ],
-});
-
-const textResponse = (text: string) => ({
-  choices: [{ message: { role: 'assistant', content: text } }],
-});
-
-/** Build deps with a stub worker call that returns a fixed raw response + cost. */
-function makeDeps(rawResponse: unknown, costUsd: number) {
-  const callWorker = vi.fn(async (_req: unknown) => ({ raw: rawResponse, costUsd }));
-  return { adapter: new ClaudeCodeAdapter(), callWorker };
-}
-
-describe('runPullTrial', () => {
-  it('consulted=true when worker emits valis_search call', async () => {
-    const deps = makeDeps(toolCallResponse('mcp__valis__valis_search'), 0.001);
-    const result = await runPullTrial(variant, item, deps);
-    expect(result.mechanical.consulted).toBe(true);
-    expect(result.itemId).toBe('item-1');
-    expect(result.variantId).toBe('variant-1');
-  });
-
-  it('consulted=false on plain answer', async () => {
-    const deps = makeDeps(textResponse('Here is a direct answer, no tool needed.'), 0.0005);
-    const result = await runPullTrial(variant, item, deps);
-    expect(result.mechanical.consulted).toBe(false);
-  });
-
-  it('costUsd recorded', async () => {
-    const deps = makeDeps(textResponse('plain'), 0.0042);
-    const result = await runPullTrial(variant, item, deps);
-    expect(result.costUsd).toBe(0.0042);
-  });
-
-  it('variant.text appears in the tool description sent', async () => {
-    const deps = makeDeps(textResponse('plain'), 0.0);
-    await runPullTrial(variant, item, deps);
-    expect(deps.callWorker).toHaveBeenCalledTimes(1);
-    const sent = deps.callWorker.mock.calls[0][0] as {
-      system: string;
-      messages: { role: string; content: string }[];
-      tools: { function: { name: string; description: string } }[];
-    };
-    const valisTool = sent.tools.find((t) => t.function.name.includes('valis_search'));
+describe('buildPullBrief', () => {
+  it('brief carries variant description + all turns', () => {
+    const brief = buildPullBrief(scenario, variant);
+    // every turn is represented in the brief
+    for (const turn of scenario.turns) {
+      expect(brief.context.includes(turn) || brief.decisionTurn === turn).toBe(true);
+    }
+    // the candidate description is offered as an available valis tool
+    const valisTool = brief.tools.find((t) => t.name.includes('valis_search'));
     expect(valisTool).toBeDefined();
-    expect(valisTool!.function.description).toBe(variant.text);
-    // user message carries the corpus prompt
-    expect(sent.messages.some((m) => m.role === 'user' && m.content === item.prompt)).toBe(true);
+    expect(valisTool!.description).toBe(variant.text);
+  });
+
+  it('decision turn is last', () => {
+    const brief = buildPullBrief(scenario, variant);
+    expect(brief.decisionTurn).toBe(scenario.turns[scenario.turns.length - 1]);
+  });
+
+  it('exposes a structured-output schema with would_consult + tool', () => {
+    const brief = buildPullBrief(scenario, variant);
+    expect(brief.schema).toContain('would_consult');
+    expect(brief.schema).toContain('tool');
+  });
+
+  it('single-turn scenario: decision turn is the only turn, no prior context', () => {
+    const single: ApeScenario = { ...scenario, turns: ['What is auth?'] };
+    const brief = buildPullBrief(single, variant);
+    expect(brief.decisionTurn).toBe('What is auth?');
+    expect(brief.context).toBe('');
+  });
+});
+
+describe('parsePullDecision', () => {
+  it('parses {would_consult:true}', () => {
+    const { consulted } = parsePullDecision('{"would_consult": true, "tool": "valis_search"}');
+    expect(consulted).toBe(true);
+  });
+
+  it('parses {would_consult:false}', () => {
+    const { consulted } = parsePullDecision('{"would_consult": false, "tool": null}');
+    expect(consulted).toBe(false);
+  });
+
+  it('tolerates an already-parsed object', () => {
+    const { consulted } = parsePullDecision({ would_consult: true });
+    expect(consulted).toBe(true);
+  });
+
+  it('malformed → throws', () => {
+    expect(() => parsePullDecision('not json at all')).toThrow();
+  });
+
+  it('missing would_consult → throws', () => {
+    expect(() => parsePullDecision('{"tool": "valis_search"}')).toThrow();
   });
 });

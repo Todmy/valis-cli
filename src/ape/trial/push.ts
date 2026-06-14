@@ -27,12 +27,15 @@ import {
 import type { ApeScenario, PromptVariant, WorkerBrief, WorkerTool } from '../types.js';
 
 /**
- * A single synthetic search hit injected into the decision turn. The push trial
- * tests whether the agent ACTS on injected context, so the row content is held
- * fixed and only the surrounding preamble (`variant.text`) varies — that frame
- * is the thing under optimization.
+ * Fallback synthetic hit, used ONLY when a scenario carries no `injected_hits`.
+ *
+ * RT17 (F8): a FIXED hit is off-topic for most prompts, so a capable model
+ * correctly ignores it and `injectActionRate` collapses to "blind compliance to
+ * irrelevant injection" (always ~0). Prefer per-scenario RELEVANT hits
+ * (`scenario.injected_hits`); this fixture survives only as a last resort so a
+ * corpus authored without hits still produces a (clearly off-topic) block.
  */
-const FIXTURE_ROW: SearchResultRow = {
+const FALLBACK_ROW: SearchResultRow = {
   id: 'd-fixture',
   summary: 'Auth tokens are stored server-side only; never expose them to the client.',
   type: 'decision',
@@ -40,6 +43,21 @@ const FIXTURE_ROW: SearchResultRow = {
   score: 0.92,
   affects: ['auth'],
 };
+
+/** Map a scenario's relevant `injected_hits` to the hook serializer's row shape. */
+function rowsFor(scenario: ApeScenario): SearchResultRow[] {
+  if (scenario.injected_hits && scenario.injected_hits.length > 0) {
+    return scenario.injected_hits.map((h) => ({
+      id: h.id,
+      summary: h.summary,
+      type: h.type,
+      status: h.status,
+      score: h.score,
+      affects: h.affects,
+    }));
+  }
+  return [FALLBACK_ROW];
+}
 
 /** The valis tool offered to the worker so it has a way to ACT on the injection. */
 const VALIS_TOOL: WorkerTool = {
@@ -76,8 +94,9 @@ export function buildPushBrief(scenario: ApeScenario, variant: PromptVariant): W
   const context = turns.slice(0, -1).join('\n');
 
   // Build the injection block with the REAL hook serializer — do NOT
-  // reimplement it. promptHash is opaque; the scenario id suffices.
-  const block = composeSearchResultsBlock([FIXTURE_ROW], scenario.id);
+  // reimplement it. promptHash is opaque; the scenario id suffices. Inject the
+  // scenario's RELEVANT hits when present (RT17), else the off-topic fallback.
+  const block = composeSearchResultsBlock(rowsFor(scenario), scenario.id);
 
   // variant.text is the optimized preamble; the block follows; the last turn is
   // the actual user task. Mirrors how augment.ts prepends the block.

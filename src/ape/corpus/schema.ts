@@ -28,6 +28,18 @@ export const DEFAULT_SCENARIO_MIX: ScenarioMix = { 1: 3, 2: 2, 3: 1 };
 const StratumSchema = z.enum(['store', 'near_boundary', 'normal']);
 const LabelSourceSchema = z.enum(['llm_proposed', 'human_confirmed']);
 
+/** RT17 (F8): a per-scenario relevant injected hit (mirrors SearchResultRow). */
+const InjectedHitSchema = z
+  .object({
+    id: z.string().min(1),
+    summary: z.string().min(1),
+    type: z.string().min(1),
+    status: z.string().min(1).optional(),
+    score: z.number(),
+    affects: z.array(z.string()).optional(),
+  })
+  .strict();
+
 /** Zod validator for the `ApeScenario` shape. */
 export const ApeScenarioSchema = z
   .object({
@@ -39,6 +51,7 @@ export const ApeScenarioSchema = z
     label_source: LabelSourceSchema,
     needs_human_confirm: z.boolean(),
     source_session: z.string().min(1).optional(),
+    injected_hits: z.array(InjectedHitSchema).optional(),
   })
   .strict();
 

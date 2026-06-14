@@ -88,6 +88,32 @@ describe('buildPushBrief', () => {
     const valisTool = brief.tools.find((t) => t.name.includes('valis_search'));
     expect(valisTool).toBeDefined();
   });
+
+  // RT17 (F8): per-scenario RELEVANT injected hits replace the off-topic fixture.
+  it('uses scenario.injected_hits when present (relevant, not the fixture)', () => {
+    const withHits: ApeScenario = {
+      ...scenario,
+      injected_hits: [
+        {
+          id: 'rel-1',
+          summary: 'Dashboard auth must reuse the shared OAuth flow, never a new one.',
+          type: 'decision',
+          status: 'active',
+          score: 0.95,
+          affects: ['auth', 'dashboard'],
+        },
+      ],
+    };
+    const brief = buildPushBrief(withHits, variant);
+    expect(brief.decisionTurn).toContain('Dashboard auth must reuse the shared OAuth flow');
+    // the off-topic fallback fixture must NOT appear when relevant hits exist
+    expect(brief.decisionTurn).not.toContain('Auth tokens are stored server-side only');
+  });
+
+  it('falls back to the fixture row when no injected_hits', () => {
+    const brief = buildPushBrief(scenario, variant);
+    expect(brief.decisionTurn).toContain('Auth tokens are stored server-side only');
+  });
 });
 
 describe('parsePushDecision', () => {

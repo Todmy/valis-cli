@@ -39,6 +39,25 @@ export interface ApeScenario {
   label_source: LabelSource;
   needs_human_confirm: boolean;
   source_session?: string;
+  /** RT17 (F8): per-scenario relevant hits to inject in the push trial. */
+  injected_hits?: InjectedHit[];
+}
+
+/**
+ * RT17 (F8): a relevant search hit to inject for a scenario's push trial.
+ * Structurally mirrors `hooks/inject-block.ts::SearchResultRow` (kept local to
+ * preserve this file's no-imports rule); `push.ts` maps it to that type. When a
+ * scenario carries `injected_hits`, the push trial injects THESE (relevant to the
+ * prompt) instead of a fixed off-topic fixture — so `injectActionRate` measures
+ * acting on RELEVANT context, not blind compliance.
+ */
+export interface InjectedHit {
+  id: string;
+  summary: string;
+  type: string;
+  status?: string;
+  score: number;
+  affects?: string[];
 }
 
 /** Length-bucket → target count, e.g. `{ 1: 3, 2: 2, 3: 1 }`. */

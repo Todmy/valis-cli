@@ -10,7 +10,10 @@
  * The injected `llm` mirrors the `callGateway` signature; no live calls.
  */
 import { describe, it, expect } from 'vitest';
-import type { GatewayResult, GatewayRequest } from '../../../src/ape/llm/gateway-client.js';
+import type {
+  GatewayResult,
+  GatewayRequest,
+} from '../../../src/ape/optimizer/opro.js';
 import { OproRewriter, OPRO_SYSTEM } from '../../../src/ape/optimizer/opro.js';
 import type { Optimizer } from '../../../src/ape/optimizer/optimizer.js';
 import type { EvalSummary, PromptVariant } from '../../../src/ape/types.js';

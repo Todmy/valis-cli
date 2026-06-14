@@ -14,12 +14,12 @@
  * live calls.
  */
 import { describe, it, expect } from 'vitest';
-import type { GatewayResult } from '../../../src/ape/llm/gateway-client.js';
 import {
   proposeLabels,
   generateNearBoundary,
   LABEL_RUBRIC,
   type LabelLlm,
+  type GatewayResult,
 } from '../../../src/ape/corpus/label.js';
 import type { MinedPrompt } from '../../../src/ape/corpus/mine.js';
 import type { ApeCorpusItem } from '../../../src/ape/types.js';

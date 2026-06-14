@@ -16,7 +16,28 @@
  */
 
 import type { EvalSummary, Optimizer, PromptVariant } from '../types.js';
-import type { GatewayResult, GatewayRequest } from '../llm/gateway-client.js';
+
+/**
+ * Minimal model-call shapes. The Gateway LLM layer was removed (RT1) — trial
+ * execution is now in-session subagents (see design.md). These local types keep
+ * the injectable-llm seam compiling until RT7 reshapes this rewriter into a
+ * brief-builder + candidate-parser.
+ */
+export interface GatewayRequest {
+  model: string;
+  system: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  maxTokens: number;
+  temperature: number;
+}
+
+export interface GatewayResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costUsd: number;
+}
 
 /** Injectable model call — same shape as `callGateway`. */
 export type RewriterLlm = (req: GatewayRequest) => Promise<GatewayResult>;

@@ -18,8 +18,29 @@
  */
 
 import type { ApeCorpusItem, Stratum } from '../types.js';
-import type { GatewayResult, GatewayRequest } from '../llm/gateway-client.js';
 import type { MinedPrompt } from './mine.js';
+
+/**
+ * Minimal model-call shapes. The Gateway LLM layer was removed (RT1) — trial
+ * execution is now in-session subagents (see design.md). These local types keep
+ * the injectable-llm seam compiling until RT13 reshapes labeling onto the
+ * in-session orchestration.
+ */
+export interface GatewayRequest {
+  model: string;
+  system: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  maxTokens: number;
+  temperature: number;
+}
+
+export interface GatewayResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costUsd: number;
+}
 
 /** Injectable model call — same shape as `callGateway`. */
 export type LabelLlm = (req: GatewayRequest) => Promise<GatewayResult>;

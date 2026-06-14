@@ -82,10 +82,19 @@ describe('valis-ape CLI', () => {
     expect(runApe).not.toHaveBeenCalled();
   });
 
-  it('propagates the runApe exit code (e.g. 2 on budget halt)', async () => {
+  it('propagates the runApe exit code', async () => {
     const { runApe } = spyApe(2);
     const code = await runCli(['--mode', 'optimize'], { runApe });
 
     expect(code).toBe(2);
+  });
+
+  it('bin source has no import of the deleted llm/ modules', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const binPath = fileURLToPath(new URL('../../bin/valis-ape.ts', import.meta.url));
+    const src = readFileSync(binPath, 'utf-8');
+    expect(src).not.toMatch(/llm\/(gateway-client|pricing)/);
+    expect(src).not.toMatch(/gateway-client|llm\/gateway/);
   });
 });

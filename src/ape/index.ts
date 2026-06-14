@@ -1,52 +1,49 @@
 /**
- * 285/T020: `runApe` orchestrator.
+ * 285/RT12: `runApe` orchestrator (re-plan v2 — in-session subagent architecture).
  *
- * The single entry point that wires the pinned models (worker = Haiku 4.5,
- * judge / rewriter = Opus 4.8), the spend cap (`opts.budgetUsd ?? 40` — the
- * Cost invariant: $40/run default hard cap, halts on exceed), and
- * `ClaudeCodeAdapter` into one of three offline modes:
+ * The single LLM-free entry point. After the re-plan v2 pivot the eval/optimize
+ * loop no longer runs as a standalone API client — it runs as an in-session
+ * Claude Code orchestration (a Workflow that spawns real-model subagents). So
+ * `runApe` keeps only the shipped, LLM-free `baseline` mode; `eval`/`optimize`
+ * print a pointer to that orchestration.
  *
  *   - `baseline` — parse off-the-shelf session JSONL (const II) → real-log
- *                  consult/inject rates → report. No gold-set labels needed.
- *   - `eval`     — offline trial eval of the CURRENT prompts over the corpus →
- *                  report. Measures correctness against the gold-set labels.
- *   - `optimize` — full OPRO loop (propose → eval → variance-band accept) →
- *                  report + EMIT a patch file under
- *                  `docs/krukit/285-ape-harness/patches/`. The winner is a
- *                  PROPOSAL: a human applies the patch (const XII). This module
- *                  NEVER edits `server.ts` / `inject-block.ts`.
+ *                  consult/inject rates → report. No gold-set labels, no models.
+ *   - `eval` / `optimize` — the standalone API path is removed. Print a pointer
+ *                  to the in-session orchestration (Workflow) and return 0.
  *
  * Const III: this is a separate offline process, never in the live hook path.
  *
  * Sub-modules are injected via `ApeRunDeps` (with real-module defaults) so the
- * orchestration is testable without live models or disk reads. The default
- * deps in `defaultDeps()` are the only place that touches the network — every
- * branch below is pure control flow over the injected functions.
+ * baseline branch is testable without disk reads. The default deps in
+ * `defaultDeps()` are the only place that touches disk — every branch below is
+ * pure control flow over the injected functions.
  */
 
-import { writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 
-import type { AgentAdapter, EvalSummary } from './types.js';
+import type { AgentAdapter } from './types.js';
 import { ClaudeCodeAdapter } from './agents/claude-code.js';
 import { evalRealLog } from './eval/real-log.js';
 import { writeApeReport, DEFAULT_APE_REPORT_DIR } from './eval/report.js';
 import type { ApeRealLogRates, ApeModelAssignments } from './eval/report.js';
-import type { OptimizeResult } from './optimizer/loop.js';
 
-/** Cost invariant: $40/run default hard cap (configurable via `--budget-usd`). */
+/**
+ * Legacy default kept so the CLI's `--budget-usd` flag still parses. The
+ * call/token budget now lives in the in-session orchestration (RT8 `createBudget`),
+ * not here; this value is inert for the surviving LLM-free `baseline` mode.
+ */
 export const DEFAULT_BUDGET_USD = 40;
 
-/** Default patch-emission dir — proposals only; a human applies them (const XII). */
-export const DEFAULT_PATCH_DIR = 'docs/krukit/285-ape-harness/patches';
-
-/** Pinned model assignments (plan §Pinned decisions). */
+/** Pinned model assignments (plan §Pinned decisions) — used by the orchestration. */
 export const APE_MODELS: ApeModelAssignments = {
   worker: 'anthropic/claude-haiku-4.5',
   judge: 'anthropic/claude-opus-4-8',
   rewriter: 'anthropic/claude-opus-4-8',
 };
+
+/** Where the eval/optimize orchestration Workflow lives (printed by the pointer). */
+const ORCHESTRATION_DIR = 'packages/cli/src/ape/orchestration/';
 
 export type ApeMode = 'baseline' | 'eval' | 'optimize';
 
@@ -54,26 +51,24 @@ export interface ApeRunOpts {
   mode: ApeMode;
   /** Real-log baseline source (`baseline` mode). */
   projectsDir?: string;
-  /** Gold-set corpus path (`eval` / `optimize` modes). */
+  /** Gold-set corpus path — accepted for CLI compatibility; orchestration-only now. */
   corpus?: string;
   /** Report output dir. Defaults to the 021-sibling ape dir. */
   outDir?: string;
-  /** Patch emission dir (`optimize` mode). Defaults to the 285 patches dir. */
+  /** Patch emission dir — accepted for CLI compatibility; orchestration-only now. */
   patchDir?: string;
-  /** Spend cap override; defaults to $40. */
+  /** Spend cap override — accepted for CLI compatibility; inert for `baseline`. */
   budgetUsd?: number;
 }
 
 /**
- * Injectable sub-module seam. Defaults wire the real modules; tests pass mocks.
- * `runOptimize` is the loop entry the orchestrator drives in `optimize` mode,
- * already bound to its eval/optimizer/spend deps by the default wiring.
+ * Injectable sub-module seam for the surviving LLM-free `baseline` mode. Defaults
+ * wire the real modules; tests pass mocks. The eval/optimize loop deps moved to
+ * the in-session orchestration (Workflow), so they are no longer here.
  */
 export interface ApeRunDeps {
   evalRealLog: (opts: { projectsDir: string; adapter: AgentAdapter }) => ApeRealLogRates;
   writeApeReport: typeof writeApeReport;
-  runOptimize: (opts: { budgetUsd: number; corpus?: string }) => Promise<OptimizeResult>;
-  evalCurrent: (opts: { corpus?: string }) => Promise<EvalSummary>;
   gitCommit: () => string;
 }
 
@@ -86,8 +81,8 @@ function gitCommit(): string {
   }
 }
 
-/** Empty EvalSummary — the before/after slots when a mode does not measure that side. */
-function emptySummary(): EvalSummary {
+/** Empty EvalSummary — the unmeasured before/after slots in a baseline (real-log only) report. */
+function emptySummary() {
   return {
     consultPrecision: 0,
     consultRecall: 0,
@@ -97,36 +92,9 @@ function emptySummary(): EvalSummary {
   };
 }
 
-/** Zeroed real-log rates — the slot when a mode does not parse session logs. */
-function emptyRealLog(): ApeRealLogRates {
-  return { sessions: 0, prompts: 0, consultRate: 0, injectRate: 0 };
-}
-
-/**
- * Real-module default deps. This is the ONLY place that touches live models /
- * disk; `runApe` itself is pure control flow over these. The `optimize` and
- * `eval` real wirings are deferred to the autonomous Phase-7 tasks (they need
- * `AI_GATEWAY_API_KEY`); here they fail loud so a misconfigured run never
- * silently produces empty results.
- */
+/** Real-module default deps for `baseline` mode. The only place that touches disk. */
 function defaultDeps(): ApeRunDeps {
-  return {
-    evalRealLog,
-    writeApeReport,
-    runOptimize: async () => {
-      throw new Error(
-        'runApe(optimize): live optimizer wiring is gated on AI_GATEWAY_API_KEY ' +
-          '(Phase-7, T024). Inject deps.runOptimize for offline runs.',
-      );
-    },
-    evalCurrent: async () => {
-      throw new Error(
-        'runApe(eval): live offline eval wiring is gated on AI_GATEWAY_API_KEY ' +
-          '(Phase-7). Inject deps.evalCurrent for offline runs.',
-      );
-    },
-    gitCommit,
-  };
+  return { evalRealLog, writeApeReport, gitCommit };
 }
 
 export async function runApe(
@@ -134,7 +102,6 @@ export async function runApe(
   deps: ApeRunDeps = defaultDeps(),
 ): Promise<number> {
   const outDir = opts.outDir ?? DEFAULT_APE_REPORT_DIR;
-  const budgetUsd = opts.budgetUsd ?? DEFAULT_BUDGET_USD;
   const adapter = new ClaudeCodeAdapter();
   const runId = `ape-${new Date().toISOString().replace(/[:.]/g, '-')}`;
 
@@ -159,44 +126,14 @@ export async function runApe(
       return 0;
     }
 
-    case 'eval': {
-      const summary = await deps.evalCurrent({ corpus: opts.corpus });
-      await deps.writeApeReport(
-        {
-          runId,
-          gitCommit: deps.gitCommit(),
-          models: APE_MODELS,
-          before: summary,
-          after: summary,
-          realLog: emptyRealLog(),
-          totalSpendUsd: 0,
-        },
-        outDir,
-      );
-      return 0;
-    }
-
+    case 'eval':
     case 'optimize': {
-      const result = await deps.runOptimize({ budgetUsd, corpus: opts.corpus });
-
-      // Emit the winning variant as a patch FILE — a proposal a human applies
-      // (const XII). The orchestrator never edits the deploy target itself.
-      const patchDir = opts.patchDir ?? DEFAULT_PATCH_DIR;
-      await mkdir(patchDir, { recursive: true });
-      const patchPath = join(patchDir, `${runId}.patch`);
-      await writeFile(patchPath, result.patch, 'utf-8');
-
-      await deps.writeApeReport(
-        {
-          runId,
-          gitCommit: deps.gitCommit(),
-          models: APE_MODELS,
-          before: emptySummary(),
-          after: emptySummary(),
-          realLog: emptyRealLog(),
-          totalSpendUsd: 0,
-        },
-        outDir,
+      // Re-plan v2: the eval/optimize loop is no longer a standalone API client.
+      // It runs as an in-session Claude Code orchestration (a Workflow that spawns
+      // real-model worker/judge/rewriter subagents). Point the operator there.
+      process.stdout.write(
+        `valis-ape: --mode ${opts.mode} now runs as the in-session orchestration ` +
+          `(Workflow) — see ${ORCHESTRATION_DIR} (ape-eval.workflow.js).\n`,
       );
       return 0;
     }

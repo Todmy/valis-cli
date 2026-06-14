@@ -1,42 +1,27 @@
 /**
- * 285/T016: OPRO rewriter — ape/optimizer/opro.ts.
+ * 285/RT7: OPRO rewriter — brief-builder + candidate-parser.
  *
- * `OproRewriter` implements `Optimizer.propose(current, feedback)`: it calls the
- * Opus rewriter with the current prompt + the EvalSummary feedback (scores +
- * failingExamples) and returns N candidate `PromptVariant`s — same surface, new
- * id/text. Malformed model output yields an empty array (never thrown), so a
- * flaky rewriter degrades gracefully like the label proposer (#285 robustness).
+ * Reshaped from the LLM-calling `OproRewriter` to the two PURE halves used by
+ * the in-session orchestration (design.md §3, amended 2026-06-14):
+ *  - `buildRewriterBrief(current, feedback)` assembles the rewriter brief — a
+ *    STABLE OPRO system prefix (byte-identical across calls so the subagent
+ *    prompt prefix caches) followed by the current prompt + score report +
+ *    concrete FAILING EXAMPLES, returned as a single string the orchestration
+ *    hands to a rewriter (Opus) subagent;
+ *  - `parseCandidates(raw, current)` parses an N-element JSON array of candidate
+ *    texts into `PromptVariant`s on the SAME surface with fresh ids; malformed
+ *    output yields an empty array (never thrown) so a flaky rewriter degrades
+ *    gracefully and the loop keeps its best-so-far.
  *
- * The injected `llm` mirrors the `callGateway` signature; no live calls.
+ * No network / LLM call here — RT1 removed the Gateway layer.
  */
 import { describe, it, expect } from 'vitest';
-import type {
-  GatewayResult,
-  GatewayRequest,
+import {
+  buildRewriterBrief,
+  parseCandidates,
+  OPRO_SYSTEM,
 } from '../../../src/ape/optimizer/opro.js';
-import { OproRewriter, OPRO_SYSTEM } from '../../../src/ape/optimizer/opro.js';
-import type { Optimizer } from '../../../src/ape/optimizer/optimizer.js';
 import type { EvalSummary, PromptVariant } from '../../../src/ape/types.js';
-
-/** Wrap a canned model text into a minimal GatewayResult. */
-function result(text: string): GatewayResult {
-  return { text, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, costUsd: 0 };
-}
-
-/** An llm that returns the same canned text and captures the last request. */
-function captureLlm(text: string): {
-  llm: (req: GatewayRequest) => Promise<GatewayResult>;
-  last: () => GatewayRequest | undefined;
-} {
-  let last: GatewayRequest | undefined;
-  return {
-    llm: async (req: GatewayRequest) => {
-      last = req;
-      return result(text);
-    },
-    last: () => last,
-  };
-}
 
 const current: PromptVariant = {
   id: 'baseline',
@@ -54,58 +39,54 @@ const feedback: EvalSummary = {
   ],
 };
 
-describe('OproRewriter', () => {
-  it('returns N candidates', async () => {
-    const { llm } = captureLlm(
-      JSON.stringify([
-        { text: 'Search the team brain before acting' },
-        { text: 'Consult prior team decisions for this task' },
-      ]),
-    );
-    const opt = new OproRewriter(llm);
-    const candidates = await opt.propose(current, feedback);
-    expect(candidates).toHaveLength(2);
-  });
-
-  it('candidates keep surface', async () => {
-    const { llm } = captureLlm(JSON.stringify([{ text: 'variant A' }, { text: 'variant B' }]));
-    const opt = new OproRewriter(llm);
-    const candidates = await opt.propose(current, feedback);
-    for (const c of candidates) {
-      expect(c.surface).toBe('pull_tool_description');
-      expect(c.id).not.toBe(current.id);
-      expect(typeof c.text).toBe('string');
-    }
-    // Distinct ids per candidate.
-    expect(new Set(candidates.map((c) => c.id)).size).toBe(candidates.length);
-  });
-
-  it('prompt includes failing examples', async () => {
-    const { llm, last } = captureLlm(JSON.stringify([{ text: 'x' }]));
-    const opt = new OproRewriter(llm);
-    await opt.propose(current, feedback);
-    const sent = last();
-    expect(sent).toBeDefined();
-    const userContent = sent!.messages.map((m) => m.content).join('\n');
-    expect(userContent).toContain('implement the PRD for auth');
+describe('buildRewriterBrief', () => {
+  it('brief includes failing examples', () => {
+    const brief = buildRewriterBrief(current, feedback);
+    expect(brief).toContain('implement the PRD for auth');
     // Current prompt text is carried so the rewriter knows what it is improving.
-    expect(userContent).toContain("Search the team's shared decision history");
+    expect(brief).toContain("Search the team's shared decision history");
+    // Score report numbers surface so the rewriter knows how it performed.
+    expect(brief).toContain('0.5');
   });
 
-  it('malformed model output → empty array, no throw', async () => {
-    const { llm } = captureLlm('not a json array at all');
-    const opt = new OproRewriter(llm);
-    const candidates = await opt.propose(current, feedback);
-    expect(candidates).toEqual([]);
+  it('starts with the stable OPRO_SYSTEM prefix', () => {
+    const brief = buildRewriterBrief(current, feedback);
+    expect(brief.startsWith(OPRO_SYSTEM)).toBe(true);
   });
 
   it('OPRO_SYSTEM instructs a JSON-array reply', () => {
     expect(OPRO_SYSTEM.toLowerCase()).toContain('json array');
   });
+});
 
-  it('OproRewriter satisfies the Optimizer interface', () => {
-    const { llm } = captureLlm('[]');
-    const opt: Optimizer = new OproRewriter(llm);
-    expect(typeof opt.propose).toBe('function');
+describe('parseCandidates', () => {
+  it('parses N candidates keeping the surface, new distinct ids', () => {
+    const raw = JSON.stringify([
+      { text: 'Search the team brain before acting' },
+      { text: 'Consult prior team decisions for this task' },
+    ]);
+    const candidates = parseCandidates(raw, current);
+    expect(candidates).toHaveLength(2);
+    for (const c of candidates) {
+      expect(c.surface).toBe('pull_tool_description');
+      expect(c.id).not.toBe(current.id);
+      expect(typeof c.text).toBe('string');
+    }
+    expect(new Set(candidates.map((c) => c.id)).size).toBe(candidates.length);
+  });
+
+  it('skips elements missing a text field', () => {
+    const raw = JSON.stringify([{ text: 'good' }, { notText: 'bad' }, { text: 'also good' }]);
+    const candidates = parseCandidates(raw, current);
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((c) => c.text)).toEqual(['good', 'also good']);
+  });
+
+  it('malformed model output → empty array, no throw', () => {
+    expect(parseCandidates('not a json array at all', current)).toEqual([]);
+  });
+
+  it('non-array JSON → empty array, no throw', () => {
+    expect(parseCandidates('{"text":"single object not array"}', current)).toEqual([]);
   });
 });

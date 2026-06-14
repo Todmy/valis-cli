@@ -182,7 +182,7 @@ describe('optimize', () => {
     // Throw on the FIRST cap check (after baseline) so no candidate is accepted.
     const spend = makeSpend();
     spend.assertWithinCap.mockImplementation(() => {
-      throw new BudgetExceededError(99, 40);
+      throw new BudgetExceededError(99, 0, 40, 0); // calls 99 > maxCalls 40
     });
 
     const out = await optimize({

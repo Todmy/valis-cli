@@ -37,7 +37,6 @@ const trial: TrialResult = {
   variantId: 'variant-1',
   mechanical: { consulted: true, acted: false },
   rawOutput: 'I will search the team decision history for auth-token handling.',
-  costUsd: 0,
 };
 
 describe('parseJudgeScore', () => {

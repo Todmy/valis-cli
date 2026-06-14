@@ -739,48 +739,58 @@ function shortSurface(surface) {
 }
 
 /**
- * Build a combined held-out EvalSummary by scoring each surface's chosen variant
- * (already-recorded via the report tags) and averaging the headline metrics. The
- * report's before/after table renders these; per-surface detail lives in
+ * Build a combined held-out EvalSummary by scoring each surface's chosen variant.
+ *
+ * Each metric is taken from the surface that actually populates its signal — the
+ * pull surface only records `consulted` (so the consult metrics come from there),
+ * the push surface only records `acted` (so injectActionRate comes from there).
+ * Averaging a metric across BOTH surfaces would halve it (the other surface's rows
+ * default that axis to false), which mis-states the human-facing report even though
+ * the relative delta survives (review finding, 2026-06-14). `nearBoundaryFpRate`
+ * lives on both axes, so it is averaged. Per-surface detail is in
  * `finishOptimizeRun`'s `surfaces` return.
  */
-function combinedSummary(opt, picker) {
+function summaryForSurface(opt, picker, sf) {
   const { lib } = opt;
-  const acc = { consultPrecision: 0, consultRecall: 0, injectActionRate: 0, nearBoundaryFpRate: 0 };
-  for (const sf of SURFACES) {
-    const { variant, tag } = picker(sf);
-    // Score over held-out using the results recorded under this surface's real
-    // tag; missing buckets default to false (the report is a summary, not a re-run).
-    const rows = opt.heldOut.map((s) => {
-      const m = opt.mechanical.get(`${tag}::${variant.id}::${s.id}`) ?? {
-        consulted: false,
-        acted: false,
-      };
-      return {
-        item: {
-          id: s.id,
-          prompt: s.turns[s.turns.length - 1],
-          should_consult: s.should_consult,
-          should_inject: s.should_inject,
-          stratum: s.stratum,
-          label_source: s.label_source,
-          needs_human_confirm: s.needs_human_confirm,
-          source_session: s.source_session,
-        },
-        mechanical: m,
-      };
-    });
-    acc.consultPrecision += lib.metrics.consultPrecision(rows);
-    acc.consultRecall += lib.metrics.consultRecall(rows);
-    acc.injectActionRate += lib.metrics.injectActionRate(rows);
-    acc.nearBoundaryFpRate += lib.metrics.nearBoundaryFpRate(rows);
-  }
-  const n = SURFACES.length;
+  const { variant, tag } = picker(sf);
+  const rows = opt.heldOut.map((s) => {
+    const m = opt.mechanical.get(`${tag}::${variant.id}::${s.id}`) ?? {
+      consulted: false,
+      acted: false,
+    };
+    return {
+      item: {
+        id: s.id,
+        prompt: s.turns[s.turns.length - 1],
+        should_consult: s.should_consult,
+        should_inject: s.should_inject,
+        stratum: s.stratum,
+        label_source: s.label_source,
+        needs_human_confirm: s.needs_human_confirm,
+        source_session: s.source_session,
+      },
+      mechanical: m,
+    };
+  });
   return {
-    consultPrecision: acc.consultPrecision / n,
-    consultRecall: acc.consultRecall / n,
-    injectActionRate: acc.injectActionRate / n,
-    nearBoundaryFpRate: acc.nearBoundaryFpRate / n,
+    consultPrecision: lib.metrics.consultPrecision(rows),
+    consultRecall: lib.metrics.consultRecall(rows),
+    injectActionRate: lib.metrics.injectActionRate(rows),
+    nearBoundaryFpRate: lib.metrics.nearBoundaryFpRate(rows),
+  };
+}
+
+function combinedSummary(opt, picker) {
+  const pull = summaryForSurface(opt, picker, 'pull_tool_description');
+  const push = summaryForSurface(opt, picker, 'push_injection_template');
+  return {
+    // consult metrics from the pull surface (the only one that records `consulted`)
+    consultPrecision: pull.consultPrecision,
+    consultRecall: pull.consultRecall,
+    // inject-action from the push surface (the only one that records `acted`)
+    injectActionRate: push.injectActionRate,
+    // near-boundary FP is defined on both axes → average
+    nearBoundaryFpRate: (pull.nearBoundaryFpRate + push.nearBoundaryFpRate) / 2,
     failingExamples: [],
   };
 }

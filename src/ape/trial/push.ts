@@ -1,35 +1,38 @@
 /**
- * 285/T009: push-axis trial.
+ * 285/RT5: push-axis trial — brief-builder + decision-parser.
  *
- * Measures whether an INJECTED `<valis_search_results>` block drives the worker
- * (the agent-under-test) to ACT on the injected context. We build the block
- * with the REAL hook serializer `composeSearchResultsBlock` — never a
- * reimplementation — so the harness reads the exact push surface without
- * touching it (keeps the FR-015 hook path untouched). `variant.text` is the
- * thing under optimization: it parameterises the preamble prepended ahead of
- * the block. The composed preamble+block is prepended to `item.prompt` as the
- * worker's user turn, then `adapter.detectToolCall` over the raw response sets
- * `mechanical.acted` (MVP mechanical signal = a valis tool call fired).
+ * Measures whether an INJECTED `<valis_search_results>` block drives the real
+ * model (a worker subagent, spawned by the in-session orchestration) to ACT on
+ * the injected context. Per the 2026-06-14 pivot (design.md §3), the LLM call is
+ * NOT made here: TS keeps the two PURE halves of the trial —
+ *  - `buildPushBrief` composes the block with the REAL hook serializer
+ *    `composeSearchResultsBlock` (never a reimplementation — keeps the FR-015
+ *    hook path untouched), frames it with the candidate `variant.text`, prepends
+ *    block+frame to the decision turn (the last turn), and carries a
+ *    structured-output schema `{ acts_on_injection }`;
+ *  - `parsePushDecision` interprets the worker's returned decision → mechanical
+ *    `acted: bool`, failing loud on unparseable output.
  *
- * The worker call is injected (`deps.callWorker`) so the trial stays a pure,
- * offline orchestration: the live AI Gateway wiring lives in the orchestrator.
+ * The multi-turn scenario is delivered as a single brief: prior turns are
+ * context, the last turn (with the injection block prepended) is the actual ask.
+ *
+ * NOTE: `WorkerBrief`/`WorkerTool` are imported from `trial/pull.ts` (RT4 defines
+ * them locally; RT9 promotes the canonical type into `ape/types.ts`).
  */
 
 import {
   composeSearchResultsBlock,
   type SearchResultRow,
 } from '../../hooks/inject-block.js';
-import type { AgentAdapter, ApeCorpusItem, PromptVariant, TrialResult } from '../types.js';
-
-/** Minimal agent-harness system prompt — frames the worker as a Claude-Code-like agent. */
-const WORKER_SYSTEM =
-  'You are a coding agent with access to tools. Use the available tools when ' +
-  'they would help you answer the user better. Otherwise answer directly.';
+import type { ApeScenario } from '../corpus/schema.js';
+import type { PromptVariant } from '../types.js';
+import type { WorkerBrief, WorkerTool } from './pull.js';
 
 /**
- * A single synthetic search hit injected into the worker turn. The push trial
+ * A single synthetic search hit injected into the decision turn. The push trial
  * tests whether the agent ACTS on injected context, so the row content is held
- * fixed and only the surrounding preamble (`variant.text`) varies.
+ * fixed and only the surrounding preamble (`variant.text`) varies — that frame
+ * is the thing under optimization.
  */
 const FIXTURE_ROW: SearchResultRow = {
   id: 'd-fixture',
@@ -40,62 +43,86 @@ const FIXTURE_ROW: SearchResultRow = {
   affects: ['auth'],
 };
 
-/** The OpenAI-compatible request we hand to the worker. */
-export interface PushWorkerRequest {
-  system: string;
-  messages: { role: 'user' | 'assistant'; content: string }[];
-  tools: {
-    type: 'function';
-    function: { name: string; description: string; parameters: Record<string, unknown> };
-  }[];
-}
+/** The valis tool offered to the worker so it has a way to ACT on the injection. */
+const VALIS_TOOL: WorkerTool = {
+  name: 'mcp__valis__valis_search',
+  description: 'Search the team decision history.',
+  parameters: {
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+  },
+};
 
-/** Injectable worker call — returns the raw (OpenAI-compatible) response + cost. */
-export interface PushTrialDeps {
-  adapter: AgentAdapter;
-  callWorker(req: PushWorkerRequest): Promise<{ raw: unknown; costUsd: number }>;
-}
+/**
+ * Structured-output schema the worker must reply with. The orchestration forces
+ * this shape; `parsePushDecision` reads it back. Kept as a stable string so it is
+ * embeddable verbatim in the subagent brief.
+ */
+const PUSH_SCHEMA =
+  '{ "acts_on_injection": boolean } — ' +
+  'set acts_on_injection=true ONLY if you would call a valis tool / follow the ' +
+  'injected team-decision block before answering the last turn; otherwise false.';
 
-export async function runPushTrial(
-  variant: PromptVariant,
-  item: ApeCorpusItem,
-  deps: PushTrialDeps,
-): Promise<TrialResult> {
+/**
+ * Build the push-trial worker brief from a scenario + candidate variant.
+ *
+ * Prior turns `[0..n-2]` become `context`; the last turn is the `decisionTurn`,
+ * with the `<valis_search_results>` block (built by the REAL serializer) and the
+ * candidate `variant.text` preamble prepended — mirroring how augment.ts prepends
+ * the block ahead of the user's prompt.
+ */
+export function buildPushBrief(scenario: ApeScenario, variant: PromptVariant): WorkerBrief {
+  const turns = scenario.turns;
+  const lastTurn = turns[turns.length - 1];
+  const context = turns.slice(0, -1).join('\n');
+
   // Build the injection block with the REAL hook serializer — do NOT
-  // reimplement it. promptHash is opaque; the run id of the item suffices.
-  const block = composeSearchResultsBlock([FIXTURE_ROW], item.id);
+  // reimplement it. promptHash is opaque; the scenario id suffices.
+  const block = composeSearchResultsBlock([FIXTURE_ROW], scenario.id);
 
-  // variant.text is the optimized preamble; the block follows; the corpus
-  // prompt is the actual user task. Mirrors how augment.ts prepends the block.
-  const injected = [variant.text, block, item.prompt].filter(Boolean).join('\n\n');
-
-  const req: PushWorkerRequest = {
-    system: WORKER_SYSTEM,
-    messages: [{ role: 'user', content: injected }],
-    tools: [
-      {
-        type: 'function',
-        function: {
-          name: 'mcp__valis__valis_search',
-          description: 'Search the team decision history.',
-          parameters: {
-            type: 'object',
-            properties: { query: { type: 'string' } },
-            required: ['query'],
-          },
-        },
-      },
-    ],
-  };
-
-  const { raw, costUsd } = await deps.callWorker(req);
-  const { fired } = deps.adapter.detectToolCall(raw);
+  // variant.text is the optimized preamble; the block follows; the last turn is
+  // the actual user task. Mirrors how augment.ts prepends the block.
+  const decisionTurn = [variant.text, block, lastTurn].filter(Boolean).join('\n\n');
 
   return {
-    itemId: item.id,
-    variantId: variant.id,
-    mechanical: { consulted: false, acted: fired },
-    rawOutput: typeof raw === 'string' ? raw : JSON.stringify(raw),
-    costUsd,
+    context,
+    decisionTurn,
+    tools: [VALIS_TOOL],
+    schema: PUSH_SCHEMA,
   };
+}
+
+/** The worker's structured push decision once parsed. */
+export interface PushDecision {
+  acted: boolean;
+}
+
+/**
+ * Parse the worker's structured decision into `{ acted }`.
+ *
+ * Accepts either a raw JSON string or an already-parsed object. Throws (fail-loud,
+ * 021 pattern) on unparseable JSON or a missing/non-boolean `acts_on_injection` —
+ * a silent default would corrupt the mechanical signal feeding the metrics.
+ */
+export function parsePushDecision(raw: unknown): PushDecision {
+  let obj: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`parsePushDecision: unparseable worker output — ${(err as Error).message}`);
+    }
+  }
+
+  if (obj === null || typeof obj !== 'object') {
+    throw new Error('parsePushDecision: worker output is not an object');
+  }
+
+  const actsOnInjection = (obj as Record<string, unknown>).acts_on_injection;
+  if (typeof actsOnInjection !== 'boolean') {
+    throw new Error('parsePushDecision: missing or non-boolean `acts_on_injection`');
+  }
+
+  return { acted: actsOnInjection };
 }

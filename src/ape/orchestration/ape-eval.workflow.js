@@ -57,6 +57,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -104,16 +105,21 @@ export async function loadLibrary({ rebuild = false } = {}) {
   }
 
   const imp = (rel) => import(pathToFileURL(resolve(DIST_APE, rel)).href);
-  const [schema, pull, push, metrics, report, spend] = await Promise.all([
-    imp('corpus/schema.js'),
-    imp('trial/pull.js'),
-    imp('trial/push.js'),
-    imp('eval/metrics.js'),
-    imp('eval/report.js'),
-    imp('optimizer/spend.js'),
-  ]);
+  const [schema, pull, push, metrics, report, spend, accept, opro, loop, agent] =
+    await Promise.all([
+      imp('corpus/schema.js'),
+      imp('trial/pull.js'),
+      imp('trial/push.js'),
+      imp('eval/metrics.js'),
+      imp('eval/report.js'),
+      imp('optimizer/spend.js'),
+      imp('optimizer/accept.js'),
+      imp('optimizer/opro.js'),
+      imp('optimizer/loop.js'),
+      imp('agents/claude-code.js'),
+    ]);
 
-  _lib = { schema, pull, push, metrics, report, spend };
+  _lib = { schema, pull, push, metrics, report, spend, accept, opro, loop, agent };
   return _lib;
 }
 
@@ -290,6 +296,474 @@ export async function finishEvalRun(run, { outDir, runId } = {}) {
   return { jsonPath, mdPath, summary, calls: run.budget.calls() };
 }
 
+// ─── RT11: optimize orchestration (rewriter subagent + accept + patch emit) ────
+//
+// The optimize loop is session-driven exactly like eval: TS owns the control
+// flow + pure halves (brief building, decision/candidate parsing, scoring,
+// acceptance, patch emission); the session spawns the real-model subagents.
+// There are TWO subagent roles here:
+//   • WORKER  (session model) — scores a variant over a scenario set (the same
+//             pull/push dispatch shape as eval, just for an arbitrary variant).
+//   • REWRITER (Opus subagent) — proposes candidate variants from feedback.
+//
+// Const XII: the winner is PROPOSED. The loop emits a unified-diff PATCH under
+// `docs/krukit/285-ape-harness/patches/` and NEVER writes server.ts /
+// inject-block.ts. The session applies the patch by hand after the multi-day
+// real-session test.
+//
+// Drive sketch (session side):
+//   const opt = await wf.startOptimizeRun({ corpusPath, seed, budget,
+//                                           start: { pull, push }, repeats: 5 });
+//   // Phase A — baseline: K held-out repeats of `start` per axis.
+//   for (const batch of wf.baselineDispatches(opt)) {
+//     for (const d of batch) wf.recordVariantResult(opt, d, await spawn(d.brief));
+//   }
+//   wf.closeBaseline(opt);                       // → variance band + baseline score
+//   // Phase B — iterate (bounded by maxIters + budget):
+//   while (wf.shouldIterate(opt)) {
+//     const brief = wf.rewriterBrief(opt);       // one per surface
+//     const raw   = await spawnOpus(brief);      // REWRITER subagent
+//     wf.recordCandidates(opt, surface, raw);    // parseCandidates
+//     for (const d of wf.candidateDispatches(opt))   // WORKER, train set
+//       wf.recordVariantResult(opt, d, await spawn(d.brief));
+//     wf.scoreCandidatesOnTrain(opt);
+//     for (const d of wf.heldOutDispatches(opt))      // WORKER, held-out
+//       wf.recordVariantResult(opt, d, await spawn(d.brief));
+//     wf.acceptOrStop(opt);                      // accepts(baseline, score, band)
+//   }
+//   const { patchPath, report } = await wf.finishOptimizeRun(opt, { outDir });
+//
+// For MVP we optimise BOTH surfaces in lockstep against the same scenario set;
+// each surface gets its own band/baseline/winner and its own emitted patch.
+
+const SURFACES = ['pull_tool_description', 'push_injection_template'];
+const DEFAULT_REPEATS = 5;
+const PATCH_DIR_REL = ['docs', 'krukit', '285-ape-harness', 'patches'];
+
+/** Map a surface to the corresponding eval axis + brief builder. */
+function axisFor(surface) {
+  return surface === 'pull_tool_description' ? 'consult' : 'inject';
+}
+
+/**
+ * Build the dispatches that score ONE variant over a scenario list, on its own
+ * axis. Each dispatch carries a `key` so results land in the right per-variant
+ * mechanical bucket (variant id + scenario id), letting one worker batch span
+ * multiple variants without collision.
+ */
+function variantDispatches(lib, variant, scenarios, tag) {
+  const axis = axisFor(variant.surface);
+  const build =
+    variant.surface === 'pull_tool_description'
+      ? (s) => lib.pull.buildPullBrief(s, variant)
+      : (s) => lib.push.buildPushBrief(s, variant);
+  return scenarios.map((s) => ({
+    key: `${tag}::${variant.id}::${s.id}`,
+    variantId: variant.id,
+    surface: variant.surface,
+    scenarioId: s.id,
+    axis,
+    brief: build(s),
+  }));
+}
+
+/**
+ * Phase 0 — load + split the corpus and seed the optimize state. `start` carries
+ * the two baseline variants (one per surface). Eval scenarios:
+ *   train   = split.train   (candidate ranking)
+ *   heldOut = split.test    (band estimation + acceptance — never seen at propose)
+ */
+export async function startOptimizeRun({
+  corpusPath,
+  seed = 1,
+  start = BASELINE_VARIANTS,
+  budget = DEFAULT_EVAL_BUDGET,
+  repeats = DEFAULT_REPEATS,
+  maxIters = 3,
+}) {
+  const lib = await loadLibrary();
+
+  const { scenarios, contentHash } = await lib.schema.loadApeCorpus(corpusPath);
+  if (scenarios.length === 0) {
+    throw new Error(`ape-optimize.workflow: corpus ${corpusPath} has no scenarios`);
+  }
+  const split = lib.schema.splitTrainTest(scenarios, seed);
+  if (split.train.length === 0 || split.test.length === 0) {
+    throw new Error(
+      'ape-optimize.workflow: corpus too small for a train/held-out split',
+    );
+  }
+
+  return {
+    lib,
+    adapter: new lib.agent.ClaudeCodeAdapter(),
+    corpusPath,
+    contentHash,
+    seed,
+    repeats,
+    maxIters,
+    iter: 0,
+    train: split.train,
+    heldOut: split.test,
+    // start[surface] keyed by surface for symmetric per-surface optimisation.
+    start: { pull_tool_description: start.pull, push_injection_template: start.push },
+    // Per-surface running state — filled as the session steps through phases.
+    perSurface: Object.fromEntries(
+      SURFACES.map((sf) => [
+        sf,
+        {
+          surface: sf,
+          current: sf === 'pull_tool_description' ? start.pull : start.push,
+          band: null,
+          baseline: null,
+          accepted: false,
+          baselineRepeats: [], // scalar score per held-out repeat
+          candidates: [], // PromptVariant[] from the rewriter this iter
+          bestCandidate: null,
+          done: false, // converged / no-improvement / budget halt
+        },
+      ]),
+    ),
+    // variantId+scenarioId → { consulted?, acted? } (one bucket per dispatch key tag).
+    mechanical: new Map(),
+    budget: lib.spend.createBudget(budget),
+  };
+}
+
+/** Record one worker reply for an optimize dispatch (mirrors recordWorkerResult). */
+export function recordVariantResult(opt, dispatch, rawWorkerReply) {
+  const { lib } = opt;
+  opt.budget.addCall(estimateBriefTokens(dispatch.brief));
+  opt.budget.assertWithin();
+
+  const entry = opt.mechanical.get(dispatch.key) ?? { consulted: false, acted: false };
+  if (dispatch.axis === 'consult') {
+    entry.consulted = lib.pull.parsePullDecision(rawWorkerReply).consulted;
+  } else {
+    entry.acted = lib.push.parsePushDecision(rawWorkerReply).acted;
+  }
+  opt.mechanical.set(dispatch.key, entry);
+}
+
+/** Fold recorded mechanical labels for (variant tag, scenarios) into a scalar score. */
+function scoreVariant(opt, variant, scenarios, tag) {
+  const { lib } = opt;
+  const rows = scenarios.map((s) => {
+    const m = opt.mechanical.get(`${tag}::${variant.id}::${s.id}`) ?? {
+      consulted: false,
+      acted: false,
+    };
+    return {
+      item: {
+        id: s.id,
+        prompt: s.turns[s.turns.length - 1],
+        should_consult: s.should_consult,
+        should_inject: s.should_inject,
+        stratum: s.stratum,
+        label_source: s.label_source,
+        needs_human_confirm: s.needs_human_confirm,
+        source_session: s.source_session,
+      },
+      mechanical: m,
+    };
+  });
+  const summary = {
+    consultPrecision: lib.metrics.consultPrecision(rows),
+    consultRecall: lib.metrics.consultRecall(rows),
+    injectActionRate: lib.metrics.injectActionRate(rows),
+    nearBoundaryFpRate: lib.metrics.nearBoundaryFpRate(rows),
+    failingExamples: collectFailing(rows, variant.surface),
+  };
+  // loop.scoreSummary collapses the EvalSummary to the single scalar the loop
+  // optimises (consultRecall/injectActionRate minus near-boundary FP).
+  return { score: lib.loop.scoreSummary(summary, variant.surface), summary };
+}
+
+/** Concrete failing examples feed the rewriter brief (#290 boundary cases first). */
+function collectFailing(rows, surface) {
+  const wantConsult = surface === 'pull_tool_description';
+  const out = [];
+  for (const r of rows) {
+    const expected = wantConsult ? r.item.should_consult : r.item.should_inject;
+    const got = wantConsult ? r.mechanical.consulted : r.mechanical.acted;
+    if (expected !== got) {
+      out.push({
+        prompt: r.item.prompt,
+        expected: String(expected),
+        got: String(got),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Phase A — baseline dispatches: K held-out repeats of each surface's `current`.
+ * Returns one batch per (surface × repeat); the session spawns a worker per
+ * dispatch. Each repeat uses a distinct tag so its score is recorded separately
+ * (the K scores feed the variance band).
+ */
+export function baselineDispatches(opt) {
+  const batches = [];
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    for (let k = 0; k < opt.repeats; k++) {
+      batches.push(variantDispatches(opt.lib, st.current, opt.heldOut, `base-${k}`));
+    }
+  }
+  return batches;
+}
+
+/** Close baseline: compute each surface's variance band + mean baseline score. */
+export function closeBaseline(opt) {
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    const scores = [];
+    for (let k = 0; k < opt.repeats; k++) {
+      scores.push(scoreVariant(opt, st.current, opt.heldOut, `base-${k}`).score);
+    }
+    st.baselineRepeats = scores;
+    st.band = opt.lib.accept.measureVarianceBand(scores);
+    st.baseline = scores.reduce((a, b) => a + b, 0) / scores.length;
+  }
+}
+
+/** True while any surface is still improving AND the iter/budget caps allow. */
+export function shouldIterate(opt) {
+  if (opt.iter >= opt.maxIters) return false;
+  try {
+    opt.budget.assertWithin();
+  } catch {
+    return false; // budget halt — keep best-so-far
+  }
+  return SURFACES.some((sf) => !opt.perSurface[sf].done);
+}
+
+/**
+ * Phase B step 1 — rewriter briefs (one per still-active surface). The session
+ * spawns an OPUS subagent per brief; feed its raw reply to `recordCandidates`.
+ */
+export function rewriterBriefs(opt) {
+  const briefs = [];
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (st.done) continue;
+    // Feedback = the current variant's train EvalSummary (failing examples included).
+    const { summary } = scoreVariant(opt, st.current, opt.train, `iter${opt.iter}-cur`);
+    briefs.push({
+      surface: sf,
+      brief: opt.lib.opro.buildRewriterBrief(st.current, summary),
+    });
+  }
+  return briefs;
+}
+
+/** Phase B step 2 — parse a rewriter reply into candidate variants for a surface. */
+export function recordCandidates(opt, surface, rawRewriterReply) {
+  const st = opt.perSurface[surface];
+  st.candidates = opt.lib.opro.parseCandidates(rawRewriterReply, st.current);
+}
+
+/** Phase B step 3 — worker dispatches scoring every candidate on the TRAIN set. */
+export function candidateDispatches(opt) {
+  const out = [];
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (st.done) continue;
+    for (const cand of st.candidates) {
+      out.push(...variantDispatches(opt.lib, cand, opt.train, `iter${opt.iter}-train`));
+    }
+  }
+  return out;
+}
+
+/** Phase B step 4 — pick each surface's best candidate by train score. */
+export function scoreCandidatesOnTrain(opt) {
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (st.done) continue;
+    let best = null;
+    let bestScore = -Infinity;
+    for (const cand of st.candidates) {
+      const { score } = scoreVariant(opt, cand, opt.train, `iter${opt.iter}-train`);
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+    st.bestCandidate = best; // null if the rewriter returned nothing
+  }
+}
+
+/** Phase B step 5 — worker dispatches validating each best candidate on HELD-OUT. */
+export function heldOutDispatches(opt) {
+  const out = [];
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (st.done || !st.bestCandidate) continue;
+    out.push(...variantDispatches(opt.lib, st.bestCandidate, opt.heldOut, `iter${opt.iter}-held`));
+  }
+  return out;
+}
+
+/**
+ * Phase B step 6 — variance-band acceptance on held-out. A surface that accepts
+ * promotes its best candidate to `current` and raises its baseline; a surface
+ * that fails to beat the band (or whose rewriter gave nothing) is marked done.
+ * Advances the iteration counter.
+ */
+export function acceptOrStop(opt) {
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (st.done) continue;
+    if (!st.bestCandidate) {
+      st.done = true; // rewriter converged — no candidates
+      continue;
+    }
+    const { score } = scoreVariant(opt, st.bestCandidate, opt.heldOut, `iter${opt.iter}-held`);
+    if (opt.lib.accept.accepts(st.baseline, score, st.band)) {
+      st.current = st.bestCandidate;
+      st.baseline = score;
+      st.accepted = true;
+    } else {
+      st.done = true; // within the noise band — stop this surface
+    }
+    st.candidates = [];
+    st.bestCandidate = null;
+  }
+  opt.iter += 1;
+}
+
+/**
+ * Render a winning variant as a unified-diff PATCH against its real deploy
+ * target (adapter.deployTarget). PROPOSAL only — anchored on the descriptor so a
+ * human can locate the edit site (const XII; never writes the target file).
+ */
+function emitPatch(adapter, winner) {
+  const target = adapter.deployTarget(winner.surface);
+  return (
+    [
+      `diff --git a/${target.file} b/${target.file}`,
+      `--- a/${target.file}`,
+      `+++ b/${target.file}`,
+      `@@ surface=${target.surface} anchor=${JSON.stringify(target.anchor)} @@`,
+      `# APE-proposed prompt variant (${winner.id}) — human applies (const XII)`,
+      ...winner.text.split('\n').map((l) => `+${l}`),
+    ].join('\n') + '\n'
+  );
+}
+
+/**
+ * Finish — emit one PATCH per surface to docs/krukit/285-ape-harness/patches/ and
+ * write the before/after report. Returns the patch paths + report paths + the
+ * per-surface before/after scores so the session can report real numbers.
+ *
+ * NEVER writes server.ts / inject-block.ts (const XII): the only files this
+ * touches are the patch files under PATCH_DIR_REL and the report under outDir.
+ */
+export async function finishOptimizeRun(opt, { outDir, runId } = {}) {
+  const { lib, adapter } = opt;
+  const repoRoot = resolve(CLI_PKG, '..', '..');
+  const patchDir = resolve(repoRoot, ...PATCH_DIR_REL);
+  mkdirSync(patchDir, { recursive: true });
+
+  const id = runId ?? `ape-optimize-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+
+  const patches = [];
+  const surfaces = {};
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    const winner = st.current; // baseline if nothing accepted
+    const patch = emitPatch(adapter, winner);
+    const patchPath = resolve(patchDir, `${id}-${shortSurface(sf)}.patch`);
+    writeFileSync(patchPath, patch, 'utf-8');
+    patches.push(patchPath);
+    surfaces[sf] = {
+      winnerId: winner.id,
+      accepted: st.accepted,
+      baselineScore: st.baselineRepeats.length
+        ? st.baselineRepeats.reduce((a, b) => a + b, 0) / st.baselineRepeats.length
+        : null,
+      finalScore: st.baseline,
+      band: st.band,
+      patchPath,
+    };
+  }
+
+  // Before/after EvalSummary over held-out: before = each surface's start variant,
+  // after = its (possibly promoted) current. Combined into one summary each by
+  // averaging the per-surface headline metrics — the report carries the table.
+  const before = combinedSummary(opt, (sf) => opt.start[sf], 'rep-before');
+  const after = combinedSummary(opt, (sf) => opt.perSurface[sf].current, 'rep-after');
+
+  const { jsonPath, mdPath } = await lib.report.writeApeReport(
+    {
+      runId: id,
+      gitCommit: gitCommit(),
+      models: { worker: 'session-model', judge: 'session-opus', rewriter: 'session-opus' },
+      before,
+      after,
+      realLog: { sessions: 0, prompts: 0, consultRate: 0, injectRate: 0 },
+      totalSpendUsd: 0,
+    },
+    outDir,
+  );
+
+  return { patches, surfaces, jsonPath, mdPath, calls: opt.budget.calls() };
+}
+
+/** Short surface tag for patch filenames. */
+function shortSurface(surface) {
+  return surface === 'pull_tool_description' ? 'pull' : 'push';
+}
+
+/**
+ * Build a combined held-out EvalSummary by scoring each surface's chosen variant
+ * (already-recorded via the report tags) and averaging the headline metrics. The
+ * report's before/after table renders these; per-surface detail lives in
+ * `finishOptimizeRun`'s `surfaces` return.
+ */
+function combinedSummary(opt, pick, tag) {
+  const { lib } = opt;
+  const acc = { consultPrecision: 0, consultRecall: 0, injectActionRate: 0, nearBoundaryFpRate: 0 };
+  for (const sf of SURFACES) {
+    const variant = pick(sf);
+    // Score over held-out using whatever results were recorded under this tag;
+    // missing buckets default to false (the report is a summary, not a re-run).
+    const rows = opt.heldOut.map((s) => {
+      const m = opt.mechanical.get(`${tag}::${variant.id}::${s.id}`) ?? {
+        consulted: false,
+        acted: false,
+      };
+      return {
+        item: {
+          id: s.id,
+          prompt: s.turns[s.turns.length - 1],
+          should_consult: s.should_consult,
+          should_inject: s.should_inject,
+          stratum: s.stratum,
+          label_source: s.label_source,
+          needs_human_confirm: s.needs_human_confirm,
+          source_session: s.source_session,
+        },
+        mechanical: m,
+      };
+    });
+    acc.consultPrecision += lib.metrics.consultPrecision(rows);
+    acc.consultRecall += lib.metrics.consultRecall(rows);
+    acc.injectActionRate += lib.metrics.injectActionRate(rows);
+    acc.nearBoundaryFpRate += lib.metrics.nearBoundaryFpRate(rows);
+  }
+  const n = SURFACES.length;
+  return {
+    consultPrecision: acc.consultPrecision / n,
+    consultRecall: acc.consultRecall / n,
+    injectActionRate: acc.injectActionRate / n,
+    nearBoundaryFpRate: acc.nearBoundaryFpRate / n,
+    failingExamples: [],
+  };
+}
+
 /**
  * Dry structural check (RT10 verify) — no models, no network, no disk writes.
  *
@@ -361,12 +835,139 @@ export async function dryCheck() {
   return { summary, calls: run.budget.calls() };
 }
 
-// CLI entry: `--check` runs the dry structural verify (RT10 acceptance).
+/**
+ * Optimize dry structural check (RT11 verify) — no models, no network, no disk.
+ *
+ * Drives the optimize state machine end-to-end against a tiny in-memory corpus
+ * with FABRICATED worker + rewriter replies, then asserts: baseline produces a
+ * finite band + baseline score per surface; a candidate that beats the band gets
+ * promoted; the emitted PATCH is anchored on the real deploy target and contains
+ * NO server.ts / inject-block.ts file write (it's a diff string only). Proves the
+ * RT11 wiring without spawning a subagent or touching the patches dir. The real
+ * run is RT14.
+ */
+export async function optimizeDryCheck() {
+  const lib = await loadLibrary();
+  const adapter = new lib.agent.ClaudeCodeAdapter();
+
+  // Build a synthetic corpus large enough to split (≥2 per stratum so both halves
+  // are non-empty). 4 scenarios: 2 normal-positive, 2 near-boundary-negative.
+  const mk = (id, consult, stratum) => ({
+    id,
+    turns: [`turn for ${id}`],
+    should_consult: consult,
+    should_inject: consult,
+    stratum,
+    label_source: 'llm_proposed',
+    needs_human_confirm: true,
+  });
+  const train = [mk('t-pos', true, 'normal'), mk('t-neg', false, 'near_boundary')];
+  const heldOut = [mk('h-pos', true, 'normal'), mk('h-neg', false, 'near_boundary')];
+
+  const opt = {
+    lib,
+    adapter,
+    repeats: 3,
+    maxIters: 2,
+    iter: 0,
+    train,
+    heldOut,
+    start: {
+      pull_tool_description: BASELINE_VARIANTS.pull,
+      push_injection_template: BASELINE_VARIANTS.push,
+    },
+    perSurface: Object.fromEntries(
+      SURFACES.map((sf) => [
+        sf,
+        {
+          surface: sf,
+          current: sf === 'pull_tool_description' ? BASELINE_VARIANTS.pull : BASELINE_VARIANTS.push,
+          band: null,
+          baseline: null,
+          accepted: false,
+          baselineRepeats: [],
+          candidates: [],
+          bestCandidate: null,
+          done: false,
+        },
+      ]),
+    ),
+    mechanical: new Map(),
+    budget: lib.spend.createBudget({ maxCalls: 1000, maxTokensEst: 10_000_000 }),
+  };
+
+  // Fabricate a worker reply per dispatch. The baseline variant is "weak" — it
+  // NEVER consults/acts (misses every positive, scores 0 on held-out); the
+  // rewriter candidate is "perfect" (all positives consult, no near-boundary FP).
+  // Baseline scores are identical across repeats → band 0; the perfect candidate
+  // beats 0 by a positive margin → accepted (exercises the accept path).
+  const replyFor = (dispatch, perfect) => {
+    const isPos = dispatch.scenarioId.endsWith('-pos');
+    const yes = perfect ? isPos : false; // weak baseline never fires
+    return dispatch.axis === 'consult'
+      ? JSON.stringify({ would_consult: yes, tool: yes ? 'mcp__valis__valis_search' : null })
+      : JSON.stringify({ acts_on_injection: yes });
+  };
+  const runBatch = (dispatches, perfect) => {
+    for (const d of dispatches) recordVariantResult(opt, d, replyFor(d, perfect));
+  };
+
+  // Phase A — baseline (weak).
+  for (const batch of baselineDispatches(opt)) runBatch(batch, false);
+  closeBaseline(opt);
+  for (const sf of SURFACES) {
+    const st = opt.perSurface[sf];
+    if (typeof st.band !== 'number' || !Number.isFinite(st.band)) {
+      throw new Error(`optimizeDryCheck: ${sf} band not finite`);
+    }
+    if (typeof st.baseline !== 'number' || !Number.isFinite(st.baseline)) {
+      throw new Error(`optimizeDryCheck: ${sf} baseline not finite`);
+    }
+  }
+
+  // Phase B — one iteration with a fabricated rewriter reply (1 perfect candidate).
+  if (shouldIterate(opt)) {
+    for (const { surface } of rewriterBriefs(opt)) {
+      recordCandidates(opt, surface, JSON.stringify([{ text: `improved ${surface}` }]));
+    }
+    runBatch(candidateDispatches(opt), true); // perfect candidate on train
+    scoreCandidatesOnTrain(opt);
+    runBatch(heldOutDispatches(opt), true); // perfect candidate on held-out
+    acceptOrStop(opt);
+  }
+
+  // Const XII assertion — the emitted patch is a diff STRING anchored on the real
+  // deploy target; it never names a write to the target file body.
+  for (const sf of SURFACES) {
+    const winner = opt.perSurface[sf].current;
+    const patch = emitPatch(adapter, winner);
+    const target = adapter.deployTarget(sf);
+    if (!patch.includes(target.file) || !patch.includes(target.anchor)) {
+      throw new Error(`optimizeDryCheck: patch for ${sf} not anchored on deploy target`);
+    }
+    if (!patch.startsWith('diff --git')) {
+      throw new Error(`optimizeDryCheck: patch for ${sf} is not a unified diff`);
+    }
+  }
+
+  return {
+    surfaces: Object.fromEntries(
+      SURFACES.map((sf) => {
+        const st = opt.perSurface[sf];
+        return [sf, { baseline: st.baseline, band: st.band, accepted: st.accepted }];
+      }),
+    ),
+    calls: opt.budget.calls(),
+  };
+}
+
+// CLI entry: `--check` runs both dry structural verifies (RT10 + RT11 acceptance).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes('--check')) {
-    dryCheck()
-      .then((r) => {
-        console.log('ape-eval.workflow dryCheck OK:', JSON.stringify(r));
+    Promise.all([dryCheck(), optimizeDryCheck()])
+      .then(([evalR, optR]) => {
+        console.log('ape-eval.workflow dryCheck OK:', JSON.stringify(evalR));
+        console.log('ape-eval.workflow optimizeDryCheck OK:', JSON.stringify(optR));
         process.exit(0);
       })
       .catch((err) => {

@@ -1,21 +1,30 @@
 /**
- * 285/T010: cascade Opus judge.
+ * 285/RT6: cascade judge — brief-builder + score-parser.
  *
- * judgeQuality(item, trial, axis, llm) calls Opus with a STABLE cache-prefixed
- * system prompt (rubric + few-shot, byte-identical across calls so the prefix
- * caches) and a minimal user delta (the trial output). It instructs the model
- * to reply with ONLY a number 0..1, parses that number, and throws (fail-loud)
- * on non-numeric output. Mechanical labels are NOT judged here (cascade: free).
+ * Reshaped from the LLM-calling `judgeQuality` to the two PURE halves used by
+ * the in-session orchestration (design.md §3, amended 2026-06-14):
+ *  - `buildJudgeBrief(scenario, trial, axis)` assembles the judge brief — a
+ *    STABLE rubric prefix (byte-identical across calls so the subagent prompt
+ *    prefix caches) + the minimal-output instruction + the per-trial varying
+ *    delta (axis, task, output);
+ *  - `parseJudgeScore(raw)` parses a bare 0..1 number, throwing (fail-loud) on
+ *    verbose or out-of-range output.
  *
- * No live calls — the `llm` is a stub recording the request it received.
+ * Mechanical labels (consulted / acted) are NOT judged here — the cascade keeps
+ * them free; only the quality axes reach the judge subagent.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { judgeQuality, JUDGE_SYSTEM, type JudgeLlm } from '../../../src/ape/trial/judge.js';
-import type { ApeCorpusItem, TrialResult } from '../../../src/ape/types.js';
+import { describe, it, expect } from 'vitest';
+import {
+  buildJudgeBrief,
+  parseJudgeScore,
+  JUDGE_SYSTEM,
+} from '../../../src/ape/trial/judge.js';
+import type { ApeScenario } from '../../../src/ape/corpus/schema.js';
+import type { TrialResult } from '../../../src/ape/types.js';
 
-const item: ApeCorpusItem = {
-  id: 'item-1',
-  prompt: 'How did we decide to handle auth tokens?',
+const scenario: ApeScenario = {
+  id: 'scn-1',
+  turns: ['How did we decide to handle auth tokens?'],
   should_consult: true,
   should_inject: false,
   stratum: 'normal',
@@ -24,45 +33,44 @@ const item: ApeCorpusItem = {
 };
 
 const trial: TrialResult = {
-  itemId: 'item-1',
+  itemId: 'scn-1',
   variantId: 'variant-1',
   mechanical: { consulted: true, acted: false },
   rawOutput: 'I will search the team decision history for auth-token handling.',
-  costUsd: 0.001,
+  costUsd: 0,
 };
 
-/** Build a stub llm returning a fixed text + cost, recording requests. */
-function makeLlm(text: string, costUsd = 0.002): JudgeLlm {
-  return vi.fn(async (_req) => ({ text, costUsd }));
-}
-
-describe('judgeQuality', () => {
-  it('parses bare numeric score', async () => {
-    const llm = makeLlm('0.15');
-    const result = await judgeQuality(item, trial, 'consult', llm);
-    expect(result.axis).toBe('consult');
-    expect(result.score).toBeCloseTo(0.15);
+describe('parseJudgeScore', () => {
+  it('parses bare numeric score', () => {
+    expect(parseJudgeScore('0.15')).toBeCloseTo(0.15);
   });
 
-  it('rejects verbose output (throws)', async () => {
-    const llm = makeLlm('The score is 0.8 because the agent acted well.');
-    await expect(judgeQuality(item, trial, 'consult', llm)).rejects.toThrow();
+  it('rejects verbose output (throws)', () => {
+    expect(() => parseJudgeScore('The score is 0.8 because the agent acted well.')).toThrow();
   });
 
-  it('system prefix is byte-identical across two calls', async () => {
-    const llm = makeLlm('0.5') as ReturnType<typeof vi.fn>;
-    await judgeQuality(item, trial, 'consult', llm as unknown as JudgeLlm);
-    await judgeQuality(item, trial, 'inject', llm as unknown as JudgeLlm);
-    const systemA = llm.mock.calls[0][0].system;
-    const systemB = llm.mock.calls[1][0].system;
-    expect(systemA).toBe(systemB);
-    expect(systemA).toBe(JUDGE_SYSTEM);
+  it('rejects out-of-range output (throws)', () => {
+    expect(() => parseJudgeScore('1.5')).toThrow();
+  });
+});
+
+describe('buildJudgeBrief', () => {
+  it('rubric prefix is stable (byte-identical) across calls', () => {
+    const a = buildJudgeBrief(scenario, trial, 'consult');
+    const b = buildJudgeBrief(scenario, trial, 'inject');
+    expect(a.system).toBe(b.system);
+    expect(a.system).toBe(JUDGE_SYSTEM);
   });
 
-  it('low max_tokens set', async () => {
-    const llm = makeLlm('0.5') as ReturnType<typeof vi.fn>;
-    await judgeQuality(item, trial, 'consult', llm as unknown as JudgeLlm);
-    const req = llm.mock.calls[0][0];
-    expect(req.maxTokens).toBeLessThanOrEqual(8);
+  it('carries the per-trial delta (axis, task, output)', () => {
+    const brief = buildJudgeBrief(scenario, trial, 'consult');
+    expect(brief.user).toContain('consult');
+    expect(brief.user).toContain(scenario.turns[0]);
+    expect(brief.user).toContain(trial.rawOutput);
+  });
+
+  it('caps output low (single-number reply)', () => {
+    const brief = buildJudgeBrief(scenario, trial, 'consult');
+    expect(brief.maxTokens).toBeLessThanOrEqual(8);
   });
 });

@@ -421,6 +421,11 @@ export async function startOptimizeRun({
           candidates: [], // PromptVariant[] from the rewriter this iter
           bestCandidate: null,
           done: false, // converged / no-improvement / budget halt
+          // RT16/RT15 (F7/F9): tags under which `current`'s TRAIN and HELD-OUT
+          // results are actually recorded, so feedback + report read real data
+          // (not un-dispatched tags). Updated when a candidate is promoted.
+          currentTrainTag: 'cur-train',
+          currentHeldTag: 'base-0',
         },
       ]),
     ),
@@ -510,6 +515,10 @@ export function baselineDispatches(opt) {
     for (let k = 0; k < opt.repeats; k++) {
       batches.push(variantDispatches(opt.lib, st.current, opt.heldOut, `base-${k}`));
     }
+    // RT16 (F7): also score `current` on the TRAIN set under `cur-train`, so the
+    // rewriter feedback (rewriterBriefs) reads REAL failing examples instead of
+    // an un-dispatched tag that defaults every metric to zero.
+    batches.push(variantDispatches(opt.lib, st.current, opt.train, 'cur-train'));
   }
   return batches;
 }
@@ -548,8 +557,11 @@ export function rewriterBriefs(opt) {
   for (const sf of SURFACES) {
     const st = opt.perSurface[sf];
     if (st.done) continue;
-    // Feedback = the current variant's train EvalSummary (failing examples included).
-    const { summary } = scoreVariant(opt, st.current, opt.train, `iter${opt.iter}-cur`);
+    // Feedback = the current variant's train EvalSummary (failing examples
+    // included). RT16 (F7): read the tag where current's train results actually
+    // live (`cur-train` at iter0; the accepted candidate's train tag after a
+    // promotion) — not an un-dispatched `iter${iter}-cur`.
+    const { summary } = scoreVariant(opt, st.current, opt.train, st.currentTrainTag);
     briefs.push({
       surface: sf,
       brief: opt.lib.opro.buildRewriterBrief(st.current, summary),
@@ -625,6 +637,10 @@ export function acceptOrStop(opt) {
       st.current = st.bestCandidate;
       st.baseline = score;
       st.accepted = true;
+      // RT16/RT15: the promoted candidate's TRAIN + HELD-OUT results are recorded
+      // under this iteration's tags — point feedback + report at them.
+      st.currentTrainTag = `iter${opt.iter}-train`;
+      st.currentHeldTag = `iter${opt.iter}-held`;
     } else {
       st.done = true; // within the noise band — stop this surface
     }
@@ -690,11 +706,16 @@ export async function finishOptimizeRun(opt, { outDir, runId } = {}) {
     };
   }
 
-  // Before/after EvalSummary over held-out: before = each surface's start variant,
-  // after = its (possibly promoted) current. Combined into one summary each by
-  // averaging the per-surface headline metrics — the report carries the table.
-  const before = combinedSummary(opt, (sf) => opt.start[sf], 'rep-before');
-  const after = combinedSummary(opt, (sf) => opt.perSurface[sf].current, 'rep-after');
+  // Before/after EvalSummary over held-out, RT15 (F9): read REAL recorded results
+  // — before = each surface's START variant under a baseline repeat tag (`base-0`);
+  // after = its (possibly promoted) CURRENT under the tag where current's held-out
+  // results actually live (`base-0` if nothing was accepted, else the accepted
+  // candidate's `iter${n}-held`). No un-dispatched tags, no extra spawns.
+  const before = combinedSummary(opt, (sf) => ({ variant: opt.start[sf], tag: 'base-0' }));
+  const after = combinedSummary(opt, (sf) => ({
+    variant: opt.perSurface[sf].current,
+    tag: opt.perSurface[sf].currentHeldTag,
+  }));
 
   const { jsonPath, mdPath } = await lib.report.writeApeReport(
     {
@@ -723,13 +744,13 @@ function shortSurface(surface) {
  * report's before/after table renders these; per-surface detail lives in
  * `finishOptimizeRun`'s `surfaces` return.
  */
-function combinedSummary(opt, pick, tag) {
+function combinedSummary(opt, picker) {
   const { lib } = opt;
   const acc = { consultPrecision: 0, consultRecall: 0, injectActionRate: 0, nearBoundaryFpRate: 0 };
   for (const sf of SURFACES) {
-    const variant = pick(sf);
-    // Score over held-out using whatever results were recorded under this tag;
-    // missing buckets default to false (the report is a summary, not a re-run).
+    const { variant, tag } = picker(sf);
+    // Score over held-out using the results recorded under this surface's real
+    // tag; missing buckets default to false (the report is a summary, not a re-run).
     const rows = opt.heldOut.map((s) => {
       const m = opt.mechanical.get(`${tag}::${variant.id}::${s.id}`) ?? {
         consulted: false,
@@ -889,6 +910,8 @@ export async function optimizeDryCheck() {
           candidates: [],
           bestCandidate: null,
           done: false,
+          currentTrainTag: 'cur-train',
+          currentHeldTag: 'base-0',
         },
       ]),
     ),
@@ -927,13 +950,40 @@ export async function optimizeDryCheck() {
 
   // Phase B — one iteration with a fabricated rewriter reply (1 perfect candidate).
   if (shouldIterate(opt)) {
-    for (const { surface } of rewriterBriefs(opt)) {
+    const briefs = rewriterBriefs(opt);
+    // RT16 (F7) assertion — feedback is REAL: the weak baseline missed the train
+    // positive (`t-pos`), so each rewriter brief must surface that as a concrete
+    // failing example (not the old all-zero, no-signal report).
+    for (const { brief } of briefs) {
+      if (!brief.includes('FAILING EXAMPLES') || !brief.includes('turn for t-pos')) {
+        throw new Error('optimizeDryCheck: RT16 — rewriter feedback missing the real failing example');
+      }
+    }
+    for (const { surface } of briefs) {
       recordCandidates(opt, surface, JSON.stringify([{ text: `improved ${surface}` }]));
     }
     runBatch(candidateDispatches(opt), true); // perfect candidate on train
     scoreCandidatesOnTrain(opt);
     runBatch(heldOutDispatches(opt), true); // perfect candidate on held-out
     acceptOrStop(opt);
+  }
+
+  // RT15 (F9) assertion — the report's before/after read REAL recorded tags, not
+  // un-dispatched ones. Recompute the same way finishOptimizeRun does: before =
+  // start under `base-0` (weak → 0), after = current under its held tag (perfect
+  // candidate accepted → non-zero). After must beat before on the consult axis.
+  const beforeScore = scoreVariant(opt, opt.start.pull_tool_description, opt.heldOut, 'base-0').score;
+  const afterTag = opt.perSurface.pull_tool_description.currentHeldTag;
+  const afterScore = scoreVariant(
+    opt,
+    opt.perSurface.pull_tool_description.current,
+    opt.heldOut,
+    afterTag,
+  ).score;
+  if (!(afterScore > beforeScore)) {
+    throw new Error(
+      `optimizeDryCheck: RT15 — report after (${afterScore}) should beat before (${beforeScore})`,
+    );
   }
 
   // Const XII assertion — the emitted patch is a diff STRING anchored on the real

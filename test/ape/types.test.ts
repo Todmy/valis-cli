@@ -1,10 +1,14 @@
 /**
- * 285/T001: shape + compile-time assertions for the APE harness shared types.
+ * 285/T001 + RT9: shape + compile-time assertions for the APE harness shared types.
  *
  * The module is a pure type surface (no runtime code). These tests construct a
  * literal of each interface and assert the required fields are present, which
- * doubles as a compile-time check that the exported shapes match the contract
- * in `docs/krukit/285-ape-harness/plan.md` Task 1.
+ * doubles as a compile-time check that the exported shapes match the contract.
+ *
+ * RT9 (re-plan v2): the canonical `ApeScenario`, `WorkerBrief`/`WorkerTool`, and
+ * the call/token `Budget` types are PROMOTED here from their per-task modules,
+ * and the USD types are DROPPED (`TrialResult.costUsd` gone; the legacy
+ * `JudgeScore { axis, score }` removed — the judge now returns a bare number).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,8 +20,13 @@ import type {
   Stratum,
   LabelSource,
   ApeCorpusItem,
+  ApeScenario,
+  ScenarioMix,
+  WorkerTool,
+  WorkerBrief,
+  BudgetCaps,
+  Budget,
   MechanicalLabels,
-  JudgeScore,
   TrialResult,
   ParsedSession,
   PatchDescriptor,
@@ -59,44 +68,81 @@ describe('ape/types', () => {
     expect<Axis>(axis).toBe('consult');
   });
 
-  it('ApeCorpusItem allows omitting the optional source_session', () => {
-    const item: ApeCorpusItem = {
-      id: 'i2',
-      prompt: 'just say hi',
-      should_consult: false,
-      should_inject: false,
+  it('ApeScenario carries multi-turn turns + decision labels', () => {
+    const scenario: ApeScenario = {
+      id: 's1',
+      turns: ['set up the repo', 'now add the auth flow per our PRD'],
+      should_consult: true,
+      should_inject: true,
       stratum: 'normal',
-      label_source: 'human_confirmed',
-      needs_human_confirm: false,
+      label_source: 'llm_proposed',
+      needs_human_confirm: true,
+      source_session: 'session-abc',
     };
-    expect(item.source_session).toBeUndefined();
+    expect(scenario.turns).toHaveLength(2);
+    expect(scenario.turns[scenario.turns.length - 1]).toContain('auth flow');
+    expect(scenario.should_consult).toBe(true);
   });
 
-  it('TrialResult carries mechanical + optional judge', () => {
+  it('ScenarioMix maps length-bucket → count', () => {
+    const mix: ScenarioMix = { 1: 3, 2: 2, 3: 1 };
+    expect(mix[1]).toBe(3);
+    expect(mix[3]).toBe(1);
+  });
+
+  it('WorkerBrief carries context + decisionTurn + tools + schema', () => {
+    const tool: WorkerTool = {
+      name: 'mcp__valis__valis_search',
+      description: 'Search the team decision history',
+      parameters: { type: 'object', properties: {}, required: [] },
+    };
+    const brief: WorkerBrief = {
+      context: 'set up the repo',
+      decisionTurn: 'now add the auth flow per our PRD',
+      tools: [tool],
+      schema: '{ "would_consult": boolean }',
+    };
+    expect(brief.tools[0].name).toBe('mcp__valis__valis_search');
+    expect(brief.decisionTurn).toContain('auth flow');
+    expect(brief.context).toBe('set up the repo');
+  });
+
+  it('Budget exposes addCall/calls/remaining/assertWithin over caps', () => {
+    const caps: BudgetCaps = { maxCalls: 10, maxTokensEst: 1000 };
+    const budget: Budget = {
+      addCall: (_tokensEst: number): void => undefined,
+      calls: (): number => 0,
+      remaining: (): { calls: number; tokensEst: number } => ({
+        calls: caps.maxCalls,
+        tokensEst: caps.maxTokensEst,
+      }),
+      assertWithin: (): void => undefined,
+    };
+    expect(budget.calls()).toBe(0);
+    expect(budget.remaining().calls).toBe(10);
+    expect(budget.remaining().tokensEst).toBe(1000);
+  });
+
+  it('TrialResult carries mechanical + optional judge (no USD)', () => {
     const mechanical: MechanicalLabels = { consulted: true, acted: false };
-    const judge: JudgeScore[] = [{ axis: 'inject', score: 0.42 }];
 
     const withJudge: TrialResult = {
       itemId: 'i1',
       variantId: 'v1',
       mechanical,
-      judge,
+      judge: [0.42],
       rawOutput: 'the worker said something',
-      costUsd: 0.0012,
     };
     const withoutJudge: TrialResult = {
       itemId: 'i1',
       variantId: 'v1',
       mechanical: { consulted: false, acted: false },
       rawOutput: 'plain answer',
-      costUsd: 0,
     };
 
     expect(withJudge.mechanical.consulted).toBe(true);
-    expect(withJudge.judge?.[0].axis).toBe('inject');
-    expect(withJudge.judge?.[0].score).toBeCloseTo(0.42);
+    expect(withJudge.judge?.[0]).toBeCloseTo(0.42);
     expect(withoutJudge.judge).toBeUndefined();
-    expect(withoutJudge.costUsd).toBe(0);
   });
 
   it('ParsedSession records prompts with consulted/injected flags', () => {

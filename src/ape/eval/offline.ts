@@ -17,7 +17,6 @@
 import type {
   ApeCorpusItem,
   EvalSummary,
-  JudgeScore,
   PromptVariant,
   TrialResult,
 } from '../types.js';
@@ -29,19 +28,37 @@ import {
   nearBoundaryFpRate,
 } from './metrics.js';
 
+/**
+ * Legacy USD trial shape. RT9 dropped `costUsd` from the canonical `TrialResult`
+ * (re-plan v2 — no Gateway, no external key, no USD); this offline module is the
+ * old API-path eval slated for the RT10–RT12 orchestration rewrite, so the USD
+ * field is inlined here to keep it tsc-clean until then (mirrors the RT1/RT8
+ * "resolve the dangling type minimally, don't defer tsc-clean" precedent).
+ */
+type LegacyTrialResult = TrialResult & { costUsd: number };
+
+/** Legacy axis-scored judge output (canonical judge now returns a bare number). */
+interface LegacyJudgeScore {
+  axis: 'consult' | 'inject';
+  score: number;
+}
+
 /** Minimal spend sink — `add(usd)` accumulates trial + judge cost. */
 export interface SpendSink {
   add(usd: number): void;
 }
 
-type TrialRunner = (variant: PromptVariant, item: ApeCorpusItem) => Promise<TrialResult>;
+type TrialRunner = (variant: PromptVariant, item: ApeCorpusItem) => Promise<LegacyTrialResult>;
 
 export interface EvalOfflineDeps {
   runPull: TrialRunner;
   runPush: TrialRunner;
   spend: SpendSink;
   /** Optional quality-axis judge; scores each trial when supplied. */
-  judge?: (item: ApeCorpusItem, trial: TrialResult) => Promise<JudgeScore[] & { costUsd?: number }>;
+  judge?: (
+    item: ApeCorpusItem,
+    trial: LegacyTrialResult,
+  ) => Promise<LegacyJudgeScore[] & { costUsd?: number }>;
 }
 
 /**
@@ -49,7 +66,7 @@ export interface EvalOfflineDeps {
  * `failingExamples`. Pull surface: should_consult mismatch. Push surface:
  * should_inject vs acted mismatch.
  */
-function isFailure(variant: PromptVariant, item: ApeCorpusItem, trial: TrialResult): boolean {
+function isFailure(variant: PromptVariant, item: ApeCorpusItem, trial: LegacyTrialResult): boolean {
   if (variant.surface === 'pull_tool_description') {
     return item.should_consult !== trial.mechanical.consulted;
   }

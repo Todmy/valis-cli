@@ -16,17 +16,15 @@
  * The multi-turn scenario is delivered as a single brief: prior turns are
  * context, the last turn (with the injection block prepended) is the actual ask.
  *
- * NOTE: `WorkerBrief`/`WorkerTool` are imported from `trial/pull.ts` (RT4 defines
- * them locally; RT9 promotes the canonical type into `ape/types.ts`).
+ * NOTE: `WorkerBrief`/`WorkerTool` are the canonical types in `ape/types.ts`
+ * (promoted by RT9).
  */
 
 import {
   composeSearchResultsBlock,
   type SearchResultRow,
 } from '../../hooks/inject-block.js';
-import type { ApeScenario } from '../corpus/schema.js';
-import type { PromptVariant } from '../types.js';
-import type { WorkerBrief, WorkerTool } from './pull.js';
+import type { ApeScenario, PromptVariant, WorkerBrief, WorkerTool } from '../types.js';
 
 /**
  * A single synthetic search hit injected into the decision turn. The push trial

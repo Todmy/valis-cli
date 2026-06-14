@@ -15,33 +15,14 @@
  * context, the last turn is the actual ask. Because the measurement point IS the
  * last turn, there are no post-decision turns to leak.
  *
- * NOTE: `WorkerBrief` is defined locally here; RT9 promotes the canonical type
- * into `ape/types.ts` (mirrors the RT1/RT3 "resolve the dangling type minimally,
- * don't defer tsc-clean" precedent).
+ * NOTE: `WorkerBrief` / `WorkerTool` are the canonical types in `ape/types.ts`
+ * (promoted by RT9); re-exported here so existing `trial/pull.js` consumers keep
+ * one source of truth.
  */
 
-import type { ApeScenario } from '../corpus/schema.js';
-import type { PromptVariant } from '../types.js';
+import type { ApeScenario, PromptVariant, WorkerBrief, WorkerTool } from '../types.js';
 
-/** An available tool offered to the worker — name + the candidate description. */
-export interface WorkerTool {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-}
-
-/**
- * The deterministic, LLM-free brief the orchestration hands to a worker subagent.
- * `context` is the joined prior turns (empty for a 1-turn scenario); `decisionTurn`
- * is the last turn (the actual ask); `tools` are the candidate-described valis
- * tools; `schema` is the structured-output contract the worker must satisfy.
- */
-export interface WorkerBrief {
-  context: string;
-  decisionTurn: string;
-  tools: WorkerTool[];
-  schema: string;
-}
+export type { WorkerBrief, WorkerTool } from '../types.js';
 
 /**
  * Structured-output schema the worker must reply with. The orchestration forces

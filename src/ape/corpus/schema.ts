@@ -10,32 +10,17 @@
  * `benchmarks/corpus.ts` (load + SHA-256 provenance). The corpus is a JSONL
  * file where each non-blank, non-`#`-comment line is one `ApeScenario`.
  *
- * NOTE: `ApeScenario`, `Stratum`, `LabelSource`, and `ScenarioMix` are defined
- * locally here; RT9 promotes the canonical types into `ape/types.ts`.
+ * NOTE: `ApeScenario`, `Stratum`, `LabelSource`, and `ScenarioMix` are the
+ * canonical types in `ape/types.ts` (promoted by RT9); they are re-exported here
+ * so existing `corpus/schema.js` consumers keep one source of truth.
  */
 
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { ApeScenario, Stratum, LabelSource, ScenarioMix } from '../types.js';
 
-export type Stratum = 'store' | 'near_boundary' | 'normal';
-export type LabelSource = 'llm_proposed' | 'human_confirmed';
-
-/** A multi-step eval unit: context turns + a final decision turn. */
-export interface ApeScenario {
-  id: string;
-  /** Conversation turns; the consult/inject decision is measured at the last. */
-  turns: string[];
-  should_consult: boolean;
-  should_inject: boolean;
-  stratum: Stratum;
-  label_source: LabelSource;
-  needs_human_confirm: boolean;
-  source_session?: string;
-}
-
-/** Length-bucket → target count, e.g. `{ 1: 3, 2: 2, 3: 1 }`. */
-export type ScenarioMix = Record<number, number>;
+export type { ApeScenario, Stratum, LabelSource, ScenarioMix } from '../types.js';
 
 /** Default smoke mix: lean multi-step but keep a 1-turn cold-start floor. */
 export const DEFAULT_SCENARIO_MIX: ScenarioMix = { 1: 3, 2: 2, 3: 1 };

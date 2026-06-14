@@ -6,7 +6,15 @@
  * caps: number of subagent calls and an estimated-token ceiling. `assertWithin()`
  * throws a typed `BudgetExceededError` once EITHER cap is exceeded (fail-loud).
  * Replaces the USD `createSpendTracker` / `assertWithinCap` path.
+ *
+ * NOTE: `BudgetCaps` / `Budget` are the canonical types in `ape/types.ts`
+ * (promoted by RT9); re-exported here so `optimizer/spend.js` consumers keep one
+ * source of truth.
  */
+
+import type { BudgetCaps, Budget } from '../types.js';
+
+export type { BudgetCaps, Budget } from '../types.js';
 
 /** Typed fail-loud error — thrown by `assertWithin` once either cap is exceeded. */
 export class BudgetExceededError extends Error {
@@ -21,18 +29,6 @@ export class BudgetExceededError extends Error {
     );
     this.name = 'BudgetExceededError';
   }
-}
-
-export interface BudgetCaps {
-  maxCalls: number;
-  maxTokensEst: number;
-}
-
-export interface Budget {
-  addCall(tokensEst: number): void;
-  calls(): number;
-  remaining(): { calls: number; tokensEst: number };
-  assertWithin(): void;
 }
 
 export function createBudget({ maxCalls, maxTokensEst }: BudgetCaps): Budget {

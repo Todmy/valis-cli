@@ -1,46 +1,57 @@
 /**
- * 285/T017: $40/run spend tracker + halt.
+ * 285/RT8: call/token budget tracker + halt.
  *
- * Bounds optimizer cost (MUST NOT break — Cost invariant: `$40/run` default
- * hard cap, spend-logged, halts on exceed). `assertWithinCap()` throws a typed
- * `BudgetExceededError` once accumulated spend exceeds the cap.
+ * Re-plan v2 trial-execution model = in-session subagents — no AI Gateway, no
+ * external key, no USD. The optimizer cost is now bounded by two non-monetary
+ * caps: number of subagent calls and an estimated-token ceiling. `assertWithin()`
+ * throws a typed `BudgetExceededError` once EITHER cap is exceeded (fail-loud).
+ * Replaces the USD `createSpendTracker` / `assertWithinCap` path.
  */
 
-const DEFAULT_CAP_USD = 40;
-
-/** Typed fail-loud error — thrown by `assertWithinCap` once spend exceeds the cap. */
+/** Typed fail-loud error — thrown by `assertWithin` once either cap is exceeded. */
 export class BudgetExceededError extends Error {
   constructor(
-    public readonly total: number,
-    public readonly capUsd: number,
+    public readonly calls: number,
+    public readonly tokensEst: number,
+    public readonly maxCalls: number,
+    public readonly maxTokensEst: number,
   ) {
-    super(`spend $${total.toFixed(4)} exceeds cap $${capUsd.toFixed(2)}`);
+    super(
+      `budget exceeded: ${calls}/${maxCalls} calls, ${tokensEst}/${maxTokensEst} est. tokens`,
+    );
     this.name = 'BudgetExceededError';
   }
 }
 
-export interface SpendTracker {
-  add(usd: number): void;
-  total(): number;
-  remaining(): number;
-  assertWithinCap(): void;
+export interface BudgetCaps {
+  maxCalls: number;
+  maxTokensEst: number;
 }
 
-export function createSpendTracker(capUsd: number = DEFAULT_CAP_USD): SpendTracker {
-  let spent = 0;
+export interface Budget {
+  addCall(tokensEst: number): void;
+  calls(): number;
+  remaining(): { calls: number; tokensEst: number };
+  assertWithin(): void;
+}
+
+export function createBudget({ maxCalls, maxTokensEst }: BudgetCaps): Budget {
+  let calls = 0;
+  let tokensEst = 0;
   return {
-    add(usd: number): void {
-      spent += usd;
+    addCall(t: number): void {
+      calls += 1;
+      tokensEst += t;
     },
-    total(): number {
-      return spent;
+    calls(): number {
+      return calls;
     },
-    remaining(): number {
-      return capUsd - spent;
+    remaining(): { calls: number; tokensEst: number } {
+      return { calls: maxCalls - calls, tokensEst: maxTokensEst - tokensEst };
     },
-    assertWithinCap(): void {
-      if (spent > capUsd) {
-        throw new BudgetExceededError(spent, capUsd);
+    assertWithin(): void {
+      if (calls > maxCalls || tokensEst > maxTokensEst) {
+        throw new BudgetExceededError(calls, tokensEst, maxCalls, maxTokensEst);
       }
     },
   };

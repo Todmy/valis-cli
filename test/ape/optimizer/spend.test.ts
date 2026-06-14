@@ -2,38 +2,38 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BudgetExceededError,
-  createSpendTracker,
+  createBudget,
 } from '../../../src/ape/optimizer/spend.js';
 
-describe('createSpendTracker', () => {
-  it('accumulates', () => {
-    const t = createSpendTracker(40);
-    t.add(1.5);
-    t.add(2.5);
-    expect(t.total()).toBe(4);
+describe('createBudget', () => {
+  it('counts calls', () => {
+    const b = createBudget({ maxCalls: 10, maxTokensEst: 100_000 });
+    expect(b.calls()).toBe(0);
+    b.addCall(500);
+    b.addCall(500);
+    expect(b.calls()).toBe(2);
   });
 
-  it('remaining decreases', () => {
-    const t = createSpendTracker(40);
-    expect(t.remaining()).toBe(40);
-    t.add(10);
-    expect(t.remaining()).toBe(30);
-    t.add(5);
-    expect(t.remaining()).toBe(25);
+  it('throws past maxCalls', () => {
+    const b = createBudget({ maxCalls: 2, maxTokensEst: 100_000 });
+    b.addCall(10);
+    b.addCall(10);
+    expect(() => b.assertWithin()).not.toThrow();
+    b.addCall(10);
+    expect(() => b.assertWithin()).toThrow(BudgetExceededError);
   });
 
-  it('throws when over cap', () => {
-    const t = createSpendTracker(40);
-    t.add(41);
-    expect(() => t.assertWithinCap()).toThrow(BudgetExceededError);
+  it('throws past maxTokensEst', () => {
+    const b = createBudget({ maxCalls: 100, maxTokensEst: 1_000 });
+    b.addCall(600);
+    expect(() => b.assertWithin()).not.toThrow();
+    b.addCall(600);
+    expect(() => b.assertWithin()).toThrow(BudgetExceededError);
   });
 
-  it('default cap is 40', () => {
-    const t = createSpendTracker();
-    expect(t.remaining()).toBe(40);
-    t.add(40);
-    expect(() => t.assertWithinCap()).not.toThrow();
-    t.add(0.01);
-    expect(() => t.assertWithinCap()).toThrow(BudgetExceededError);
+  it('remaining tracks both caps', () => {
+    const b = createBudget({ maxCalls: 5, maxTokensEst: 1_000 });
+    b.addCall(200);
+    expect(b.remaining()).toEqual({ calls: 4, tokensEst: 800 });
   });
 });

@@ -1,0 +1,38 @@
+# CI for the PUBLIC valis-cli mirror (Todmy/valis-cli).
+#
+# This file is inert inside the monorepo — GitHub Actions only reads workflows
+# from the repo-root `.github/workflows/`, never from subdirectories. After the
+# `mirror-cli` subtree split (-P packages/cli), this becomes `.github/workflows/ci.yml`
+# at the public repo root and runs there as the standalone package CI.
+#
+# Standalone (no pnpm workspace): plain npm against packages/cli's own scripts.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # fastembed is an optional peerDependency (local-embedding path); npm install
+      # warns but proceeds without it.
+      - run: npm install
+
+      - run: npm run build
+
+      - run: npm test
+
+      - run: npm run lint

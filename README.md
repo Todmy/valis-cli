@@ -50,8 +50,8 @@ Your AI agent (Claude Code, Codex, Cursor) now has team memory via MCP tools:
 
 ## Links
 
-- [Documentation](https://github.com/Todmy/valis)
-- [Issues](https://github.com/Todmy/valis/issues)
+- [Documentation](https://github.com/Todmy/valis-cli#readme)
+- [Issues](https://github.com/Todmy/valis-cli/issues)
 
 ## License
 

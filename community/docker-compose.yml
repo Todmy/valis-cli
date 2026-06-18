@@ -1,0 +1,164 @@
+# Valis Community Edition — self-hosted backend
+#
+# Brings up the minimal Supabase stack that `@supabase/supabase-js` (the
+# valis-cli baseline engine) actually needs, plus Qdrant for search:
+#
+#   db     — supabase/postgres. Its own bootstrap creates the anon /
+#            authenticated / service_role / authenticator / supabase_auth_admin
+#            roles, the auth + storage schemas, the `vector` extension, and the
+#            auth.uid()/auth.jwt() helpers the RLS policies depend on. We do NOT
+#            mount over /docker-entrypoint-initdb.d (that would clobber this
+#            bootstrap) — app schema is applied by the `migrate` service below.
+#   migrate— one-shot. Applies the FULL Valis schema (all 35 migrations from
+#            ./migrations, mounted read-only) once the db is healthy,
+#            idempotently. Exits 0.
+#   auth   — GoTrue (Supabase Auth) — owns auth.users, serves /auth/v1.
+#   rest   — PostgREST — the REST surface supabase-js talks to at /rest/v1.
+#   kong   — API gateway exposing /auth/v1 and /rest/v1 on one port (the
+#            SUPABASE URL the CLI points at).
+#   qdrant — vector search (e5-small 384d + BM25 RRF).
+#
+# Usage:
+#   cp .env.example .env
+#   ./generate-keys.sh        # fills JWT_SECRET / ANON_KEY / SERVICE_ROLE_KEY
+#   docker compose up -d
+
+name: valis-community
+
+services:
+  db:
+    image: supabase/postgres:15.8.1.060
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  migrate:
+    image: supabase/postgres:15.8.1.060
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+    volumes:
+      - ./init-db/apply.sh:/apply.sh:ro
+      - ./init-db/00_role_passwords.sql:/prep/00_role_passwords.sql:ro
+      - ./init-db/00_auth_compat.sql:/prep/00_auth_compat.sql:ro
+      - ./migrations:/valis-migrations:ro
+    entrypoint: ["bash", "/apply.sh"]
+
+  auth:
+    image: supabase/gotrue:v2.177.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:8000}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL:-http://localhost:8000}/auth/v1
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-true}
+      GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP:-false}
+      GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM:-true}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rest:
+    image: postgrest/postgrest:v12.2.12
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+    command: ["postgrest"]
+
+  kong:
+    image: kong:2.8.1
+    restart: unless-stopped
+    depends_on:
+      - auth
+      - rest
+    ports:
+      - "${KONG_HTTP_PORT:-8000}:8000/tcp"
+      - "${KONG_HTTPS_PORT:-8443}:8443/tcp"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      # Consumed by kong.yml via the entrypoint render step below.
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./kong.yml:/home/kong/kong.yml.template:ro
+    # kong:2.8.1 ships bash + sed (no envsubst). Substitute the two consumer
+    # keys into the declarative config, then hand off to the stock entrypoint.
+    # The keys are JWTs / base64url — no `|`, `/` or `&`, so sed is safe here.
+    entrypoint:
+      - bash
+      - -c
+      # Note: $$ escapes compose interpolation so the vars resolve at runtime
+      # inside the container (where SUPABASE_*_KEY are set), not at parse time.
+      - 'sed -e "s|\$$SUPABASE_ANON_KEY|$$SUPABASE_ANON_KEY|g" -e "s|\$$SUPABASE_SERVICE_KEY|$$SUPABASE_SERVICE_KEY|g" /home/kong/kong.yml.template > /home/kong/kong.yml && /docker-entrypoint.sh kong docker-start'
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"  # REST API
+      - "${QDRANT_GRPC_PORT:-6334}:6334"  # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db_data:
+  qdrant_data:

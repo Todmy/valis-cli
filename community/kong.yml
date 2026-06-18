@@ -1,0 +1,94 @@
+_format_version: '2.1'
+_transform: true
+
+# Minimal Kong declarative config for the Valis self-host gateway.
+# Exposes exactly the two surfaces supabase-js needs: /auth/v1 (GoTrue) and
+# /rest/v1 (PostgREST). The supabase-js client sends BOTH `apikey: <key>` and
+# `Authorization: Bearer <key>`; Kong's key-auth validates the apikey and maps
+# it to a consumer (anon or service_role), and PostgREST reads the JWT role
+# from the Authorization header. $SUPABASE_ANON_KEY / $SUPABASE_SERVICE_KEY are
+# substituted from the environment by the container entrypoint (envsubst).
+
+consumers:
+  - username: anon
+    keyauth_credentials:
+      - key: $SUPABASE_ANON_KEY
+  - username: service_role
+    keyauth_credentials:
+      - key: $SUPABASE_SERVICE_KEY
+
+acls:
+  - consumer: anon
+    group: anon
+  - consumer: service_role
+    group: admin
+
+services:
+  ## Open Auth routes (no key required) — token verify, magic-link callback.
+  - name: auth-v1-open
+    url: http://auth:9999/verify
+    routes:
+      - name: auth-v1-open
+        strip_path: true
+        paths:
+          - /auth/v1/verify
+    plugins:
+      - name: cors
+  - name: auth-v1-open-callback
+    url: http://auth:9999/callback
+    routes:
+      - name: auth-v1-open-callback
+        strip_path: true
+        paths:
+          - /auth/v1/callback
+    plugins:
+      - name: cors
+  - name: auth-v1-open-authorize
+    url: http://auth:9999/authorize
+    routes:
+      - name: auth-v1-open-authorize
+        strip_path: true
+        paths:
+          - /auth/v1/authorize
+    plugins:
+      - name: cors
+
+  ## Secured Auth routes — everything else under /auth/v1.
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  ## Secured PostgREST routes — /rest/v1.
+  - name: rest-v1
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-all
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon

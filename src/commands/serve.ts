@@ -10,6 +10,7 @@ import { getSupabaseClient } from '../cloud/supabase.js';
 import { subscribe, type RealtimeSubscription } from '../cloud/realtime.js';
 import { setRealtimeStatus, type RealtimeStatus } from './status.js';
 import { isHostedMode, resolveMcpEndpoint } from '../cloud/api-url.js';
+import { assertSchemaCompatible, SchemaOutOfDateError } from '../cloud/schema-guard.js';
 import { flushQueue } from '../offline/queue.js';
 
 export async function serveCommand(): Promise<void> {
@@ -17,6 +18,20 @@ export async function serveCommand(): Promise<void> {
   if (!config) {
     console.error('Error: Valis not configured. Run `valis init` first.');
     process.exit(1);
+  }
+
+  // #299 — Community mode only: block startup if the self-host DB schema is
+  // behind what this CLI expects (Hosted skips — the server owns the schema).
+  try {
+    await assertSchemaCompatible(config, undefined, (m) => console.error(m));
+  } catch (err) {
+    if (err instanceof SchemaOutOfDateError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+    // Ledger unreadable (e.g. fresh DB still booting) — do not hard-block serve
+    // on a transient read error; surface it and continue.
+    console.error(`[schema-guard] skipped: ${(err as Error).message}`);
   }
 
   // T030: Resolve project config from .valis.json for project-scoped Realtime

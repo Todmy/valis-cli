@@ -10,10 +10,14 @@
     "valis-ape": "./dist/bin/valis-ape.js"
   },
   "scripts": {
+    "gen:schema-version": "node scripts/gen-schema-version.mjs",
+    "prebuild": "pnpm run gen:schema-version",
     "build": "tsc",
     "dev": "tsc --watch",
+    "pretest": "pnpm run gen:schema-version",
     "test": "vitest run",
     "test:watch": "vitest",
+    "prelint": "pnpm run gen:schema-version",
     "lint": "tsc --noEmit",
     "bench": "node dist/bin/valis-bench.js",
     "ape": "node dist/bin/valis-ape.js",

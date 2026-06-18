@@ -24,6 +24,7 @@ import { findProjectConfig, writeProjectConfig } from '../../config/project.js';
 import { trackFile } from '../../config/manifest.js';
 import { runHostedSeed } from '../../seed/index.js';
 import { getSupabaseClient, listMemberProjects, joinProject } from '../../cloud/supabase.js';
+import { assertSchemaCompatible } from '../../cloud/schema-guard.js';
 import { getQdrantClient, countLegacyPoints } from '../../cloud/qdrant.js';
 import { register, joinPublic } from '../../cloud/registration.js';
 import { loadCredentials } from '../../config/credentials.js';
@@ -506,6 +507,14 @@ export async function runFreshInstall(_options: InitOptions = {}): Promise<Fresh
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || await prompt('Supabase Service Role Key: ');
     const qdrantUrl = process.env.QDRANT_URL || await prompt('Qdrant URL: ');
     const qdrantApiKey = process.env.QDRANT_API_KEY || await prompt('Qdrant API Key: ');
+
+    // #299 — Community version-guard. The DB is reachable with the service-role
+    // key now; block init if the self-host schema is behind what this CLI needs
+    // (warn if it is ahead). Runs before any write.
+    await assertSchemaCompatible({
+      supabase_url: supabaseUrl,
+      supabase_service_role_key: serviceRoleKey,
+    } as ValisConfig);
 
     const orgName = await input({ message: 'Organization name:', default: basename(process.cwd()) });
     const authorName = await input({ message: 'Your name:' });

@@ -1,6 +1,6 @@
 {
   "name": "valis-cli",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Shared decision intelligence for AI-augmented engineering teams",
   "type": "module",
   "main": "./dist/src/index.js",

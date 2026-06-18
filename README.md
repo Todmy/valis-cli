@@ -6,12 +6,12 @@ Team decision memory for AI coding agents. Your team's shared hippocampus -- eve
 
 | | **Hosted (recommended)** | **Community / self-host** |
 |---|---|---|
-| Status | ✅ Available today | 🚧 Work in progress / coming soon |
+| Status | ✅ Available today | ✅ Self-hostable (beta) |
 | Backend | Managed cloud (`valis.krukit.co`) | Your own Supabase + Qdrant via Docker Compose |
 | LLM keys | Server-side, nothing to configure | You supply your own |
 | Setup | ~2 minutes | Run the full stack yourself |
 
-If you are evaluating Valis today, use **Hosted** -- the self-host path is still being assembled and is not ready for a clean `docker compose up` yet.
+If you are evaluating Valis today, **Hosted** is the fastest path. The self-host stack now runs from a clean `docker compose up` ([`community/`](./community)).
 
 ## Install
 
@@ -45,13 +45,19 @@ The Claude Code plugin path connects over HTTP MCP + OAuth, so the plugin handle
 
 ---
 
-## Community / self-host 🚧
+## Community / self-host (beta)
 
-> **Work in progress -- coming soon.** Running the full backend yourself is not ready yet. The pieces below are the intended shape; a Docker Compose stack is being assembled. Until that lands, prefer the Hosted path.
+> **Self-hostable (beta).** A clean `docker compose up` in [`community/`](./community) brings up the full backend. One known issue: a cosmetic Qdrant client/server version-skew warning on startup ([#300](https://github.com/Todmy/valis-cli/issues/300)) — harmless, the round-trip works.
 
-The goal: run everything yourself -- your own Supabase (Postgres, source of truth) and Qdrant (search) -- with your own LLM keys. The same `valis` binary runs in self-host mode; the difference is configuration only.
+Run everything yourself -- your own Supabase (Postgres, source of truth) and Qdrant (search) -- with your own LLM keys. The same `valis` binary runs in self-host mode; the difference is configuration only.
 
-What self-host will require:
+```bash
+git clone https://github.com/Todmy/valis-cli && cd valis-cli/community
+cp .env.example .env && ./generate-keys.sh && docker compose up -d
+npm i -g valis-cli && valis init      # choose Community; leave QDRANT_API_KEY empty
+```
+
+See [`community/README.md`](./community/README.md) for the full walkthrough (ports, keys, CLI config). Self-host also uses:
 
 - A local Supabase + Qdrant stack (Docker Compose).
 - A local embedding model (no managed inference). See the caveat below.

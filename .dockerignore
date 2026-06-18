@@ -1,0 +1,11 @@
+node_modules
+dist
+test
+.git
+.gitignore
+*.log
+npm-debug.log*
+coverage
+.DS_Store
+docs/krukit
+*.md

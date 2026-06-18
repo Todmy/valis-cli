@@ -136,13 +136,14 @@ export async function promptAndCreateProject(
   defaultName?: string,
   serviceRoleKey?: string,
   templateId?: string | null,
+  memberId?: string | null,
 ): Promise<ProjectConfig> {
   const projectName = await prompt(
     `Project name${defaultName ? ` (${defaultName})` : ''}: `,
   ) || defaultName || basename(process.cwd());
 
   console.log(pc.cyan(`\nCreating project "${projectName}"...`));
-  const result = await createProject(supabaseUrl, apiKey, orgId, projectName, serviceRoleKey, templateId);
+  const result = await createProject(supabaseUrl, apiKey, orgId, projectName, serviceRoleKey, templateId, memberId);
   console.log(pc.green(`✓ Project "${projectName}" created`));
 
   // 019/US6 + 024: seed confirmation when the server reports a non-zero count.

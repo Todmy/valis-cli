@@ -536,6 +536,9 @@ export async function runFreshInstall(_options: InitOptions = {}): Promise<Fresh
       config.api_key,
       config.org_id,
       defaultProjectName,
+      config.supabase_service_role_key,
+      null,
+      config.member_id,
     );
   }
 

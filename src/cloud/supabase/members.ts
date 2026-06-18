@@ -151,6 +151,7 @@ export async function createProject(
   projectName: string,
   serviceRoleKey?: string,
   templateId?: string | null,
+  memberId?: string | null,
 ): Promise<CreateProjectResponse> {
   // Try Edge Function / API route first (Supabase Cloud / Vercel)
   const isHosted = supabaseUrl.replace(/\/$/, '') === HOSTED_SUPABASE_URL;
@@ -215,6 +216,20 @@ export async function createProject(
     id: projectId, org_id: orgId, name: projectName, invite_code: inviteCode,
   });
   if (projErr) throw new Error(`Failed to create project: ${projErr.message}`);
+
+  // Link the creator as project_admin — mirrors the hosted create-project Edge
+  // Function (supabase/functions/create-project/index.ts step 9). Without this
+  // row, MCP `canWriteToProject` denies every store with project_access_denied.
+  // Rolls back the project on failure to avoid an orphaned, membership-less row.
+  if (memberId) {
+    const { error: memberErr } = await supabase.from('project_members').insert({
+      project_id: projectId, member_id: memberId, role: 'project_admin',
+    });
+    if (memberErr) {
+      await supabase.from('projects').delete().eq('id', projectId);
+      throw new Error(`Failed to create project: ${memberErr.message}`);
+    }
+  }
 
   return {
     project_id: projectId,

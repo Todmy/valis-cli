@@ -553,10 +553,14 @@ export async function runFreshInstall(_options: InitOptions = {}): Promise<Fresh
   config.configured_ides = detectedNames;
   await saveConfig(config);
 
-  // Ensure Qdrant collection — only in community mode (has qdrant_api_key).
-  // Hosted mode uses API proxy for search/enrich — no direct Qdrant access needed.
+  // Ensure Qdrant collection in community/self-host mode (direct Qdrant access).
+  // Discriminator is service_role_key (direct mode), NOT qdrant_api_key — a
+  // self-hosted local Qdrant has no API key but still needs its collection
+  // bootstrapped, else the first store fails with "Not Found" (#299). This must
+  // match the seed block below, which also keys off service_role_key and would
+  // otherwise deref a null qdrant. Hosted mode uses the API proxy — no direct access.
   let qdrant: ReturnType<typeof getQdrantClient> | null = null;
-  if (config.qdrant_api_key) {
+  if (config.supabase_service_role_key) {
     qdrant = await setupQdrant(config.qdrant_url, config.qdrant_api_key);
   }
 

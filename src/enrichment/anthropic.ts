@@ -8,7 +8,20 @@
 import type { EnrichmentProvider, ProviderEnrichmentResult } from './provider.js';
 import { ENRICHMENT_SYSTEM_PROMPT, parseEnrichmentResponse } from './provider.js';
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * Resolve the Anthropic Messages endpoint. Self-hosters routing through a
+ * gateway/proxy override the base via `ANTHROPIC_BASE_URL` (`/v1/messages` is
+ * appended). Defaults to the public Anthropic API so hosted behaviour is
+ * unchanged.
+ */
+function anthropicApiUrl(): string {
+  const base = process.env.ANTHROPIC_BASE_URL?.trim();
+  if (!base) return DEFAULT_ANTHROPIC_API_URL;
+  return `${base.replace(/\/+$/, '')}/v1/messages`;
+}
+
 const MODEL = 'claude-3-5-haiku-latest';
 const MAX_TOKENS = 300;
 
@@ -31,7 +44,7 @@ export class AnthropicProvider implements EnrichmentProvider {
       messages: [{ role: 'user', content: text }],
     };
 
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch(anthropicApiUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

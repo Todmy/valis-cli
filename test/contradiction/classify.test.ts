@@ -4,7 +4,7 @@
  * No live LLM — a fake `fetchImpl` returns canned Anthropic responses. Verifies
  * the non-throwing abstention contract and the symmetrized two-pass.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   makeHaikuClassifier,
   parseLabel,
@@ -107,6 +107,42 @@ describe('makeHaikuClassifier — symmetrized two-pass', () => {
     expect(v.classification).toBe('uncertain');
     expect(v.abstained).toBe(true);
     expect(v.reason).toBe('pass_disagreement');
+  });
+});
+
+describe('makeHaikuClassifier — configurable endpoint (ANTHROPIC_BASE_URL)', () => {
+  const original = process.env.ANTHROPIC_BASE_URL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = original;
+  });
+
+  /** Fake fetch that records the URL it was called with. */
+  function urlCapturingFetch(urls: string[]): typeof fetch {
+    return (async (url: string) => {
+      urls.push(url);
+      return {
+        ok: true,
+        json: async () => ({ content: [{ type: 'text', text: JSON.stringify({ label: 'compatible', confidence: 0.9 }) }] }),
+      } as unknown as Response;
+    }) as typeof fetch;
+  }
+
+  it('defaults to the public Anthropic endpoint when unset', async () => {
+    delete process.env.ANTHROPIC_BASE_URL;
+    const urls: string[] = [];
+    const classify = makeHaikuClassifier({ apiKey: 'k', fetchImpl: urlCapturingFetch(urls) });
+    await classify(A, B);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('routes through ANTHROPIC_BASE_URL when set (trailing slash tolerated)', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.internal/anthropic/';
+    const urls: string[] = [];
+    const classify = makeHaikuClassifier({ apiKey: 'k', fetchImpl: urlCapturingFetch(urls) });
+    await classify(A, B);
+    expect(urls[0]).toBe('https://gateway.internal/anthropic/v1/messages');
   });
 });
 

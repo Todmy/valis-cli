@@ -17,7 +17,20 @@
  * store write must succeed regardless.
  */
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * Resolve the Anthropic Messages endpoint. Self-hosters routing through a
+ * gateway/proxy override it via `ANTHROPIC_BASE_URL` (the base — `/v1/messages`
+ * is appended). Defaults to the public Anthropic API so hosted behaviour is
+ * unchanged.
+ */
+function anthropicApiUrl(): string {
+  const base = process.env.ANTHROPIC_BASE_URL?.trim();
+  if (!base) return DEFAULT_ANTHROPIC_API_URL;
+  return `${base.replace(/\/+$/, '')}/v1/messages`;
+}
+
 const MODEL = 'claude-3-5-haiku-latest';
 const MAX_TOKENS = 60;
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -92,7 +105,7 @@ async function classifyOnce(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   try {
-    const res = await opts.fetchImpl(ANTHROPIC_API_URL, {
+    const res = await opts.fetchImpl(anthropicApiUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -14,9 +14,13 @@
  * handles the consent gate + retries.
  */
 
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { telemetryLogPath, transmissionLogPath } from './paths.js';
+import {
+  telemetryLogPath,
+  transmissionLogPath,
+  installReportedPath,
+} from './paths.js';
 import { emitAdoptionEvents, type AdoptionEvent } from '../lib/adoption-emit.js';
 
 const MAX_BATCH = 100;
@@ -108,10 +112,42 @@ async function readEventsSince(since: string | null): Promise<TelemetryLine[]> {
   return events;
 }
 
+/**
+ * Best-effort marker I/O for the one-time `install` funnel event. Never throws
+ * (constitution III Non-Blocking): on any I/O error we treat the marker as
+ * absent (read) or skip persistence (write) rather than blocking the flush.
+ */
+async function installAlreadyReported(): Promise<boolean> {
+  try {
+    await stat(installReportedPath());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function markInstallReported(): Promise<void> {
+  try {
+    const path = installReportedPath();
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(path, new Date().toISOString(), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch {
+    /* never block the flush on marker I/O — install may re-attempt next flush */
+  }
+}
+
 export async function hookFlushTelemetryCommand(): Promise<void> {
   const log = await loadTransmissionLog();
   const events = await readEventsSince(log.last_transmission_at);
   if (events.length === 0) return;
+
+  // One-time `install` funnel event: `install` has no literal npm-install emit
+  // site (no auth/project/stdio path), so we fire it once at the first
+  // authenticated, project-scoped flush, deduped by a local marker file.
+  let pendingInstall = !(await installAlreadyReported());
 
   // Group by project_id; events without a project_id are skipped (the
   // backend ingest endpoint is per-project).
@@ -131,7 +167,17 @@ export async function hookFlushTelemetryCommand(): Promise<void> {
         count: 1,
         occurred_at: e.ts,
       }));
+      // Prepend the one-time `install` event to the very first authenticated,
+      // project-scoped batch. Persist the marker only once the send succeeds.
+      const sendingInstall = pendingInstall;
+      if (sendingInstall) {
+        adoptionEvents.unshift({ event_type: 'install', count: 1 });
+      }
       const result = await emitAdoptionEvents(projectId, adoptionEvents);
+      if (result.ok && sendingInstall) {
+        pendingInstall = false;
+        await markInstallReported();
+      }
       if (!result.ok) {
         // Stop early on consent_off / no_auth / no_config — retrying won't help.
         if (

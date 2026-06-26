@@ -52,6 +52,16 @@ export function transmissionLogPath(): string {
   return join(valisHome(), 'transmission-log.json');
 }
 
+/**
+ * Dedup marker for the one-time `install` funnel event. Present → install has
+ * already been reported at a prior authenticated flush; absent → the next
+ * authenticated, project-scoped flush should prepend `install` once and create
+ * this file. (T3.1 — `install` has no literal npm-install emit site.)
+ */
+export function installReportedPath(): string {
+  return join(valisHome(), 'install-reported');
+}
+
 export function sessionMarkerPath(sessionId: string): string {
   return join(valisHome(), 'session-markers', `${sessionId}.json`);
 }

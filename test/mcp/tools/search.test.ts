@@ -169,4 +169,33 @@ describe('handleSearch', () => {
     );
     expect(result.error).toBeUndefined();
   });
+
+  // ---------------------------------------------------------------------------
+  // BUG #84 / T4.1 — server vs CLI mode error discrimination. `offline:true` is
+  // a CLI-stdio-only fallback indicator; server (HTTP MCP) transport errors must
+  // surface `backend_unavailable:true` instead, mirroring handleContext.
+  // ---------------------------------------------------------------------------
+
+  it('server-mode transport error returns backend_unavailable (not offline)', async () => {
+    const { hybridSearch } = await import('../../../src/cloud/qdrant.js');
+    vi.mocked(hybridSearch).mockRejectedValueOnce(new Error('qdrant down'));
+
+    const result = await handleSearch({ query: 'database' }, serverOverride);
+
+    expect(result.backend_unavailable).toBe(true);
+    expect(result.error_message).toContain('qdrant down');
+    expect(result.offline).toBeUndefined();
+    expect(result.results).toHaveLength(0);
+  });
+
+  it('CLI/direct-mode error still returns offline: true', async () => {
+    const { hybridSearch } = await import('../../../src/cloud/qdrant.js');
+    vi.mocked(hybridSearch).mockRejectedValueOnce(new Error('qdrant down'));
+
+    const result = await handleSearch({ query: 'database' });
+
+    expect(result.offline).toBe(true);
+    expect(result.backend_unavailable).toBeUndefined();
+    expect(result.results).toHaveLength(0);
+  });
 });

@@ -293,6 +293,17 @@ export async function handleSearch(
     console.error(
       `[search] ${tag} error: ${err instanceof Error ? err.stack || err.message : String(err)}`,
     );
+    // BUG #84 / T4.1: server (HTTP MCP) mode must NEVER emit `offline:true` —
+    // that's a CLI-stdio fallback indicator. Mirror handleContext: server mode
+    // → `backend_unavailable` + `error_message`; CLI/direct → `offline`.
+    const isServerMode = Boolean(configOverride);
+    if (isServerMode) {
+      return {
+        results: [],
+        backend_unavailable: true,
+        error_message: err instanceof Error ? err.message : String(err),
+      };
+    }
     return { results: [], offline: true, note: 'Cloud unavailable. Search offline.' };
   }
 
@@ -405,12 +416,15 @@ async function runMetadataOnlySearch(p: MetadataOnlyArgs): Promise<SearchRespons
     console.error(
       `[search] metadata_only error: ${err instanceof Error ? err.message : String(err)}`,
     );
+    // BUG #84 / T4.1: same server-vs-CLI gate as the main transport catch.
+    const isServerMode = Boolean(configOverride);
     return assembleResponse({
       results: [],
       suppressed_count: 0,
       mismatch: detectScopeMismatch(args.project_id, configOverride),
-      offline: true,
-      note: 'Cloud unavailable. Search offline.',
+      ...(isServerMode
+        ? { backend_unavailable: true, error_message: err instanceof Error ? err.message : String(err) }
+        : { offline: true, note: 'Cloud unavailable. Search offline.' }),
       dropped_args: p.dropped_args,
       clamped_args: p.clamped_args,
       filter_dim_used: p.filter_dim_used,
@@ -454,6 +468,9 @@ interface AssembleArgs {
   suppressed_count: number;
   mismatch: ReturnType<typeof detectScopeMismatch>;
   offline?: boolean;
+  /** BUG #84 / T4.1 — server-mode error envelope (mirrors `offline` for CLI). */
+  backend_unavailable?: boolean;
+  error_message?: string;
   note?: string;
   mode_note?: 'query_string_ignored_in_metadata_mode';
   dropped_args: DroppedArg[];
@@ -513,6 +530,8 @@ function assembleResponse(p: AssembleArgs): SearchResponse {
   const response: SearchResponse = { results: p.results };
   if (p.suppressed_count > 0) response.suppressed_count = p.suppressed_count;
   if (p.offline) response.offline = true;
+  if (p.backend_unavailable) response.backend_unavailable = true;
+  if (p.error_message) response.error_message = p.error_message;
   if (p.note) response.note = p.note;
   if (p.mode_note) response.mode_note = p.mode_note;
   if (p.mismatch) response.project_scope_mismatch = p.mismatch;

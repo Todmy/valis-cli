@@ -703,6 +703,18 @@ export interface SearchResponse {
    * project_id could be resolved from any source.
    */
   error?: string;
+  /**
+   * BUG #84 / T4.1: backend genuinely unreachable on HTTP (server) transport.
+   * Replaces the (incorrect) `offline:true` signal in server mode — `offline`
+   * stays a CLI-stdio-only fallback indicator, mirroring `ContextResponse`.
+   */
+  backend_unavailable?: boolean;
+  /**
+   * BUG #84 / T4.1: underlying error message surfaced alongside
+   * `backend_unavailable` so operators / agents can triage without prod-log
+   * access. Same shape as `ContextResponse.error_message`.
+   */
+  error_message?: string;
   project_scope_mismatch?: ProjectScopeMismatch;
   /**
    * 032/Track 6 — structured-filter diagnostics surfaced when the agent

@@ -197,10 +197,14 @@ describe('handleSearch — proposed_pending (US1)', () => {
 });
 
 describe('handleSearch — proposed_pending omission rules (FR-006)', () => {
-  it('OMITS the block on the offline path', async () => {
+  it('OMITS the block on the backend-unavailable path', async () => {
+    // T4.1/BUG #84: serverOverride → server mode → the failure envelope is
+    // `backend_unavailable`, not `offline` (offline is CLI-stdio only). The
+    // FR-006 contract under test is the omission of the proposed_pending block.
     vi.mocked(hybridSearch).mockRejectedValueOnce(new Error('cloud down'));
     const res = await handleSearch({ query: 'database' }, serverOverride);
-    expect(res.offline).toBe(true);
+    expect(res.backend_unavailable).toBe(true);
+    expect(res.offline).toBeUndefined();
     expect(res.proposed_pending).toBeUndefined();
   });
 

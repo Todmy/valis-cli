@@ -39,6 +39,8 @@ interface AnalyticsPayload extends Record<string, unknown> {
   org_id: string;
   project_id?: string;
   target_project_id_passed?: boolean;
+  result_count?: number;
+  decision_type?: string;
   error_code?: string;
   error_message?: string;
 }
@@ -120,6 +122,7 @@ export function wrapToolWithAnalytics(
   toolName: string,
   configOverride: ServerConfig | undefined,
   handler: Handler,
+  extractResultMeta?: (result: unknown) => { result_count?: number; decision_type?: string },
 ): Handler {
   return async (args: HandlerArgs): Promise<HandlerResult> => {
     const start = Date.now();
@@ -128,6 +131,21 @@ export function wrapToolWithAnalytics(
       const payload = buildPayload(toolName, Date.now() - start, configOverride, args, {
         success: true,
       });
+      // T2.1: best-effort result-meta enrichment. Never let an extractor
+      // failure break the handler path — swallow and emit the base payload.
+      if (extractResultMeta) {
+        try {
+          const meta = extractResultMeta(result);
+          if (meta && typeof meta.result_count === 'number') {
+            payload.result_count = meta.result_count;
+          }
+          if (meta && typeof meta.decision_type === 'string') {
+            payload.decision_type = meta.decision_type;
+          }
+        } catch {
+          // Extractor threw — keep the base payload.
+        }
+      }
       safeEmit(configOverride, payload);
       return result;
     } catch (err) {

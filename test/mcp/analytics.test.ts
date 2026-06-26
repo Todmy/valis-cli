@@ -173,4 +173,71 @@ describe('wrapToolWithAnalytics', () => {
     expect(payload.error_code).toBe('unknown_error');
     expect(payload.error_message).toBe('plain string error');
   });
+
+  // T2.1: optional result-meta extractor merged into mcp_tool_call on success.
+  it('merges result_count into mcp_tool_call on success', async () => {
+    const handler = vi.fn().mockResolvedValue(okResult);
+    const wrapped = wrapToolWithAnalytics(
+      'valis_search',
+      config,
+      handler,
+      () => ({ result_count: 5 }),
+    );
+
+    await wrapped({ query: 'hi' });
+
+    expect(emit).toHaveBeenCalledWith('mcp_tool_call', expect.objectContaining({
+      result_count: 5,
+    }));
+  });
+
+  it('merges decision_type into mcp_tool_call on success', async () => {
+    const handler = vi.fn().mockResolvedValue(okResult);
+    const wrapped = wrapToolWithAnalytics(
+      'valis_store',
+      config,
+      handler,
+      () => ({ decision_type: 'pattern' }),
+    );
+
+    await wrapped({ text: 'x' });
+
+    expect(emit).toHaveBeenCalledWith('mcp_tool_call', expect.objectContaining({
+      decision_type: 'pattern',
+    }));
+  });
+
+  it('omits result-meta on the error path', async () => {
+    const extractor = vi.fn(() => ({ result_count: 5, decision_type: 'pattern' }));
+    const handler = vi.fn().mockRejectedValue(new Error('boom'));
+    const wrapped = wrapToolWithAnalytics('valis_search', config, handler, extractor);
+
+    await expect(wrapped({ query: 'x' })).rejects.toThrow('boom');
+    expect(extractor).not.toHaveBeenCalled();
+    const [, payload] = emit.mock.calls[0];
+    expect(payload.success).toBe(false);
+    expect(payload.result_count).toBeUndefined();
+    expect(payload.decision_type).toBeUndefined();
+  });
+
+  it('still emits base payload when extractResultMeta throws', async () => {
+    const handler = vi.fn().mockResolvedValue(okResult);
+    const wrapped = wrapToolWithAnalytics(
+      'valis_search',
+      config,
+      handler,
+      () => { throw new Error('extractor blew up'); },
+    );
+
+    const result = await wrapped({ query: 'hi' });
+
+    expect(result).toBe(okResult);
+    expect(emit).toHaveBeenCalledWith('mcp_tool_call', expect.objectContaining({
+      tool: 'valis_search',
+      success: true,
+    }));
+    const [, payload] = emit.mock.calls[0];
+    expect(payload.result_count).toBeUndefined();
+    expect(payload.decision_type).toBeUndefined();
+  });
 });

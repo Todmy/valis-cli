@@ -594,11 +594,68 @@ function createBaseServer(): McpServer {
  * annotations actually reach `tools/list` responses (where harnesses
  * read them for capability inference).
  */
+/**
+ * T2.2 — result-meta extractors for `mcp_tool_call`. Each runs on the wrapped
+ * handler's MCP content (the post-toContent shape: `{ content: [{ text }] }`)
+ * and parses the serialized handler result back out. They MUST be pure and
+ * total — any malformed/missing input yields `{}` rather than throwing, so an
+ * extractor failure can never break the handler path.
+ */
+function parseMcpResult(result: unknown): Record<string, unknown> | null {
+  const text = (result as { content?: Array<{ text?: unknown }> })?.content?.[0]?.text;
+  if (typeof text !== 'string') return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `valis_search`: result_count = length of the `results` array (0 if absent). */
+export function extractResultCount(result: unknown): { result_count?: number } {
+  const parsed = parseMcpResult(result);
+  if (!parsed) return {};
+  const results = parsed.results;
+  return { result_count: Array.isArray(results) ? results.length : 0 };
+}
+
+/** Alias kept descriptive at the search call-site. */
+export const extractSearchResultMeta = extractResultCount;
+
+/**
+ * `valis_context`: result_count = sum of the four active buckets
+ * (decisions + constraints + patterns + lessons). `historical` is excluded —
+ * it mirrors the bucket-set the response advertises as live results.
+ */
+export function extractContextResultMeta(result: unknown): { result_count?: number } {
+  const parsed = parseMcpResult(result);
+  if (!parsed) return {};
+  const len = (k: string): number => (Array.isArray(parsed[k]) ? (parsed[k] as unknown[]).length : 0);
+  return { result_count: len('decisions') + len('constraints') + len('patterns') + len('lessons') };
+}
+
+/**
+ * `valis_store`: decision_type comes from the caller's `args.type` — the
+ * `StoreResponse` does not echo the type back, so it is supplied as a closure
+ * argument at the call-site. Returns `{}` when the caller did not pass a type.
+ */
+export function extractStoreResultMeta(
+  _result: unknown,
+  argsType: string | undefined,
+): { decision_type?: string } {
+  return typeof argsType === 'string' && argsType.length > 0 ? { decision_type: argsType } : {};
+}
+
 function registerToolFromDef<Name extends keyof typeof TOOL_DEFS>(
   server: McpServer,
   name: Name,
   configOverride: ServerConfig | undefined,
   cb: (args: never) => Promise<{ content: { type: 'text'; text: string }[] }>,
+  extractResultMeta?: (
+    result: unknown,
+    args: Record<string, unknown>,
+  ) => { result_count?: number; decision_type?: string },
 ): void {
   const def = TOOL_DEFS[name];
   const config: {
@@ -620,6 +677,7 @@ function registerToolFromDef<Name extends keyof typeof TOOL_DEFS>(
     name,
     configOverride,
     cb as unknown as (args: Record<string, unknown>) => Promise<{ content: { type: 'text'; text: string }[] }>,
+    extractResultMeta,
   ) as unknown as typeof cb;
   // Cast through unknown to avoid the SDK's tight Zod-shape coupling here;
   // each call site below passes a typed handler that matches its def.
@@ -650,20 +708,40 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
   // 0.1.4: registerToolFromDef wires description + schema + annotations
   // through the new server.registerTool API so harnesses see the
   // readOnlyHint/destructiveHint/idempotentHint annotations on tools/list.
-  registerToolFromDef(server, 'valis_store', configOverride, async (args) => {
-    const result = await handleStore(args as never, configOverride);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  });
+  registerToolFromDef(
+    server,
+    'valis_store',
+    configOverride,
+    async (args) => {
+      const result = await handleStore(args as never, configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+    // T2.2: decision_type comes from the caller's `args.type` (StoreResponse
+    // does not echo the type back) — read it from the per-call args.
+    (result, args) => extractStoreResultMeta(result, args.type as string | undefined),
+  );
 
-  registerToolFromDef(server, 'valis_search', configOverride, async (args) => {
-    const result = await handleSearch(args as never, configOverride);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  });
+  registerToolFromDef(
+    server,
+    'valis_search',
+    configOverride,
+    async (args) => {
+      const result = await handleSearch(args as never, configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+    extractSearchResultMeta,
+  );
 
-  registerToolFromDef(server, 'valis_context', configOverride, async (args) => {
-    const result = await handleContext(args as never, configOverride);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  });
+  registerToolFromDef(
+    server,
+    'valis_context',
+    configOverride,
+    async (args) => {
+      const result = await handleContext(args as never, configOverride);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+    extractContextResultMeta,
+  );
 
   registerToolFromDef(server, 'valis_lifecycle', configOverride, async (args) => {
     const result = await handleLifecycle(args as never, configOverride);

@@ -122,7 +122,10 @@ export function wrapToolWithAnalytics(
   toolName: string,
   configOverride: ServerConfig | undefined,
   handler: Handler,
-  extractResultMeta?: (result: unknown) => { result_count?: number; decision_type?: string },
+  extractResultMeta?: (
+    result: unknown,
+    args: HandlerArgs,
+  ) => { result_count?: number; decision_type?: string },
 ): Handler {
   return async (args: HandlerArgs): Promise<HandlerResult> => {
     const start = Date.now();
@@ -133,9 +136,11 @@ export function wrapToolWithAnalytics(
       });
       // T2.1: best-effort result-meta enrichment. Never let an extractor
       // failure break the handler path — swallow and emit the base payload.
+      // T2.2: the extractor also receives the call args so tools like
+      // valis_store can read `args.type` (StoreResponse omits the type).
       if (extractResultMeta) {
         try {
-          const meta = extractResultMeta(result);
+          const meta = extractResultMeta(result, args);
           if (meta && typeof meta.result_count === 'number') {
             payload.result_count = meta.result_count;
           }

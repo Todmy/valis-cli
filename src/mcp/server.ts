@@ -613,7 +613,10 @@ function parseMcpResult(result: unknown): Record<string, unknown> | null {
 }
 
 /** `valis_search`: result_count = length of the `results` array (0 if absent). */
-export function extractResultCount(result: unknown): { result_count?: number } {
+export function extractResultCount(
+  result: unknown,
+  _args?: Record<string, unknown>,
+): { result_count?: number } {
   const parsed = parseMcpResult(result);
   if (!parsed) return {};
   const results = parsed.results;
@@ -628,7 +631,10 @@ export const extractSearchResultMeta = extractResultCount;
  * (decisions + constraints + patterns + lessons). `historical` is excluded —
  * it mirrors the bucket-set the response advertises as live results.
  */
-export function extractContextResultMeta(result: unknown): { result_count?: number } {
+export function extractContextResultMeta(
+  result: unknown,
+  _args?: Record<string, unknown>,
+): { result_count?: number } {
   const parsed = parseMcpResult(result);
   if (!parsed) return {};
   const len = (k: string): number => (Array.isArray(parsed[k]) ? (parsed[k] as unknown[]).length : 0);

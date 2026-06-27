@@ -46,6 +46,7 @@
   "exports": {
     ".": "./dist/src/index.js",
     "./mcp/server": "./dist/src/mcp/server.js",
+    "./mcp/agents": "./dist/src/mcp/agents/index.js",
     "./mcp/tools/store": "./dist/src/mcp/tools/store.js",
     "./types": "./dist/src/types.js",
     "./contradiction/classify": "./dist/src/contradiction/classify.js",

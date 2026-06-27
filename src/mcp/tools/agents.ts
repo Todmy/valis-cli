@@ -63,8 +63,29 @@ export async function handleConsultAgent(
       available: listAgents().map((a) => a.slug),
     };
   }
-  return handleSearch(
+  const result = await handleSearch(
     { query: args.query, target_project_id: agent.project_id },
     configOverride,
   );
+  // Investor usage metric: one privacy-safe funnel event per resolved consult.
+  // The member identity (distinctId) + org (group) are attached by the bridge
+  // (buildFunnelEmitter); we pass ONLY the agent slug + count — never the
+  // query, the result, or any decision id (Principle XIII — telemetry privacy).
+  emitConsultEvent(configOverride, agent.slug);
+  return result;
+}
+
+/**
+ * Fire-and-forget consult funnel emission. A slow or failing sink must NEVER
+ * delay or fail the consult response (Principle III — non-blocking), so the
+ * emit is wrapped in try/catch and is a strict no-op when no `emit_funnel`
+ * bridge is wired (local stdio path).
+ */
+function emitConsultEvent(config: ServerConfig | undefined, agentSlug: string): void {
+  if (!config?.emit_funnel) return;
+  try {
+    config.emit_funnel('agent_consulted', { agent_slug: agentSlug, count: 1 });
+  } catch {
+    /* analytics must never break the consult path */
+  }
 }

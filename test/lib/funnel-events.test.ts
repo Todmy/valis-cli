@@ -17,6 +17,7 @@ describe('funnel-events', () => {
     expect(FUNNEL_EVENT_TYPES).toContain('second_user_joined');
     expect(FUNNEL_EVENT_TYPES).toContain('paid_upgrade');
     expect(FUNNEL_EVENT_TYPES).toContain('churned');
+    expect(FUNNEL_EVENT_TYPES).toContain('agent_consulted');
   });
 
   it('rejects non-funnel event names', () => {

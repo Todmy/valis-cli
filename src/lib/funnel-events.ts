@@ -29,6 +29,8 @@ export const FUNNEL_EVENT_TYPES = [
   'paid_upgrade',
   /** Stripe webhook downgrade/cancel from paid → free. */
   'churned',
+  /** One privacy-safe event per resolved `valis_consult_agent` call (agent_slug + count only). */
+  'agent_consulted',
 ] as const;
 
 export type FunnelEventName = (typeof FUNNEL_EVENT_TYPES)[number];

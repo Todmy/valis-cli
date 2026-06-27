@@ -153,4 +153,65 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
 
     expect(result.results).toEqual([]);
   });
+
+  it('emits exactly one agent_consulted funnel event with agent_slug + count', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    const emit_funnel = vi.fn();
+
+    await handleConsultAgent(
+      { agent: 'negotiator', query: 'how do I anchor high?' },
+      { ...httpServerOverride, emit_funnel },
+    );
+
+    expect(emit_funnel).toHaveBeenCalledTimes(1);
+    const [event, props] = emit_funnel.mock.calls[0];
+    expect(event).toBe('agent_consulted');
+    expect(props).toMatchObject({ agent_slug: 'negotiator', count: 1 });
+  });
+
+  it('agent_consulted payload carries NO query/result/decision-id (privacy — Principle XIII)', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    const emit_funnel = vi.fn();
+    const query = 'SECRET sensitive negotiation question about the acme deal';
+
+    await handleConsultAgent(
+      { agent: 'negotiator', query },
+      { ...httpServerOverride, emit_funnel },
+    );
+
+    const props = emit_funnel.mock.calls[0][1] as Record<string, unknown>;
+    // ONLY agent_slug + count — identity rides as distinctId/group on the bridge.
+    expect(Object.keys(props).sort()).toEqual(['agent_slug', 'count']);
+    expect(props).not.toHaveProperty('query');
+    expect(props).not.toHaveProperty('decision_id');
+    expect(props).not.toHaveProperty('results');
+    const serialized = JSON.stringify(props);
+    expect(serialized).not.toContain('SECRET');
+    expect(serialized).not.toContain(query);
+  });
+
+  it('a throwing funnel sink never breaks the consult response (non-blocking — Principle III)', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    const emit_funnel = vi.fn(() => {
+      throw new Error('sink down');
+    });
+
+    const result = (await handleConsultAgent(
+      { agent: 'negotiator', query: 'q' },
+      { ...httpServerOverride, emit_funnel },
+    )) as SearchResponse;
+
+    expect(Array.isArray(result.results)).toBe(true);
+  });
+
+  it('unknown-slug guard path emits NO funnel event', async () => {
+    const emit_funnel = vi.fn();
+
+    await handleConsultAgent(
+      { agent: 'nope', query: 'q' },
+      { ...httpServerOverride, emit_funnel },
+    );
+
+    expect(emit_funnel).not.toHaveBeenCalled();
+  });
 });

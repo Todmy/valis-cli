@@ -381,6 +381,16 @@ export interface ServerConfig {
   project_id?: string | null;
   project_name?: string | null;
   /**
+   * Review HIGH (308) — set by the per-agent MCP endpoint when it forces a
+   * session scope (`forceProjectId`). It is the "scope is NOT membership-
+   * derived" signal: when present, the search/context tools MUST run
+   * `canReadProject(member_id, forced_project_id)` before returning any
+   * results, even when an equal `target_project_id` would otherwise slip past
+   * the differ-check. `project_id` is still set to the same value so the
+   * downstream search path is scoped correctly.
+   */
+  forced_project_id?: string;
+  /**
    * Optional funnel-event emitter injected by the web layer (`buildServerConfig*`).
    * CLI stdio mode leaves it undefined — side effects call it via `?.()` so
    * analytics is a pure server-side concern.

@@ -69,6 +69,8 @@ vi.mock('../../../src/cloud/api-url.js', () => ({
 }));
 
 import { handleSearch } from '../../../src/mcp/tools/search.js';
+import { handleConsultAgent } from '../../../src/mcp/tools/agents.js';
+import { getAgent } from '../../../src/mcp/agents/index.js';
 import { canReadProject } from '../../../src/lib/project-access.js';
 import { hybridSearch } from '../../../src/cloud/qdrant.js';
 import { storeAuditEntry } from '../../../src/cloud/supabase/audit.js';
@@ -222,5 +224,89 @@ describe('handleSearch — public-KB cross-org reads (feature 033)', () => {
     const callArgs = vi.mocked(hybridSearch).mock.calls[0];
     const searchOptions = callArgs[3] as { projectId?: string };
     expect(searchOptions.projectId).toBe('own-project-id');
+  });
+});
+
+/**
+ * Review HIGH (308) — forced / per-agent scope must pass canReadProject.
+ *
+ * The per-agent MCP endpoint sets `forceProjectId` → `config.project_id =
+ * AGENT_PID`. Before the fix, `valis_search` only gated on
+ * `target_project_id && target_project_id !== projectId`, so:
+ *   - a direct valis_search through the forced endpoint (no target) skipped the
+ *     gate entirely, and
+ *   - handleConsultAgent passed `target_project_id = AGENT_PID` which EQUALS the
+ *     forced scope, so the differ-check was false and the gate was skipped.
+ * Result: a PRIVATE forced project would be readable by any authenticated
+ * non-member. These tests prove the bypass and lock the fix.
+ */
+describe('handleSearch — forced/agent scope gate (review HIGH 308)', () => {
+  const AGENT_PID = getAgent('negotiator')!.project_id;
+
+  // Mirrors what the per-agent endpoint builds: forced scope replaces
+  // project_id AND raises the forced_project_id signal.
+  const forcedAgentOverride = {
+    ...httpServerOverride,
+    project_id: AGENT_PID,
+    forced_project_id: AGENT_PID,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('forced scope to a denied project returns EMPTY (proves the bypass)', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+
+    // Direct valis_search through the forced per-agent endpoint, NO target arg.
+    const result = await handleSearch({ query: 'auth' }, forcedAgentOverride);
+
+    expect(canReadProject).toHaveBeenCalledWith(
+      expect.anything(),
+      'caller-member-id',
+      AGENT_PID,
+    );
+    expect(result.results).toEqual([]);
+    expect(hybridSearch).not.toHaveBeenCalled();
+  });
+
+  it('consult_agent on a denied forced scope returns EMPTY (target == scope)', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+
+    const result = (await handleConsultAgent(
+      { agent: 'negotiator', query: 'how do I anchor?' },
+      forcedAgentOverride,
+    )) as { results: unknown[] };
+
+    expect(canReadProject).toHaveBeenCalledWith(
+      expect.anything(),
+      'caller-member-id',
+      AGENT_PID,
+    );
+    expect(result.results).toEqual([]);
+    expect(hybridSearch).not.toHaveBeenCalled();
+  });
+
+  it('allowed forced scope returns results scoped to the forced project', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+
+    const result = await handleSearch({ query: 'auth' }, forcedAgentOverride);
+
+    expect(canReadProject).toHaveBeenCalledWith(
+      expect.anything(),
+      'caller-member-id',
+      AGENT_PID,
+    );
+    expect(result.results.length).toBeGreaterThan(0);
+    const callArgs = vi.mocked(hybridSearch).mock.calls[0];
+    const searchOptions = callArgs[3] as { projectId?: string };
+    expect(searchOptions.projectId).toBe(AGENT_PID);
+  });
+
+  it('caller own membership default (no force, no target) skips canReadProject', async () => {
+    const result = await handleSearch({ query: 'auth' }, httpServerOverride);
+
+    expect(canReadProject).not.toHaveBeenCalled();
+    expect(result.results.length).toBeGreaterThan(0);
   });
 });

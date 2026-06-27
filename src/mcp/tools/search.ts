@@ -188,15 +188,30 @@ export async function handleSearch(
   // The `proposed_pending` block is member-only triage authority, so it is
   // OMITTED for cross-org reads (FR-006).
   let isCrossOrgRead = false;
-  // Feature 033 — public-KB cross-org read gate. When `target_project_id`
-  // is set, replace `projectId` with the target after access resolution.
-  // Denied access returns an empty response indistinguishable from "no
-  // results" / "project does not exist" (FR-006, never leaks existence).
-  if (args.target_project_id && args.target_project_id !== projectId) {
+  // Feature 033 + review HIGH (308) — access gate for any scope that did NOT
+  // come from the caller's own JWT/membership resolution. Two such scopes:
+  //   1. an explicit `target_project_id` that differs from the membership-
+  //      resolved scope (public-KB cross-org read, feature 033), OR
+  //   2. a `forced_project_id` injected by the per-agent MCP endpoint. The
+  //      forced scope also replaces `project_id`, so a same-value
+  //      `target_project_id` from handleConsultAgent would otherwise slip past
+  //      the differ-check below — the forced signal closes that hole.
+  // EITHER case MUST pass `canReadProject` before any results are returned;
+  // denial returns an empty response indistinguishable from "no results" /
+  // "project does not exist" (FR-006, never leaks existence, never 403). The
+  // caller's own membership-default scope keeps the existing fast path.
+  const forcedScope = configOverride?.forced_project_id;
+  const membershipProjectId = configOverride?.project_id;
+  const gateTarget =
+    args.target_project_id && args.target_project_id !== membershipProjectId
+      ? args.target_project_id
+      : forcedScope || undefined;
+  if (gateTarget) {
     isCrossOrgRead = true;
     if (!configOverride?.member_id || !configOverride?.supabase_url || !configOverride?.supabase_service_role_key) {
-      // stdio mode or insufficient creds — cross-org reads only work in HTTP
-      // (plugin) mode where the server holds service-role auth. Deny silently.
+      // stdio mode or insufficient creds — cross-org / forced reads only work
+      // in HTTP (plugin) mode where the server holds service-role auth. Deny
+      // silently.
       return { results: [] };
     }
     const supabaseAdmin = getSupabaseClient(
@@ -206,12 +221,12 @@ export async function handleSearch(
     const granted = await canReadProject(
       supabaseAdmin,
       configOverride.member_id,
-      args.target_project_id,
+      gateTarget,
     );
     if (!granted) {
       return { results: [] };
     }
-    projectId = args.target_project_id;
+    projectId = gateTarget;
 
     // Feature 033 — audit the cross-org read so the target project's owner can
     // observe who is reading their public KB (FR-015, SC-005). Best-effort:
@@ -220,11 +235,11 @@ export async function handleSearch(
       await storeAuditEntry(supabaseAdmin, {
         id: crypto.randomUUID(),
         org_id: configOverride.org_id,
-        project_id: args.target_project_id,
+        project_id: gateTarget,
         member_id: configOverride.member_id,
         action: 'cross_org_read',
         target_type: 'project',
-        target_id: args.target_project_id,
+        target_id: gateTarget,
         previous_state: null,
         new_state: { tool: 'valis_search' },
         reason: null,

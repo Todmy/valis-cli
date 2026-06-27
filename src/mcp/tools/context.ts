@@ -244,8 +244,19 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
   // 040/#226 — track a cross-org public-KB read; the draft-backlog block is
   // member-only triage authority, so it is OMITTED for cross-org reads (FR-006).
   let isCrossOrgRead = false;
-  // Feature 033 — public-KB cross-org gate. Mirrors handleSearch.
-  if (args.target_project_id && args.target_project_id !== projectId) {
+  // Feature 033 + review HIGH (308) — public-KB cross-org / forced-scope gate.
+  // Mirrors handleSearch: any scope NOT derived from the caller's own
+  // membership (explicit `target_project_id` that differs, OR a
+  // `forced_project_id` from the per-agent endpoint) MUST pass canReadProject
+  // before any context is returned. The forced signal closes the hole where a
+  // same-value target slips past the differ-check. Deny → empty.
+  const forcedScope = configOverride?.forced_project_id;
+  const membershipProjectId = configOverride?.project_id;
+  const gateTarget =
+    args.target_project_id && args.target_project_id !== membershipProjectId
+      ? args.target_project_id
+      : forcedScope || undefined;
+  if (gateTarget) {
     isCrossOrgRead = true;
     if (
       !configOverride?.member_id ||
@@ -268,7 +279,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     const granted = await canReadProject(
       supabaseAdmin,
       configOverride.member_id,
-      args.target_project_id,
+      gateTarget,
     );
     if (!granted) {
       return withMismatch({
@@ -280,18 +291,18 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         total_in_brain: 0,
       });
     }
-    projectId = args.target_project_id;
+    projectId = gateTarget;
 
     // Feature 033 — audit the cross-org read (FR-015, SC-005). Best-effort.
     try {
       await storeAuditEntry(supabaseAdmin, {
         id: crypto.randomUUID(),
         org_id: configOverride.org_id,
-        project_id: args.target_project_id,
+        project_id: gateTarget,
         member_id: configOverride.member_id,
         action: 'cross_org_read',
         target_type: 'project',
-        target_id: args.target_project_id,
+        target_id: gateTarget,
         previous_state: null,
         new_state: { tool: 'valis_context' },
         reason: null,

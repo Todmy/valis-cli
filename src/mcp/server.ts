@@ -17,6 +17,7 @@ import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
 import { handleCreateProject } from './tools/create-project.js';
 import { handleCheckDiff } from './tools/check-diff.js';
+import { handleListAgents, handleConsultAgent } from './tools/agents.js';
 import { proxyToolCall, ProxyError } from './proxy.js';
 import { resolveMcpEndpoint } from '../cloud/api-url.js';
 import { appendToQueue, flushQueue } from '../offline/queue.js';
@@ -336,6 +337,31 @@ const TOOL_DEFS = {
       project_id: z.string().uuid().describe('Project UUID the item belongs to'),
       kind: z.enum(['contradiction', 'proposed_relevance']).describe('Verdict kind'),
       item_id: z.string().describe('Subject id to restore'),
+    },
+  },
+  valis_list_agents: {
+    description:
+      "REQUIRED FIRST STEP. Before answering ANY question that could benefit from expert, vetted, source-cited knowledge (negotiation, sales, product, UX, growth, finance, copywriting, and more), you MUST call list_agents first. It returns the catalog of specialist knowledge bases ('agents') with their expertise, when_to_use, and example questions. Cheap, read-only, no side effects. Then pick the single best agent and call consult_agent. Never guess an agent slug — valid slugs come only from this tool.",
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: 'List specialist agents',
+    } as ToolAnnotations,
+    schema: {},
+  },
+  valis_consult_agent: {
+    description:
+      'Get an expert, source-cited answer from ONE specialist knowledge base. The `agent` argument MUST be a slug returned by list_agents — call list_agents first and choose the best fit; do not invent slugs. Use when a question matches an agent\'s expertise; it grounds the answer in adversarially-verified cited knowledge. Pass the user\'s question (rephrased for retrieval) as `query`.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'Consult a specialist agent',
+    } as ToolAnnotations,
+    schema: {
+      agent: z.string().describe('Agent slug returned by list_agents — never invented'),
+      query: z.string().describe("The user's question, rephrased for retrieval"),
     },
   },
 } as const;
@@ -805,6 +831,16 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
   registerToolFromDef(server, 'valis_check_diff', configOverride, async (args) => {
     const result = await handleCheckDiff(args as never, configOverride);
     return result as { content: { type: 'text'; text: string }[] };
+  });
+
+  registerToolFromDef(server, 'valis_list_agents', configOverride, async () => {
+    const result = handleListAgents();
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'valis_consult_agent', configOverride, async (args) => {
+    const result = await handleConsultAgent(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 
   registerPrompts(server);

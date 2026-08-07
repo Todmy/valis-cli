@@ -17,7 +17,7 @@ export async function getOrgInfo(
 ): Promise<{ name: string; member_count: number; decision_count: number } | null> {
   const { data: org } = await supabase
     .from('orgs')
-    .select('name, decision_count')
+    .select('name')
     .eq('id', orgId)
     .single();
 
@@ -28,10 +28,18 @@ export async function getOrgInfo(
     .select('*', { count: 'exact', head: true })
     .eq('org_id', orgId);
 
+  // Counted live. The `orgs.decision_count` column is never incremented by any
+  // trigger or write path, so it always reads 0 — `valis status` reported an
+  // empty brain on self-hosted installs with thousands of decisions.
+  const { count: decisionCount } = await supabase
+    .from('decisions')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', orgId);
+
   return {
     name: org.name,
     member_count: count || 0,
-    decision_count: org.decision_count,
+    decision_count: decisionCount || 0,
   };
 }
 

@@ -29,7 +29,7 @@ import { getQdrantClient, countLegacyPoints } from '../../cloud/qdrant.js';
 import { register, joinPublic } from '../../cloud/registration.js';
 import { loadCredentials } from '../../config/credentials.js';
 import type { ValisConfig, ProjectConfig } from '../../types.js';
-import { HOSTED_SUPABASE_URL } from '../../types.js';
+import { HOSTED_SUPABASE_URL, HOSTED_API_URL } from '../../types.js';
 import { emitAdoptionEvents } from '../../lib/adoption-emit.js';
 import {
   prompt,
@@ -468,6 +468,16 @@ export async function runFreshInstall(_options: InitOptions = {}): Promise<Fresh
       const regResult = await register(orgName, projectName, authorName, HOSTED_SUPABASE_URL, email);
       console.log(pc.green(`✓ Organization "${regResult.org_name}" created`));
       console.log(pc.green(`✓ Project "${regResult.project_name}" created`));
+
+      // Without this the user has a working CLI and no web presence at all —
+      // no session, no email, no reason to ever open the dashboard, and so no
+      // channel for us to reach them later (gh#319).
+      console.log(pc.bold(`\n  Your dashboard: ${pc.cyan(`${HOSTED_API_URL}/dashboard`)}`));
+      if (regResult.sign_in_emailed) {
+        console.log(pc.dim(`  We emailed ${email} a sign-in link — open it to review and edit decisions.`));
+      } else {
+        console.log(pc.dim('  Sign in with your email to review and edit decisions.'));
+      }
 
       config = {
         org_id: regResult.org_id,

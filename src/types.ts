@@ -1022,6 +1022,8 @@ export interface RegistrationResponse {
   project_name: string;
   invite_code: string;
   member_id: string;
+  /** True when the server mailed a dashboard sign-in link (gh#319). */
+  sign_in_emailed?: boolean;
 }
 
 /** Response from the public `/functions/v1/join-project` endpoint (hosted mode). */

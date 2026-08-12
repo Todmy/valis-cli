@@ -13,6 +13,7 @@ import {
   buildScopeEnvelope,
   buildScopeHint,
   buildScopeInputs,
+  resolveToolReadScope,
   selectMemberSupabaseClient,
   type AccessibleProject,
   type ScopeInputs,
@@ -149,6 +150,12 @@ interface ContextArgs {
   files?: string[];
   /** T022: When true, load context from all accessible projects. */
   all_projects?: boolean;
+  /**
+   * gh#322 — explicit read scope. Outranks the active project and the repo's
+   * `linked_projects`. Mirrors `valis_search.project_ids` exactly; the two
+   * tools must resolve the same scope for the same input.
+   */
+  project_ids?: string[];
   /**
    * #25/BUG-#118: optional explicit project scope. When supplied AND differs
    * from the JWT-encoded session scope, the response includes a
@@ -314,6 +321,37 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
     }
   }
 
+  // gh#322 — same read-scope resolution as `valis_search`, via the same
+  // helper. Skipped on the feature-033 cross-org path, where `projectId` is
+  // an already-gated single target.
+  const linkedProjectIds = isCrossOrgRead
+    ? []
+    : configOverride?.linked_projects ?? resolved?.project?.linked_projects ?? [];
+  let searchedProjectIds: string[] = projectId ? [projectId] : [];
+  let deniedProjectIds: string[] = [];
+  if (!isCrossOrgRead && (linkedProjectIds.length > 0 || args.project_ids?.length)) {
+    const readScope = await resolveToolReadScope({
+      config,
+      configOverride,
+      activeProjectId: projectId ?? undefined,
+      linkedProjectIds,
+      requestedProjectIds: args.project_ids,
+      allProjects: args.all_projects === true,
+    });
+    if (readScope.error) {
+      return withMismatch({
+        decisions: [], constraints: [], patterns: [], lessons: [], historical: [],
+        total_in_brain: 0,
+        error: 'project_scope_required',
+        note:
+          'None of the named projects are readable. Ask the user which project ' +
+          'to load context for, then call valis_context again with `project_id`.',
+      });
+    }
+    searchedProjectIds = readScope.searched;
+    deniedProjectIds = readScope.denied;
+  }
+
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {
     try {
@@ -398,6 +436,10 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         args.all_projects === true,
         proxyMemberships,
       );
+      if (proxyScopeInputs) {
+        proxyScopeInputs.searchedProjectIds = searchedProjectIds;
+        if (deniedProjectIds.length > 0) proxyScopeInputs.deniedProjectIds = deniedProjectIds;
+      }
       const proxyResponse = proxyScopeInputs
         ? attachScope(proxyBaseWithDrafts, proxyScopeInputs)
         : proxyBaseWithDrafts;
@@ -491,6 +533,13 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       }
 
       results = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, { limit: 50 });
+    } else if (searchedProjectIds.length > 1) {
+      // gh#322 — the read scope spans several projects. One query over the
+      // union, not one per project: the ranking has to be global or the
+      // per-project top-N would crowd out a better hit next door.
+      results = await hybridSearchAllProjects(
+        qdrant, config.org_id, query, searchedProjectIds, { limit: 50 },
+      );
     } else {
       // T022: Default — context scoped to active project
       results = await hybridSearch(qdrant, config.org_id, query, { limit: 50, projectId });
@@ -592,6 +641,10 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       wantsCrossProject,
       crossProjectAccessible,
     );
+    if (directScopeInputs) {
+      directScopeInputs.searchedProjectIds = searchedProjectIds;
+      if (deniedProjectIds.length > 0) directScopeInputs.deniedProjectIds = deniedProjectIds;
+    }
     const directResponse = directScopeInputs
       ? attachScope(directBaseWithDrafts, directScopeInputs)
       : directBaseWithDrafts;

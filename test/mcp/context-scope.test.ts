@@ -71,7 +71,15 @@ vi.mock('../../src/cloud/supabase/audit.js', () => ({
 }));
 
 import { handleContext } from '../../src/mcp/tools/context.js';
-import { hybridSearch } from '../../src/cloud/qdrant.js';
+import { hybridSearch, hybridSearchAllProjects } from '../../src/cloud/qdrant.js';
+import { canReadProject } from '../../src/lib/project-access.js';
+import { listMemberProjects } from '../../src/cloud/supabase.js';
+
+const MEMBERSHIPS = [
+  { id: 'project-A', name: 'Alpha', role: 'project_member', decision_count: 3 },
+  { id: 'project-B', name: 'Beta', role: 'project_member', decision_count: 1 },
+  { id: 'project-C', name: 'Gamma', role: 'project_member', decision_count: 0 },
+];
 import { proxySearch } from '../../src/cloud/search-proxy.js';
 import { isHostedMode } from '../../src/cloud/api-url.js';
 import { suppressResults } from '../../src/search/suppression.js';
@@ -279,5 +287,61 @@ describe('handleContext — all_projects fails closed on the CLI path (gh#324)',
 
     expect(vi.mocked(hybridSearch)).not.toHaveBeenCalled();
     expect(res.no_accessible_projects).toBe(true);
+  });
+});
+
+// gh#322 — `valis_context` must resolve the same read scope as `valis_search`.
+// Divergence between the two is the defect these tests exist to prevent.
+describe('handleContext — multi-project read scope (gh#322)', () => {
+  beforeEach(() => {
+    vi.mocked(isHostedMode).mockReturnValue(false);
+    vi.mocked(hybridSearch).mockResolvedValue(POPULATED);
+    vi.mocked(hybridSearchAllProjects).mockResolvedValue(POPULATED);
+    // `clearAllMocks` wipes call history but NOT queued `*Once` behaviours, so
+    // an earlier test's one-shot rejection would otherwise leak into the first
+    // call here. Reset before re-establishing the fixture.
+    vi.mocked(listMemberProjects).mockReset();
+    vi.mocked(listMemberProjects).mockResolvedValue(MEMBERSHIPS);
+    vi.mocked(canReadProject).mockResolvedValue(true);
+  });
+
+  it('widens context loading across linked_projects', async () => {
+    const res = await handleContext(
+      { task_description: 'build auth' },
+      buildServerConfig({ linked_projects: ['project-B'] }),
+    );
+    expect(res.scope!.searched_projects).toEqual([
+      { id: 'project-A', name: 'Alpha' },
+      { id: 'project-B', name: 'Beta' },
+    ]);
+    expect(vi.mocked(hybridSearchAllProjects)).toHaveBeenCalled();
+    const ids = vi.mocked(hybridSearchAllProjects).mock.calls[0][3];
+    expect(ids).toEqual(['project-A', 'project-B']);
+  });
+
+  it('keeps the write target on the active project when reads fan out', async () => {
+    const res = await handleContext(
+      { task_description: 'build auth' },
+      buildServerConfig({ linked_projects: ['project-B'] }),
+    );
+    expect(res.scope!.active_project).toEqual({ id: 'project-A', name: 'Alpha' });
+  });
+
+  it('lets project_ids override linked_projects', async () => {
+    const res = await handleContext(
+      { task_description: 'build auth', project_ids: ['project-C'] },
+      buildServerConfig({ linked_projects: ['project-B'] }),
+    );
+    expect(res.scope!.searched_projects).toEqual([{ id: 'project-C', name: 'Gamma' }]);
+  });
+
+  it('returns project_scope_required when every named id is denied', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    const res = await handleContext(
+      { task_description: 'build auth', project_ids: ['project-Q'] },
+      buildServerConfig({ project_id: null }),
+    );
+    expect(res.error).toBe('project_scope_required');
+    expect(res.decisions).toEqual([]);
   });
 });

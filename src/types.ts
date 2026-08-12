@@ -701,9 +701,24 @@ export interface ProposedPending {
 }
 
 export interface ScopeEnvelope {
+  /**
+   * gh#322 — the **write target**. Reads may span several projects; a write
+   * always resolves to this one.
+   */
   active_project: { id: string; name: string | null } | null;
   accessible_projects: Array<{ id: string; name: string }>;
   queried_all_projects: boolean;
+  /**
+   * gh#322 — the projects the query actually covered, active project first.
+   * Reported rather than left implicit: an agent told "nothing found" has to
+   * know where the looking happened before drawing a conclusion from it.
+   */
+  searched_projects?: Array<{ id: string; name: string }>;
+  /**
+   * gh#322 — ids the caller named but may not read. Omitted when empty, so
+   * its presence always means something was actually refused.
+   */
+  denied_projects?: string[];
 }
 
 export interface SearchResponse {

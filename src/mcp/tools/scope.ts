@@ -42,14 +42,39 @@ export function buildScopeEnvelope(params: {
   activeProjectId: string | null | undefined;
   accessibleProjects: AccessibleProject[];
   queriedAllProjects: boolean;
+  /** gh#322 — ids the query actually covered. Defaults to the active project. */
+  searchedProjectIds?: string[];
+  /** gh#322 — ids the caller named but may not read. */
+  deniedProjectIds?: string[];
 }): ScopeEnvelope {
-  const { activeProjectId, accessibleProjects, queriedAllProjects } = params;
+  const {
+    activeProjectId,
+    accessibleProjects,
+    queriedAllProjects,
+    searchedProjectIds,
+    deniedProjectIds,
+  } = params;
   const accessible = accessibleProjects.map((p) => ({ id: p.id, name: p.name }));
+
+  // An id with no entry in the name map reports its own id as the name. The
+  // alternative — dropping it — would understate where the query looked, which
+  // is the one thing this field exists to state accurately.
+  const nameOf = (id: string): string =>
+    accessibleProjects.find((p) => p.id === id)?.name || id;
+  const searchedIds = searchedProjectIds ?? (activeProjectId ? [activeProjectId] : []);
+  const readScope = {
+    searched_projects: searchedIds.map((id) => ({ id, name: nameOf(id) })),
+    ...(deniedProjectIds && deniedProjectIds.length > 0
+      ? { denied_projects: deniedProjectIds }
+      : {}),
+  };
+
   if (!activeProjectId) {
     return {
       active_project: null,
       accessible_projects: accessible,
       queried_all_projects: queriedAllProjects,
+      ...readScope,
     };
   }
   const match = accessibleProjects.find((p) => p.id === activeProjectId);
@@ -60,6 +85,7 @@ export function buildScopeEnvelope(params: {
     active_project: { id: activeProjectId, name: activeName },
     accessible_projects: accessible,
     queried_all_projects: queriedAllProjects,
+    ...readScope,
   };
 }
 

@@ -97,3 +97,78 @@ describe('buildScopeEnvelope — all_projects with no active project (finding #2
     expect(env.queried_all_projects).toBe(true);
   });
 });
+
+// gh#322 — the read scope is reported explicitly. `active_project` is the
+// write target; `searched_projects` is what the query actually covered.
+describe('buildScopeEnvelope — read scope (gh#322)', () => {
+  const accessible = [
+    { id: 'A', name: 'Alpha' },
+    { id: 'B', name: 'Beta' },
+  ];
+
+  it('names every id that was queried in searched_projects', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+      searchedProjectIds: ['A', 'B'],
+    });
+    expect(env.searched_projects).toEqual([
+      { id: 'A', name: 'Alpha' },
+      { id: 'B', name: 'Beta' },
+    ]);
+  });
+
+  it('omits denied_projects when nothing was denied', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+      searchedProjectIds: ['A'],
+    });
+    expect(env.denied_projects).toBeUndefined();
+  });
+
+  it('lists refused ids in denied_projects when present', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+      searchedProjectIds: ['A'],
+      deniedProjectIds: ['Z'],
+    });
+    expect(env.denied_projects).toEqual(['Z']);
+  });
+
+  it('still names the write target in active_project on a multi-project read', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+      searchedProjectIds: ['A', 'B'],
+    });
+    expect(env.active_project).toEqual({ id: 'A', name: 'Alpha' });
+  });
+
+  it('reports an id with no known name using the id itself, not dropping it', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+      searchedProjectIds: ['A', 'unnamed-id'],
+    });
+    expect(env.searched_projects).toEqual([
+      { id: 'A', name: 'Alpha' },
+      { id: 'unnamed-id', name: 'unnamed-id' },
+    ]);
+  });
+
+  it('defaults searched_projects to the active project when no list is given', () => {
+    const env = buildScopeEnvelope({
+      activeProjectId: 'A',
+      accessibleProjects: accessible,
+      queriedAllProjects: false,
+    });
+    expect(env.searched_projects).toEqual([{ id: 'A', name: 'Alpha' }]);
+  });
+});

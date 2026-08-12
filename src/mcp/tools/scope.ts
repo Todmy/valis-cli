@@ -19,6 +19,8 @@ import {
 } from '../../cloud/supabase.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScopeEnvelope, ServerConfig, ValisConfig } from '../../types.js';
+import { resolveReadScope, type ReadScope } from '../../lib/read-scope.js';
+import { canReadProject } from '../../lib/project-access.js';
 
 /** A project the member can read, reduced to the envelope shape. */
 export interface AccessibleProject {
@@ -126,6 +128,10 @@ export interface ScopeInputs {
   activeProjectId: string | null;
   accessibleProjects: AccessibleProject[];
   queriedAllProjects: boolean;
+  /** gh#322 — ids the query actually covered. */
+  searchedProjectIds?: string[];
+  /** gh#322 — ids the caller named but may not read. */
+  deniedProjectIds?: string[];
 }
 
 /**
@@ -308,4 +314,97 @@ export async function resolveAccessibleProjects(
     // enumeration failure. Degrade to the active project only.
     return fallback;
   }
+}
+
+// ---------------------------------------------------------------------------
+// gh#322 — read scope for multi-project reads
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the read scope for one tool call, shared by `valis_search` and
+ * `valis_context` so the two cannot drift apart (the defect this helper
+ * exists to prevent — see plan T8).
+ *
+ * The pure rule lives in `lib/read-scope.ts`; this wrapper only supplies it
+ * with the caller's accessible-project set and hands back the display names
+ * alongside, so the caller needs no second membership lookup.
+ *
+ * Degraded-credentials case: when no Supabase client can be built (plain CLI
+ * stdio without a service key) the membership list is unavailable, so the
+ * candidate ids are accepted as declared. That is not a widening — the ids
+ * come from the repo's own committed `.valis.json` or from an explicit
+ * argument, both of which Constitution XI counts as explicit declarations, and
+ * every query stays bounded by the caller's `org_id` filter regardless. It
+ * deliberately does NOT extend to `all_projects`, which resolves to the empty
+ * set and fails closed (gh#324).
+ */
+export async function resolveToolReadScope(params: {
+  config: ValisConfig;
+  configOverride: ServerConfig | undefined;
+  activeProjectId: string | undefined;
+  linkedProjectIds: string[];
+  requestedProjectIds?: string[];
+  allProjects: boolean;
+}): Promise<ReadScope & { accessibleProjects: AccessibleProject[] }> {
+  const {
+    config,
+    configOverride,
+    activeProjectId,
+    linkedProjectIds,
+    requestedProjectIds,
+    allProjects,
+  } = params;
+
+  const declared = [
+    ...(activeProjectId ? [activeProjectId] : []),
+    ...linkedProjectIds,
+    ...(requestedProjectIds ?? []),
+  ];
+
+  const membership = await resolveAllAccessibleProjects(config, configOverride);
+  const membershipIds = membership.map((p) => p.id);
+
+  let accessibleIds: string[];
+  if (membership.length === 0 && !allProjects) {
+    accessibleIds = [...new Set(declared)];
+  } else {
+    const client = selectMemberSupabaseClient(config, configOverride);
+    const outsiders = [...new Set(declared)].filter((id) => !membershipIds.includes(id));
+    const extra: string[] = [];
+    if (client && config.member_id && outsiders.length > 0) {
+      // A public project in another org (feature 033). One rejection or throw
+      // drops that id only; the rest of the scope survives.
+      const verdicts = await Promise.all(
+        outsiders.map(async (id) => {
+          try {
+            return (await canReadProject(client.supabase, config.member_id as string, id))
+              ? id
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      extra.push(...verdicts.filter((id): id is string => id !== null));
+    }
+    accessibleIds = [...membershipIds, ...extra];
+  }
+
+  const scope = resolveReadScope({
+    activeProjectId: activeProjectId ?? null,
+    linkedProjectIds,
+    requestedProjectIds,
+    allProjects,
+    accessibleProjectIds: accessibleIds,
+  });
+
+  // Names for ids outside the membership list are unavailable here; the
+  // envelope builder falls back to the id itself rather than dropping them.
+  const known = new Set(membershipIds);
+  const accessibleProjects = [
+    ...membership,
+    ...accessibleIds.filter((id) => !known.has(id)).map((id) => ({ id, name: id })),
+  ];
+
+  return { ...scope, accessibleProjects };
 }

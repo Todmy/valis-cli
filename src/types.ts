@@ -386,6 +386,12 @@ export interface ServerConfig {
   project_id?: string | null;
   project_name?: string | null;
   /**
+   * gh#322 — projects this session reads from in addition to `project_id`,
+   * carried over from the client's `.valis.json`. Widens reads only; the
+   * write target stays `project_id`.
+   */
+  linked_projects?: string[];
+  /**
    * Review HIGH (308) — set by the per-agent MCP endpoint when it forces a
    * session scope (`forceProjectId`). It is the "scope is NOT membership-
    * derived" signal: when present, the search/context tools MUST run

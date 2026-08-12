@@ -31,6 +31,7 @@ import {
   buildScopeEnvelope,
   buildScopeHint,
   buildScopeInputs,
+  resolveToolReadScope,
   type ScopeInputs,
 } from './scope.js';
 import { record as recordTelemetry } from '../../hooks/telemetry.js';
@@ -50,6 +51,12 @@ interface SearchArgs {
   limit?: number;
   /** T021: When true, search across all projects the member has access to. */
   all_projects?: boolean;
+  /**
+   * gh#322 — explicit read scope. Outranks both the active project and the
+   * repo's `linked_projects`. Ids the caller may not read are dropped and
+   * reported in `scope.denied_projects`, never silently.
+   */
+  project_ids?: string[];
   /** BUG #161: control return granularity per result. Default 'siblings'. */
   expand?: SearchExpand;
   /**
@@ -251,6 +258,37 @@ export async function handleSearch(
     }
   }
 
+  // gh#322 — resolve the read scope: the active project plus any
+  // `linked_projects`, or an explicit `project_ids` list. Skipped entirely on
+  // the feature-033 cross-org path, where `projectId` is already a gated
+  // single target and fanning out would smuggle extra projects past that gate.
+  const linkedProjectIds = isCrossOrgRead
+    ? []
+    : configOverride?.linked_projects ?? resolved?.project?.linked_projects ?? [];
+  let searchedProjectIds: string[] = projectId ? [projectId] : [];
+  let deniedProjectIds: string[] = [];
+  if (!isCrossOrgRead && (linkedProjectIds.length > 0 || args.project_ids?.length)) {
+    const readScope = await resolveToolReadScope({
+      config,
+      configOverride,
+      activeProjectId: projectId,
+      linkedProjectIds,
+      requestedProjectIds: args.project_ids,
+      allProjects: args.all_projects === true,
+    });
+    if (readScope.error) {
+      return {
+        results: [],
+        error: readScope.error,
+        note:
+          'None of the named projects are readable. Ask the user which project ' +
+          'to search, then pass `project_id` explicitly in args.',
+      };
+    }
+    searchedProjectIds = readScope.searched;
+    deniedProjectIds = readScope.denied;
+  }
+
   const isHostedProxy = config.auth_mode === 'jwt' && isHostedMode(config);
 
   // 032/Track 6 — structured filter translation. Always run; produces empty
@@ -368,6 +406,10 @@ export async function handleSearch(
     projectId,
     args.all_projects === true,
   );
+  if (scope) {
+    scope.searchedProjectIds = searchedProjectIds;
+    if (deniedProjectIds.length > 0) scope.deniedProjectIds = deniedProjectIds;
+  }
   // 040/#226 — best-effort draft-backlog block.
   // finding #2 — on the hosted-proxy path `/api/search` already computed this
   // block server-side (service-role + explicit org_id+project_id filter). Reuse
@@ -574,6 +616,8 @@ function assembleResponse(p: AssembleArgs): SearchResponse {
       activeProjectId: p.scope.activeProjectId,
       accessibleProjects: p.scope.accessibleProjects,
       queriedAllProjects: p.scope.queriedAllProjects,
+      searchedProjectIds: p.scope.searchedProjectIds,
+      deniedProjectIds: p.scope.deniedProjectIds,
     });
     response.scope = scope;
     // finding #3 — count suppressed hits as "not empty": a project with

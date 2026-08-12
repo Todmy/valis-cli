@@ -122,6 +122,7 @@ vi.mock('../../src/search/suppression.js', () => ({
 import { handleSearch } from '../../src/mcp/tools/search.js';
 import { hybridSearch } from '../../src/cloud/qdrant.js';
 import { suppressResults } from '../../src/search/suppression.js';
+import { canReadProject } from '../../src/lib/project-access.js';
 
 const serverOverride = {
   org_id: 'test-org-id',
@@ -280,5 +281,57 @@ describe('handleSearch — scope_hint (US2)', () => {
     const res = await handleSearch({ query: 'nothing' }, serverOverride);
     expect(res.results).toHaveLength(0);
     expect(res.scope_hint).toBeDefined();
+  });
+});
+
+// gh#322 — the read scope may span several projects; the write target may not.
+describe('handleSearch — multi-project read scope (gh#322)', () => {
+  it('keeps single-project behaviour when nothing widens the scope', async () => {
+    const res = await handleSearch({ query: 'database' }, serverOverride);
+    expect(res.scope!.searched_projects).toEqual([{ id: 'project-A', name: 'Alpha' }]);
+    expect(res.scope!.denied_projects).toBeUndefined();
+    expect(res.scope!.active_project).toEqual({ id: 'project-A', name: 'Alpha' });
+  });
+
+  it('widens the search across linked_projects with no argument', async () => {
+    const res = await handleSearch({ query: 'database' }, {
+      ...serverOverride,
+      linked_projects: ['project-B'],
+    });
+    expect(res.scope!.searched_projects).toEqual([
+      { id: 'project-A', name: 'Alpha' },
+      { id: 'project-B', name: 'Beta' },
+    ]);
+    // The write target never widens with the read scope.
+    expect(res.scope!.active_project).toEqual({ id: 'project-A', name: 'Alpha' });
+  });
+
+  it('lets project_ids override linked_projects', async () => {
+    const res = await handleSearch({ query: 'database', project_ids: ['project-B'] }, {
+      ...serverOverride,
+      linked_projects: ['project-A'],
+    });
+    expect(res.scope!.searched_projects).toEqual([{ id: 'project-B', name: 'Beta' }]);
+  });
+
+  it('reports a denied id in denied_projects and still returns results', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    const res = await handleSearch(
+      { query: 'database', project_ids: ['project-A', 'project-Q'] },
+      serverOverride,
+    );
+    expect(res.scope!.denied_projects).toEqual(['project-Q']);
+    expect(res.scope!.searched_projects).toEqual([{ id: 'project-A', name: 'Alpha' }]);
+    expect(res.results.length).toBeGreaterThan(0);
+  });
+
+  it('returns project_scope_required when every named id is denied', async () => {
+    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    const res = await handleSearch(
+      { query: 'database', project_id: 'project-Q', project_ids: ['project-Q'] },
+      { ...serverOverride, project_id: undefined },
+    );
+    expect(res.error).toBe('project_scope_required');
+    expect(res.results).toEqual([]);
   });
 });

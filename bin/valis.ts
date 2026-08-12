@@ -22,6 +22,7 @@ import { enrichCommand } from '../src/commands/enrich.js';
 import { upgradeCommand } from '../src/commands/upgrade.js';
 import { switchOrgCommand } from '../src/commands/switch-org.js';
 import { switchCommand } from '../src/commands/switch.js';
+import { linkCommand, unlinkCommand } from '../src/commands/link.js';
 import { loginCommand } from '../src/commands/login.js';
 import {
   triageCommand as personalDraftsTriage,
@@ -74,7 +75,7 @@ program.addHelpText(
   `
 
 GROUPED BY PHASE
-  Onboarding       init · login · switch · whoami
+  Onboarding       init · login · switch · link · whoami
   Daily use        search · index · status · sync · wake-up
   Lifecycle        (use the MCP tools or the dashboard for promote/deprecate/pin)
   Infrastructure   serve · dashboard
@@ -133,6 +134,30 @@ program
         // --project flag or interactive mode
         await switchCommand(options);
       }
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('link [name]')
+  .description('Link another project into this repo\'s read scope (no name: list current links)')
+  .action(async (name) => {
+    try {
+      await linkCommand(name);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('unlink <name>')
+  .description('Remove a project from this repo\'s read scope')
+  .action(async (name) => {
+    try {
+      await unlinkCommand(name);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

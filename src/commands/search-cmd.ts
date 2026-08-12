@@ -20,7 +20,14 @@ import type { RerankedResult } from '../types.js';
 
 export async function searchCommand(
   query: string,
-  options: { type?: string; limit?: string; all?: boolean; allProjects?: boolean },
+  options: {
+    type?: string;
+    limit?: string;
+    all?: boolean;
+    allProjects?: boolean;
+    /** gh#322 — comma-separated project NAMES to read from. */
+    projects?: string;
+  },
 ): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -31,6 +38,7 @@ export async function searchCommand(
   // T025: Resolve project from per-directory config
   const resolved = await resolveConfig();
   const projectId = resolved.project?.project_id;
+  const linkedProjectIds = resolved.project?.linked_projects ?? [];
 
   // Q8: Route through server-side proxy in hosted mode (no direct Qdrant access)
   if (config.auth_mode === 'jwt' && isHostedMode(config)) {
@@ -108,6 +116,43 @@ export async function searchCommand(
     }
   }
 
+  // gh#322 — resolve the read scope. `--projects` names win; otherwise the
+  // repo's `linked_projects` apply, matching what the MCP tools do. Names are
+  // resolved here so the flag never asks a human to type a UUID.
+  let scopeIds: string[] = projectId ? [projectId, ...linkedProjectIds] : [...linkedProjectIds];
+  if (options.projects) {
+    const wanted = options.projects.split(',').map((n) => n.trim()).filter(Boolean);
+    let known: ProjectInfo[] = [];
+    try {
+      if (config.member_id) {
+        const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+        known = await listMemberProjects(supabase, config.member_id);
+      }
+    } catch {
+      // Leave `known` empty — every name then reports as unresolvable below,
+      // which is the honest outcome; it must not silently widen the scope.
+    }
+    const resolvedIds: string[] = [];
+    const unresolved: string[] = [];
+    for (const name of wanted) {
+      const match = known.find((p) => p.name.toLowerCase() === name.toLowerCase());
+      if (match) resolvedIds.push(match.id);
+      else unresolved.push(name);
+    }
+    if (unresolved.length > 0) {
+      // A warning, not an abort: the resolvable half of the request is still
+      // worth answering, as long as the gap is stated rather than hidden.
+      console.error(
+        pc.yellow(`Not accessible, skipped: ${unresolved.join(', ')}`),
+      );
+    }
+    if (resolvedIds.length === 0) {
+      console.error(pc.red('No accessible project matched --projects. Nothing to search.'));
+      process.exit(1);
+    }
+    scopeIds = resolvedIds;
+  }
+
   try {
     const qdrant = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
 
@@ -144,12 +189,18 @@ export async function searchCommand(
           limit: 50,
         });
       }
+    } else if (scopeIds.length > 1) {
+      // gh#322 — one query over the union so the ranking stays global.
+      rawResults = await hybridSearchAllProjects(qdrant, config.org_id, query, scopeIds, {
+        type: options.type,
+        limit: 50,
+      });
     } else {
       // Default: project-scoped search
       rawResults = await hybridSearch(qdrant, config.org_id, query, {
         type: options.type,
         limit: 50,
-        projectId,
+        projectId: scopeIds[0] ?? projectId,
       });
     }
 

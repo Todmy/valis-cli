@@ -228,6 +228,7 @@ program
   .option('--limit <n>', 'Max results (default 10)')
   .option('--all', 'Include suppressed results')
   .option('--all-projects', 'Search across all accessible projects')
+  .option('--projects <names>', 'Comma-separated project names to search (overrides linked_projects)')
   .action(async (query, options) => {
     try {
       await searchCommand(query, options);

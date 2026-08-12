@@ -329,14 +329,16 @@ export async function resolveAccessibleProjects(
  * with the caller's accessible-project set and hands back the display names
  * alongside, so the caller needs no second membership lookup.
  *
- * Degraded-credentials case: when no Supabase client can be built (plain CLI
- * stdio without a service key) the membership list is unavailable, so the
+ * Degraded-credentials case: ONLY when no Supabase client can be built (plain
+ * CLI stdio without a service key) the membership list is unavailable, so the
  * candidate ids are accepted as declared. That is not a widening — the ids
  * come from the repo's own committed `.valis.json` or from an explicit
  * argument, both of which Constitution XI counts as explicit declarations, and
  * every query stays bounded by the caller's `org_id` filter regardless. It
  * deliberately does NOT extend to `all_projects`, which resolves to the empty
- * set and fails closed (gh#324).
+ * set and fails closed (gh#324), and it does NOT extend to a membership lookup
+ * that failed while credentials were present — that path verifies every id via
+ * `canReadProject` and denies what it cannot confirm (review Finding 1).
  */
 export async function resolveToolReadScope(params: {
   config: ValisConfig;
@@ -361,14 +363,23 @@ export async function resolveToolReadScope(params: {
     ...(requestedProjectIds ?? []),
   ];
 
-  const membership = await resolveAllAccessibleProjects(config, configOverride);
+  // Review Finding 1 — the degraded branch is gated on the ABSENCE of usable
+  // credentials, never on an empty membership list. `resolveAllAccessibleProjects`
+  // returns `[]` both when no client exists and when `listMemberProjects` throws;
+  // conflating the two would accept an unverified `project_ids` argument as
+  // accessible, which is the ambiguity gh#324 was fixed to eliminate.
+  const client = selectMemberSupabaseClient(config, configOverride);
+  const canQueryMembership = Boolean(client && config.member_id);
+
+  const membership = canQueryMembership
+    ? await resolveAllAccessibleProjects(config, configOverride)
+    : [];
   const membershipIds = membership.map((p) => p.id);
 
   let accessibleIds: string[];
-  if (membership.length === 0 && !allProjects) {
+  if (!canQueryMembership && !allProjects) {
     accessibleIds = [...new Set(declared)];
   } else {
-    const client = selectMemberSupabaseClient(config, configOverride);
     const outsiders = [...new Set(declared)].filter((id) => !membershipIds.includes(id));
     const extra: string[] = [];
     if (client && config.member_id && outsiders.length > 0) {

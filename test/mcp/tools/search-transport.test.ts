@@ -190,25 +190,42 @@ describe('direct transport', () => {
     expect(results[0].project_name).toBe('Project One');
   });
 
-  it('all_projects with no member_id falls back to org-wide hybridSearch', async () => {
-    mockHybridSearch.mockResolvedValueOnce([]);
-
+  // gh#324. Both cases below previously asserted a fall-through to org-wide
+  // search — one of them under the name "(fail-closed)", which is what the code
+  // did NOT do. A member who is not in every project of their org saw decisions
+  // from projects they were never granted. The scope now collapses to an error
+  // instead of widening.
+  it('all_projects with no member_id yields no results and no org-wide query (gh#324)', async () => {
     const transport = createDirectTransport({ ...baseConfig }); // no member_id
-    await transport.search('q', { all_projects: true });
+    const out = await transport.search('q', { all_projects: true });
 
-    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+    expect(out.results).toEqual([]);
+    expect(out.scope_error).toBe('project_scope_required');
+    expect(mockHybridSearch).not.toHaveBeenCalled();
     expect(mockHybridSearchAllProjects).not.toHaveBeenCalled();
   });
 
-  it('all_projects: project list failure falls back to org-wide search (fail-closed)', async () => {
+  it('all_projects: a project-list failure fails closed, never org-wide (gh#324)', async () => {
     mockListMemberProjects.mockRejectedValueOnce(new Error('access denied'));
-    mockHybridSearch.mockResolvedValueOnce([]);
 
     const transport = createDirectTransport({ ...baseConfig, member_id: 'mem-1' });
-    await transport.search('q', { all_projects: true });
+    const out = await transport.search('q', { all_projects: true });
 
-    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+    expect(out.results).toEqual([]);
+    expect(out.scope_error).toBe('project_scope_required');
+    expect(mockHybridSearch).not.toHaveBeenCalled();
     expect(mockHybridSearchAllProjects).not.toHaveBeenCalled();
+  });
+
+  it('all_projects: an empty project list fails closed, never org-wide (gh#324)', async () => {
+    mockListMemberProjects.mockResolvedValueOnce([]);
+
+    const transport = createDirectTransport({ ...baseConfig, member_id: 'mem-1' });
+    const out = await transport.search('q', { all_projects: true });
+
+    expect(out.results).toEqual([]);
+    expect(out.scope_error).toBe('project_scope_required');
+    expect(mockHybridSearch).not.toHaveBeenCalled();
   });
 
   it('enriches with replaced_by reverse lookup', async () => {

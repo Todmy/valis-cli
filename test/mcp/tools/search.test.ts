@@ -63,6 +63,19 @@ vi.mock('../../../src/cloud/search-proxy.js', () => ({
   proxySearch: vi.fn().mockResolvedValue([]),
 }));
 
+// gh#324 — `all_projects` now resolves the member's project list and REFUSES
+// when it is empty, instead of falling through to an org-wide query. Without
+// this mock the real module is reached, the list comes back empty, and the
+// opt-in test below would assert the very fall-open the fix removed.
+vi.mock('../../../src/cloud/supabase.js', () => ({
+  getSupabaseClient: vi.fn().mockReturnValue({}),
+  getSupabaseJwtClient: vi.fn().mockReturnValue({}),
+  listMemberProjects: vi.fn().mockResolvedValue([
+    { id: 'proj-1', name: 'Project One' },
+    { id: 'proj-2', name: 'Project Two' },
+  ]),
+}));
+
 import { handleSearch } from '../../../src/mcp/tools/search.js';
 
 describe('handleSearch', () => {
@@ -168,6 +181,21 @@ describe('handleSearch', () => {
       overrideWithoutProject,
     );
     expect(result.error).toBeUndefined();
+  });
+
+  it('refuses all_projects when the member has no accessible projects (gh#324)', async () => {
+    const { listMemberProjects } = await import('../../../src/cloud/supabase.js');
+    vi.mocked(listMemberProjects).mockResolvedValueOnce([]);
+
+    const overrideWithoutProject = { ...serverOverride, project_id: undefined as unknown as string };
+    const result = await handleSearch(
+      { query: 'database', all_projects: true },
+      overrideWithoutProject,
+    );
+
+    // An empty membership list previously widened the query to the whole org.
+    expect(result.error).toBe('project_scope_required');
+    expect(result.results).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------

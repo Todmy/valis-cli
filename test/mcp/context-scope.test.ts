@@ -250,3 +250,34 @@ describe('handleContext — cross-org target name (finding #1)', () => {
     });
   });
 });
+
+describe('handleContext — all_projects fails closed on the CLI path (gh#324)', () => {
+  // Server mode was hardened in 019/US1 (`no_accessible_projects`); the stdio
+  // path kept falling through to an org-wide query, so a member who is not in
+  // every project of their org loaded decisions from projects they were never
+  // granted. Same defect as the transport half of gh#324.
+  it('an empty membership list yields no org-wide hybridSearch', async () => {
+    vi.mocked(isHostedMode).mockReturnValue(false);
+    const { hybridSearch, hybridSearchAllProjects } = await import('../../src/cloud/qdrant.js');
+    const { listMemberProjects } = await import('../../src/cloud/supabase.js');
+    vi.mocked(listMemberProjects).mockResolvedValueOnce([]);
+
+    const res = await handleContext({ task_description: 'build auth', all_projects: true });
+
+    expect(vi.mocked(hybridSearch)).not.toHaveBeenCalled();
+    expect(vi.mocked(hybridSearchAllProjects)).not.toHaveBeenCalled();
+    expect(res.no_accessible_projects).toBe(true);
+  });
+
+  it('a membership-list failure yields no org-wide hybridSearch', async () => {
+    vi.mocked(isHostedMode).mockReturnValue(false);
+    const { hybridSearch } = await import('../../src/cloud/qdrant.js');
+    const { listMemberProjects } = await import('../../src/cloud/supabase.js');
+    vi.mocked(listMemberProjects).mockRejectedValueOnce(new Error('access denied'));
+
+    const res = await handleContext({ task_description: 'build auth', all_projects: true });
+
+    expect(vi.mocked(hybridSearch)).not.toHaveBeenCalled();
+    expect(res.no_accessible_projects).toBe(true);
+  });
+});

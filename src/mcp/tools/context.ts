@@ -426,6 +426,7 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
   // to org-wide search whenever the server-mode caller didn't provide a
   // project scope, which leaked decisions across projects in the same org.
   // Callers that genuinely want cross-project results must opt in.
+  // Still read by the catch block below to pick the error envelope shape.
   const isServerMode = Boolean(configOverride);
   const wantsCrossProject = args.all_projects === true;
 
@@ -444,9 +445,6 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         'across every accessible project, pass `all_projects: true`.',
     });
   }
-  // Silence isServerMode-only lint usage (still referenced below).
-  void isServerMode;
-
   // 039/#94 / FR-011 — capture the membership list the cross-project branch
   // already fetches so the scope assembly below can reuse it instead of a
   // second lookup. `undefined` means "not fetched here" → scope resolution
@@ -472,14 +470,15 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
           crossProjectAccessible = projects.map((p) => ({ id: p.id, name: p.name }));
         }
       } catch {
-        // Fall back to org-wide for CLI mode; HTTP-mode handled below.
+        // Leave projectIds empty; the guard below turns that into a refusal.
       }
 
-      if (projectIds.length > 0) {
-        results = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, { limit: 50 });
-      } else if (isServerMode) {
-        // 019/US1: HTTP transport + zero memberships → explicit indicator,
-        // do NOT silently leak org-wide data the caller can't access.
+      if (projectIds.length === 0) {
+        // gh#324 — 019/US1 hardened this for HTTP transport only, and the CLI
+        // branch went on to `hybridSearch` with no projectId, which matches
+        // every project in the org. A member who is not in all of them loaded
+        // decisions they were never granted. The transport half of the same
+        // bug lives in search-transport.ts; both refuse rather than widen.
         return withMismatch({
           decisions: [],
           constraints: [],
@@ -489,9 +488,9 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
           total_in_brain: 0,
           no_accessible_projects: true,
         });
-      } else {
-        results = await hybridSearch(qdrant, config.org_id, query, { limit: 50 });
       }
+
+      results = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, { limit: 50 });
     } else {
       // T022: Default — context scoped to active project
       results = await hybridSearch(qdrant, config.org_id, query, { limit: 50, projectId });

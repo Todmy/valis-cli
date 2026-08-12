@@ -301,6 +301,17 @@ export async function handleSearch(
       expand: args.expand,
       payload_filter: filterBuild.filter.must.length > 0 ? filterBuild.filter : undefined,
     });
+    // gh#324 — the transport ran no query because it could not resolve a
+    // scope. Surfacing this as empty results would read as "nothing matched".
+    if (transportResult.scope_error) {
+      return {
+        results: [],
+        error: transportResult.scope_error,
+        note:
+          'No accessible project scope resolved for this search. Ask the user ' +
+          'which project to search, then pass `project_id` explicitly in args.',
+      };
+    }
     enriched = transportResult.results;
     serverProposedPending = transportResult.proposed_pending;
   } catch (err) {

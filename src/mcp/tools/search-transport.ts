@@ -49,6 +49,13 @@ export interface SearchTransportOptions {
 export interface SearchTransportResult {
   results: SearchResult[];
   proposed_pending?: ProposedPending;
+  /**
+   * gh#324 — set when the transport could not resolve a project scope and
+   * therefore ran no query at all. Distinct from an empty `results`, which
+   * means "searched, found nothing". The orchestrator turns this into the
+   * `project_scope_required` envelope; it must never be read as "no matches".
+   */
+  scope_error?: 'project_scope_required';
 }
 
 export interface SearchTransport {
@@ -188,23 +195,24 @@ export function createDirectTransport(
             projectNameMap = new Map<string, string>(projects.map((p) => [p.id, p.name]));
           }
         } catch {
-          // Security: fail closed on project-list failures — fall through to
-          // org-wide search rather than leaking results from inaccessible projects.
+          // Leave projectIds empty; the guard below turns that into an error.
         }
 
-        if (projectIds.length > 0) {
-          raw = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, {
-            type: options.type,
-            limit: 50,
-            expand: options.expand,
-          });
-        } else {
-          raw = await hybridSearch(qdrant, config.org_id, query, {
-            type: options.type,
-            limit: 50,
-            expand: options.expand,
-          });
+        // gh#324 — an empty list is a resolution failure, not a licence to
+        // widen. `hybridSearch` without a projectId reaches
+        // `buildProjectFilter(orgId, undefined)`, which matches every project
+        // in the org — including ones this member was never granted. Two ways
+        // in, neither exotic: the Supabase call throwing, and `config.member_id`
+        // simply being absent, which skips the block above without any throw.
+        if (projectIds.length === 0) {
+          return { results: [], scope_error: 'project_scope_required' };
         }
+
+        raw = await hybridSearchAllProjects(qdrant, config.org_id, query, projectIds, {
+          type: options.type,
+          limit: 50,
+          expand: options.expand,
+        });
       } else {
         raw = await hybridSearch(qdrant, config.org_id, query, {
           type: options.type,

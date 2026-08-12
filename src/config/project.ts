@@ -24,6 +24,17 @@ import { loadConfig } from './store.js';
 export const projectConfigSchema = z.object({
   project_id: z.string().uuid(),
   project_name: z.string().min(1).max(100),
+  /**
+   * gh#322 — projects this repo reads from IN ADDITION to the active one.
+   * Reads fan out across the set; writes always resolve to `project_id`.
+   *
+   * The cap is not a product limit: an id absent from the member's project
+   * list costs one `canReadProject` round-trip, so an unbounded array in a
+   * hand-edited file would turn one search into an unbounded fan-out. Over the
+   * cap fails validation rather than truncating — a silently shortened list
+   * would search fewer projects than the file says it does.
+   */
+  linked_projects: z.array(z.string().uuid()).max(20).optional(),
 });
 
 // ---------------------------------------------------------------------------

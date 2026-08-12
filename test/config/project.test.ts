@@ -402,3 +402,69 @@ describe('findProjectMarker — lenient walk-up for hooks', () => {
     expect(result!.projectName).toBe(tempRoot.split('/').pop());
   });
 });
+
+// ---------------------------------------------------------------------------
+// gh#322 — linked_projects
+// ---------------------------------------------------------------------------
+
+describe('projectConfigSchema — linked_projects', () => {
+  const A = '11111111-1111-4111-8111-111111111111';
+  const B = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(async () => {
+    tempRoot = await createTempDir();
+  });
+
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it('a config without linked_projects loads unchanged', async () => {
+    const filePath = join(tempRoot, 'config.json');
+    await writeFile(filePath, JSON.stringify({ project_id: A, project_name: 'p' }));
+    const result = await loadProjectConfig(filePath);
+    expect(result.project_id).toBe(A);
+    expect(result.linked_projects).toBeUndefined();
+  });
+
+  it('a config with linked_projects loads them as an array', async () => {
+    const filePath = join(tempRoot, 'config.json');
+    await writeFile(
+      filePath,
+      JSON.stringify({ project_id: A, project_name: 'p', linked_projects: [B] }),
+    );
+    const result = await loadProjectConfig(filePath);
+    expect(result.linked_projects).toEqual([B]);
+  });
+
+  it('a non-uuid entry fails validation with the standard loader message', async () => {
+    const filePath = join(tempRoot, 'config.json');
+    await writeFile(
+      filePath,
+      JSON.stringify({ project_id: A, project_name: 'p', linked_projects: ['not-a-uuid'] }),
+    );
+    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .valis/config.json');
+  });
+
+  it('more than 20 entries fails validation rather than truncating', async () => {
+    const many = Array.from({ length: 21 }, (_, i) =>
+      `${String(i).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    );
+    const filePath = join(tempRoot, 'config.json');
+    await writeFile(
+      filePath,
+      JSON.stringify({ project_id: A, project_name: 'p', linked_projects: many }),
+    );
+    await expect(loadProjectConfig(filePath)).rejects.toThrow('Invalid .valis/config.json');
+  });
+
+  it('writeProjectConfig round-trips linked_projects', async () => {
+    const written = await writeProjectConfig(tempRoot, {
+      project_id: A,
+      project_name: 'p',
+      linked_projects: [B],
+    });
+    const reloaded = await loadProjectConfig(written);
+    expect(reloaded.linked_projects).toEqual([B]);
+  });
+});

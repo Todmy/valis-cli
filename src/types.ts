@@ -36,6 +36,11 @@ export interface ProjectMember {
 export interface ProjectConfig {
   project_id: string;
   project_name: string;
+  /**
+   * gh#322 — additional projects this repo reads from. `project_id` stays the
+   * sole write target; linking never changes where a decision lands.
+   */
+  linked_projects?: string[];
 }
 
 /** Resolved config combining global ValisConfig with per-directory ProjectConfig. */

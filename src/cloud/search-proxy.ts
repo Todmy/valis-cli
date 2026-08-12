@@ -14,6 +14,8 @@ export interface ProxySearchOptions {
   type?: string;
   limit?: number;
   project_id?: string;
+  /** gh#322 — resolved read scope; widens the server-side query past one project. */
+  project_ids?: string[];
   all_projects?: boolean;
   member_id?: string;
 }
@@ -65,6 +67,9 @@ export async function proxySearch(
   if (options.type) body.type = options.type;
   if (options.limit) body.limit = options.limit;
   if (options.project_id) body.project_id = options.project_id;
+  if (options.project_ids && options.project_ids.length > 0) {
+    body.project_ids = options.project_ids;
+  }
   if (options.all_projects) body.all_projects = true;
   if (options.member_id) body.member_id = options.member_id;
 

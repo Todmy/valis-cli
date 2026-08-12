@@ -155,6 +155,10 @@ export function createProxyTransport(config: ValisConfig): SearchTransport {
         type: options.type,
         limit: 50,
         project_id: options.projectId,
+        // gh#322 — the server resolves the filter, so the scope has to travel
+        // with the request; otherwise the envelope names projects the query
+        // never reached.
+        project_ids: options.projectIds,
         all_projects: options.all_projects,
         member_id: config.member_id ?? undefined,
       });

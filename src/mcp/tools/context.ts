@@ -362,6 +362,9 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
         await proxySearch(config, query, {
           limit: 50,
           project_id: projectId ?? undefined,
+          // gh#322 — same reason as the search transport: hosted mode filters
+          // server-side, so the read scope must cross the boundary.
+          project_ids: searchedProjectIds.length > 1 ? searchedProjectIds : undefined,
           all_projects: args.all_projects,
           member_id: config.member_id ?? undefined,
         });

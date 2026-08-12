@@ -312,3 +312,15 @@ describe('createDirectTransport — read scope as a list (gh#322/gh#325)', () =>
     expect(mockHybridSearchAllProjects.mock.calls[0][4].payload_filter).toEqual(payload_filter);
   });
 });
+
+// gh#322 — hosted mode reaches Qdrant through the server, so a read scope that
+// stops at the proxy boundary is worse than no widening: the response envelope
+// would name projects the query never touched.
+describe('createProxyTransport — read scope reaches the server (gh#322)', () => {
+  it('forwards the resolved project id list to /api/search', async () => {
+    mockProxySearch.mockResolvedValue({ results: [], proposed_pending: undefined });
+    const t = createProxyTransport({ ...baseConfig, auth_mode: 'jwt' } as never);
+    await t.search('q', { projectIds: ['p-1', 'p-2'] });
+    expect(mockProxySearch.mock.calls[0][2].project_ids).toEqual(['p-1', 'p-2']);
+  });
+});

@@ -335,6 +335,7 @@ export async function handleSearch(
     const transportResult = await transport.search(args.query, {
       type: args.type,
       projectId,
+      projectIds: searchedProjectIds,
       all_projects: args.all_projects,
       expand: args.expand,
       payload_filter: filterBuild.filter.must.length > 0 ? filterBuild.filter : undefined,

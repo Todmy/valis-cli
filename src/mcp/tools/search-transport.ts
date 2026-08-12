@@ -24,6 +24,12 @@ import type {
 export interface SearchTransportOptions {
   type?: 'decision' | 'constraint' | 'pattern' | 'lesson';
   projectId?: string;
+  /**
+   * gh#322 — the resolved read scope. One id routes to `hybridSearch`; more
+   * than one routes to `hybridSearchAllProjects`. Takes precedence over
+   * `projectId`, which stays for callers that never widen.
+   */
+  projectIds?: string[];
   all_projects?: boolean;
   expand?: SearchExpand;
   /**
@@ -184,7 +190,17 @@ export function createDirectTransport(
       let raw: SearchResult[];
       let projectNameMap: Map<string, string> | undefined;
 
-      if (options.all_projects) {
+      // gh#322 — an explicit multi-id read scope. Resolved and access-checked
+      // upstream, so the transport only routes it; it never widens on its own.
+      const scopeIds = options.projectIds ?? [];
+      if (!options.all_projects && scopeIds.length > 1) {
+        raw = await hybridSearchAllProjects(qdrant, config.org_id, query, scopeIds, {
+          type: options.type,
+          limit: 50,
+          expand: options.expand,
+          payload_filter: options.payload_filter,
+        });
+      } else if (options.all_projects) {
         // Cross-project — fetch member's project list, search across them all.
         let projectIds: string[] = [];
         try {
@@ -212,12 +228,13 @@ export function createDirectTransport(
           type: options.type,
           limit: 50,
           expand: options.expand,
+          payload_filter: options.payload_filter,
         });
       } else {
         raw = await hybridSearch(qdrant, config.org_id, query, {
           type: options.type,
           limit: 50,
-          projectId: options.projectId,
+          projectId: scopeIds.length === 1 ? scopeIds[0] : options.projectId,
           expand: options.expand,
           payload_filter: options.payload_filter,
         });

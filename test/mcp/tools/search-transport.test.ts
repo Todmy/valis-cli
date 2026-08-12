@@ -271,3 +271,44 @@ describe('direct transport — status-based ranking (through the port)', () => {
     expect(out[0].id).toBe('hi'); // higher score wins despite worse status
   });
 });
+
+// gh#322 + gh#325 — the transport takes the resolved read scope as a list, and
+// structured filters must constrain the multi-project path exactly as they do
+// the single-project one.
+describe('createDirectTransport — read scope as a list (gh#322/gh#325)', () => {
+  beforeEach(() => {
+    mockHybridSearch.mockResolvedValue([]);
+    mockHybridSearchAllProjects.mockResolvedValue([]);
+  });
+
+  it('routes a single-id list to hybridSearch, not hybridSearchAllProjects', async () => {
+    const t = createDirectTransport(baseConfig);
+    await t.search('q', { projectIds: ['p-1'] });
+    expect(mockHybridSearch).toHaveBeenCalled();
+    expect(mockHybridSearchAllProjects).not.toHaveBeenCalled();
+    expect(mockHybridSearch.mock.calls[0][3].projectId).toBe('p-1');
+  });
+
+  it('routes a multi-id list to hybridSearchAllProjects with every id', async () => {
+    const t = createDirectTransport(baseConfig);
+    await t.search('q', { projectIds: ['p-1', 'p-2'] });
+    expect(mockHybridSearchAllProjects).toHaveBeenCalled();
+    expect(mockHybridSearchAllProjects.mock.calls[0][3]).toEqual(['p-1', 'p-2']);
+  });
+
+  it('passes a created_after filter through on the multi-project path (gh#325)', async () => {
+    const t = createDirectTransport(baseConfig);
+    const payload_filter = {
+      must: [{ key: 'created_at', range: { gte: '2026-01-01T00:00:00Z' } }],
+    };
+    await t.search('q', { projectIds: ['p-1', 'p-2'], payload_filter });
+    expect(mockHybridSearchAllProjects.mock.calls[0][4].payload_filter).toEqual(payload_filter);
+  });
+
+  it('passes a status filter through on the multi-project path (gh#325)', async () => {
+    const t = createDirectTransport(baseConfig);
+    const payload_filter = { must: [{ key: 'status', match: { value: 'active' } }] };
+    await t.search('q', { projectIds: ['p-1', 'p-2'], payload_filter });
+    expect(mockHybridSearchAllProjects.mock.calls[0][4].payload_filter).toEqual(payload_filter);
+  });
+});

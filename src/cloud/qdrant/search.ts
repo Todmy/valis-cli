@@ -109,6 +109,25 @@ export function buildAllProjectsFilter(
   return { must: mustClauses };
 }
 
+/**
+ * 032/Track 6 + gh#325 — compose a project-scope predicate with the caller's
+ * structured filter. Both carry a `must[]`, so a concat is the whole rule.
+ *
+ * Extracted from `hybridSearch` when gh#325 revealed the multi-project path
+ * had no equivalent: a `created_after` or `status` filter silently did nothing
+ * once the search spanned more than one project. One helper, both call sites.
+ */
+export function composePayloadFilter(
+  baseFilter: Record<string, unknown>,
+  payloadFilter: { must: unknown[] } | undefined,
+): Record<string, unknown> {
+  if (!payloadFilter || !Array.isArray(payloadFilter.must) || payloadFilter.must.length === 0) {
+    return baseFilter;
+  }
+  const baseMust = Array.isArray(baseFilter.must) ? (baseFilter.must as unknown[]) : [];
+  return { ...baseFilter, must: [...baseMust, ...payloadFilter.must] };
+}
+
 // ---------------------------------------------------------------------------
 // Query expansion — synonym/expansion map for common engineering terms (Q4-A)
 // ---------------------------------------------------------------------------
@@ -268,18 +287,7 @@ export async function hybridSearch(
   const baseFilter = buildProjectFilter(orgId, projectId, { type, legacyFallback });
   // 032/Track 6: compose project-scope predicate with caller's structured
   // filter. Both have `must[]` shape, so a simple concat is correct.
-  const filter =
-    payload_filter && Array.isArray(payload_filter.must) && payload_filter.must.length > 0
-      ? {
-          ...baseFilter,
-          must: [
-            ...(Array.isArray((baseFilter as { must?: unknown[] }).must)
-              ? ((baseFilter as { must: unknown[] }).must as unknown[])
-              : []),
-            ...payload_filter.must,
-          ],
-        }
-      : baseFilter;
+  const filter = composePayloadFilter(baseFilter, payload_filter);
 
   // Expand query with synonyms for better recall (Q4-A) and truncate to the
   // embedding model's safe input ceiling (FR-013b).
@@ -730,16 +738,26 @@ export async function hybridSearchAllProjects(
     limit?: number;
     /** BUG #161: see hybridSearch.expand. */
     expand?: SearchExpand;
+    /**
+     * gh#325 — structured filter from `SearchFilterBuilder`. Composed with the
+     * project-scope predicate exactly as on the single-project path; without
+     * it a `created_after` / `status` filter was silently dropped whenever the
+     * read spanned more than one project.
+     */
+    payload_filter?: { must: unknown[] };
   } = {},
 ): Promise<SearchResult[]> {
-  const { type, limit = 10, expand = 'siblings' } = options;
+  const { type, limit = 10, expand = 'siblings', payload_filter } = options;
 
   // FR-013a: short-circuit empty queries before any inference call.
   if (query.trim().length === 0) {
     return [];
   }
 
-  const filter = buildAllProjectsFilter(orgId, projectIds, { type });
+  const filter = composePayloadFilter(
+    buildAllProjectsFilter(orgId, projectIds, { type }),
+    payload_filter,
+  );
 
   // Expand query with synonyms (FR-013) and truncate to the embedding
   // model's safe input ceiling (FR-013b).

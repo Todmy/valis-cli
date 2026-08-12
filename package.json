@@ -57,7 +57,8 @@
     "./cloud/proposed-pending": "./dist/src/cloud/supabase/proposed-pending.js",
     "./lib/funnel-events": "./dist/src/lib/funnel-events.js",
     "./lib/project-access": "./dist/src/lib/project-access.js",
-    "./lib/read-scope": "./dist/src/lib/read-scope.js"
+    "./lib/read-scope": "./dist/src/lib/read-scope.js",
+    "./cloud/qdrant-filters": "./dist/src/cloud/qdrant/filters.js"
   },
   "files": [
     "dist/"

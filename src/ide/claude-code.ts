@@ -61,6 +61,12 @@ If no \`<valis_active_project>\` block is in context AND you must write,
 read \`.valis.json\` from the project root yourself (Read or Bash) FIRST,
 then pass its \`project_id\` explicitly. Never guess.
 
+**Read scope vs write target (gh#322):** reads span the active project **plus**
+any \`linked_projects\` declared in the repo's \`.valis.json\`. Writes always
+resolve to exactly **one** project — the active one. Widen a read explicitly with
+\`all_projects: true\` or an explicit \`project_ids\` list; never assume a search
+covered a project that is not in that set.
+
 ### ⚠️ MIRROR-WRITE RULE — read before storing ANY memory
 **Whenever you are about to write to ANY memory / KB tool — \`qdrant-store\`,
 \`mem0_add\`, \`memory_save\`, \`openmemory_save\`, any \`save_*\` tool, ANY tool

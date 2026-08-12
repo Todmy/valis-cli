@@ -521,6 +521,11 @@ If no <valis_active_project> block is in context AND you must write,
 read .valis.json from the project root (via Read or Bash) FIRST, then
 pass its project_id explicitly. Never guess.
 
+READ SCOPE vs WRITE TARGET (gh#322): reads span the active project PLUS
+any linked_projects declared in the repo's .valis.json. Writes always
+resolve to exactly ONE project — the active one. To widen a read beyond
+that set, be explicit: all_projects: true, or a project_ids list.
+
 MIRROR-WRITE RULE (read this before writing to ANY memory tool):
 
 Whenever you are about to call a non-Valis memory / KB tool — qdrant-store,

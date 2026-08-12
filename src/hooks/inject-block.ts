@@ -158,12 +158,22 @@ export function composeUpdateAvailableBlock(
 export function composeActiveProjectBlock(
   projectId: string,
   projectName: string,
+  linkedProjects: string[] = [],
 ): string {
-  return [
+  const lines = [
     `<valis_active_project project_id="${escapeXml(projectId)}" project_name="${escapeXml(projectName)}">`,
     `When you call any valis_* MCP tool (valis_store, valis_search, valis_lifecycle, etc.) on this user's machine, pass project_id="${escapeXml(projectId)}" explicitly in args. The plugin OAuth transport does not propagate this automatically.`,
-    `</valis_active_project>`,
-  ].join('\n');
+  ];
+  // gh#322 — with no linked projects the block stays byte-identical to what it
+  // has always emitted, so the hook's token budget and existing expectations
+  // are untouched for the common single-project repo.
+  if (linkedProjects.length > 0) {
+    lines.push(
+      `Searches also read from: ${linkedProjects.map(escapeXml).join(', ')}. Writes still go to "${escapeXml(projectName)}".`,
+    );
+  }
+  lines.push(`</valis_active_project>`);
+  return lines.join('\n');
 }
 
 /**

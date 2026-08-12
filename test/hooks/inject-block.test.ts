@@ -133,3 +133,24 @@ describe('hooks/inject-block — composeUpdateAvailableBlock (BUG #178)', () => 
     expect(Math.ceil(out.length / 4)).toBeLessThan(200);
   });
 });
+
+// gh#322 — the block has to say where reads look, not only where writes land.
+describe('hooks/inject-block — linked projects in the active-project block (gh#322)', () => {
+  it('emits the current block unchanged when nothing is linked', () => {
+    const withArg = composeActiveProjectBlock('id-1', 'demo', []);
+    const withoutArg = composeActiveProjectBlock('id-1', 'demo');
+    expect(withArg).toBe(withoutArg);
+  });
+
+  it('names the linked projects in the block', () => {
+    const out = composeActiveProjectBlock('id-1', 'demo', ['backend-api', 'infra']);
+    expect(out).toContain('backend-api');
+    expect(out).toContain('infra');
+  });
+
+  it('states that writes target the active project', () => {
+    const out = composeActiveProjectBlock('id-1', 'demo', ['backend-api']);
+    expect(out.toLowerCase()).toContain('write');
+    expect(out).toContain('demo');
+  });
+});

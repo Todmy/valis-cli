@@ -456,7 +456,15 @@ export async function hookUserPromptSubmitCommand(): Promise<void> {
     const availableBlock = await consumeUpdateAvailableMarker(sessionId);
     if (availableBlock) emitParts.push(availableBlock);
   }
-  emitParts.push(composeActiveProjectBlock(marker.projectId, marker.projectName));
+  // gh#322 — announce the read scope. The hook has no cheap way to resolve
+  // linked ids to names (no backend call belongs on this path), so it emits
+  // the ids: they are what the agent passes back as `project_ids` anyway.
+  const linkedProjects = Array.isArray(marker.raw.linked_projects)
+    ? (marker.raw.linked_projects as unknown[]).filter((v): v is string => typeof v === 'string')
+    : [];
+  emitParts.push(
+    composeActiveProjectBlock(marker.projectId, marker.projectName, linkedProjects),
+  );
   if (searchBlock) emitParts.push(searchBlock);
   emitParts.push(...parts);
   if (emitParts.length > 0) {

@@ -141,3 +141,86 @@ export async function assertLibraryReadable(
     'You do not have access to the reference library.',
   );
 }
+
+/** The collection this tool reads. Never a parameter — see ADR 0004. */
+export const SOURCES_COLLECTION = 'sources_v1';
+
+/** Dense vector width of `intfloat/multilingual-e5-small`. */
+const DENSE_SIZE = 384;
+
+/**
+ * Payload indexes the tool's declared filter surface depends on, with their
+ * declared types. Qdrant answers a filter on an unindexed keyword field with
+ * HTTP 400 (`Index required but not found for "X"`, verified on the live
+ * cluster), so an advertised filter without its index is a promise with no
+ * implementation.
+ */
+export const REQUIRED_INDEXES: ReadonlyArray<{ field: string; dataType: 'keyword' }> = [
+  { field: 'project_id', dataType: 'keyword' },
+  { field: 'lang', dataType: 'keyword' },
+  { field: 'tier', dataType: 'keyword' },
+  { field: 'identifier', dataType: 'keyword' },
+  { field: 'title', dataType: 'keyword' },
+];
+
+interface CollectionInfoLike {
+  config?: {
+    params?: {
+      vectors?: Record<string, { size?: number }> | { size?: number };
+      sparse_vectors?: Record<string, unknown>;
+    };
+  };
+  payload_schema?: Record<string, { data_type?: string }>;
+}
+
+/**
+ * Verify the collection still matches the contract the tool relies on.
+ *
+ * Deliberately checks the FULL contract on EVERY call, uncached, regardless of
+ * which filters the current query uses. Acceptance criterion 4 is written
+ * unconditionally, and an unfiltered query submits no `title` filter — so any
+ * cache window, or any "check only what this call needs" shortcut, is a window
+ * in which a deleted index is invisible and the search proceeds as if healthy.
+ * The cost is one control-plane call alongside a query that already runs two
+ * server-side embeddings and an RRF fusion.
+ *
+ * Detection only. Repairing anything here would breach the read-only boundary.
+ */
+export function assertLibrarySchema(info: CollectionInfoLike | null | undefined): void {
+  if (!info) {
+    throw new LibraryError(
+      'library_unavailable',
+      `collection:${SOURCES_COLLECTION}`,
+      `The reference library collection "${SOURCES_COLLECTION}" is not present on the cluster.`,
+    );
+  }
+
+  const params = info.config?.params;
+  const vectors = params?.vectors as Record<string, { size?: number }> | undefined;
+  const dense = vectors?.[''];
+  if (!dense || dense.size !== DENSE_SIZE) {
+    throw new LibraryError(
+      'library_rebuild_required',
+      'vector:dense',
+      `The reference library is missing its ${DENSE_SIZE}-dimension dense vector; it needs reindexing.`,
+    );
+  }
+
+  if (!params?.sparse_vectors || !('bm25' in params.sparse_vectors)) {
+    throw new LibraryError(
+      'library_rebuild_required',
+      'vector:bm25',
+      'The reference library is missing its bm25 sparse vector; it needs reindexing.',
+    );
+  }
+
+  for (const { field, dataType } of REQUIRED_INDEXES) {
+    if (info.payload_schema?.[field]?.data_type !== dataType) {
+      throw new LibraryError(
+        'library_rebuild_required',
+        `index:${field}`,
+        `The reference library needs a ${dataType} payload index on "${field}".`,
+      );
+    }
+  }
+}

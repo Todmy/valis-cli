@@ -12,6 +12,7 @@ import {
   assertLibraryConfigured,
   resolveLibraryProjectId,
   assertLibraryReadable,
+  assertLibrarySchema,
 } from '../../src/mcp/tools/library-search.js';
 import type { ServerConfig } from '../../src/types.js';
 
@@ -166,5 +167,101 @@ describe('authorisation (gh#329 T6)', () => {
     expect(
       await codeOf(() => assertLibraryReadable(async () => 'unavailable', 'lib-proj')),
     ).toEqual({ code: 'library_unavailable', missing: 'authorization' });
+  });
+});
+
+describe('schema guard (gh#329 T7)', () => {
+  const healthy = {
+    config: {
+      params: {
+        vectors: { '': { size: 384, distance: 'Cosine' } },
+        sparse_vectors: { bm25: {} },
+      },
+    },
+    payload_schema: {
+      project_id: { data_type: 'keyword' },
+      lang: { data_type: 'keyword' },
+      tier: { data_type: 'keyword' },
+      identifier: { data_type: 'keyword' },
+      title: { data_type: 'keyword' },
+    },
+  };
+
+  const codeOf = (info: unknown) => {
+    try {
+      assertLibrarySchema(info as never);
+      return null;
+    } catch (err) {
+      return err instanceof LibraryError ? { code: err.code, missing: err.missing } : err;
+    }
+  };
+
+  const without = (key: string) => {
+    const clone = structuredClone(healthy) as Record<string, never>;
+    delete (clone.payload_schema as Record<string, unknown>)[key];
+    return clone;
+  };
+
+  it('accepts a healthy collection', () => {
+    expect(codeOf(healthy)).toBeNull();
+  });
+
+  it('reports an absent collection as unavailable', () => {
+    expect(codeOf(null)).toEqual({
+      code: 'library_unavailable',
+      missing: 'collection:sources_v1',
+    });
+  });
+
+  it('fails on a missing dense vector', () => {
+    const broken = structuredClone(healthy) as Record<string, never>;
+    (broken.config as never as Record<string, never>).params = {
+      sparse_vectors: { bm25: {} },
+    } as never;
+    expect(codeOf(broken)).toEqual({ code: 'library_rebuild_required', missing: 'vector:dense' });
+  });
+
+  it('fails on a wrong dense vector size', () => {
+    const broken = structuredClone(healthy) as Record<string, never>;
+    ((broken.config as never as Record<string, never>).params as never as Record<string, never>)
+      .vectors = { '': { size: 768 } } as never;
+    expect(codeOf(broken)).toEqual({ code: 'library_rebuild_required', missing: 'vector:dense' });
+  });
+
+  it('fails on a missing bm25 sparse vector', () => {
+    const broken = structuredClone(healthy) as Record<string, never>;
+    delete ((broken.config as never as Record<string, never>).params as never as Record<
+      string,
+      never
+    >).sparse_vectors;
+    expect(codeOf(broken)).toEqual({ code: 'library_rebuild_required', missing: 'vector:bm25' });
+  });
+
+  // Acceptance criterion 4 is unconditional: a deleted index must surface even
+  // on a query that never filters on that field. This is why the guard checks
+  // the full declared contract rather than only the filters in play.
+  it('fails on a deleted title index regardless of the query filters', () => {
+    expect(codeOf(without('title'))).toEqual({
+      code: 'library_rebuild_required',
+      missing: 'index:title',
+    });
+  });
+
+  it('fails on a deleted project_id index', () => {
+    expect(codeOf(without('project_id'))).toEqual({
+      code: 'library_rebuild_required',
+      missing: 'index:project_id',
+    });
+  });
+
+  // Presence is not the contract — type is. A text index passes a presence
+  // check while silently changing exact-match semantics.
+  it('fails on a title index of the wrong data_type', () => {
+    const broken = structuredClone(healthy) as Record<string, never>;
+    (broken.payload_schema as Record<string, unknown>).title = { data_type: 'text' };
+    expect(codeOf(broken)).toEqual({
+      code: 'library_rebuild_required',
+      missing: 'index:title',
+    });
   });
 });

@@ -145,7 +145,12 @@ describe('resolveReadAccess (gh#329)', () => {
     expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('allow');
   });
 
-  it('allows a non-member of a public project without consulting membership', async () => {
+  // Naming precision (gh#329 review R5): membership IS queried — the two reads
+  // run concurrently, which keeps the common private-member path at one round
+  // trip instead of two. What the public short-circuit guarantees is that its
+  // ANSWER is never required: a membership query that fails outright still
+  // yields `allow`. That is what this asserts, and the title now says so.
+  it('allows a non-member of a public project even when the membership query fails', async () => {
     const sb = makeSupabase({
       project: { id: project, visibility: 'public' },
       membership: { count: 0, error: { message: 'membership table down' } },

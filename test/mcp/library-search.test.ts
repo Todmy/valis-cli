@@ -472,3 +472,95 @@ describe('citation validation (gh#329 T10)', () => {
     });
   });
 });
+
+describe('registration and read-only boundary (gh#329 T11)', () => {
+  it('advertises library_search through tool discovery', async () => {
+    // Asserted through discovery, not TOOL_DEFS — the registry is module-private.
+    const { createMcpServer } = await import('../../src/mcp/server.js');
+    const server = createMcpServer();
+    const tools = (
+      server as unknown as { _registeredTools: Record<string, unknown> }
+    )._registeredTools;
+    expect(Object.keys(tools)).toContain('library_search');
+  });
+
+  it('advertises no collection / org_id / project_id parameter', async () => {
+    const { createMcpServer } = await import('../../src/mcp/server.js');
+    const server = createMcpServer();
+    const tool = (
+      server as unknown as {
+        _registeredTools: Record<string, { inputSchema?: { shape?: Record<string, unknown> } }>;
+      }
+    )._registeredTools.library_search;
+    // The SDK compiles the raw shape into a ZodObject, so the parameter names
+    // live under `.shape`, not on the object itself.
+    const keys = Object.keys(tool.inputSchema?.shape ?? {});
+    expect(keys).not.toContain('collection');
+    expect(keys).not.toContain('org_id');
+    expect(keys).not.toContain('project_id');
+    expect(keys).toEqual(expect.arrayContaining(['query']));
+  });
+
+  it('never calls a write method on the Qdrant client', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, { query: 'x' });
+    await searchLibrary(q as never, LIB, { query: 'y', filters: { lang: 'en' } });
+    for (const method of ['upsert', 'delete', 'setPayload', 'createPayloadIndex', 'deleteCollection'] as const) {
+      expect(q[method], `${method} must never be called`).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('telemetry (gh#329 T11)', () => {
+  it('records a LibraryError as success:false with its own code', async () => {
+    // The analytics wrapper sits INSIDE the SDK's try, so the throw reaches its
+    // catch first. Returning a failure object instead would have been logged as
+    // a successful call — hiding the very outage this feature exists to surface.
+    const { wrapToolWithAnalytics } = await import('../../src/mcp/analytics.js');
+    const emitted: Array<Record<string, unknown>> = [];
+    const config = {
+      member_id: 'm1',
+      org_id: 'o1',
+      // emit_funnel is (eventName, payload) — the payload is the second arg.
+      emit_funnel: (_event: string, p: Record<string, unknown>) => {
+        emitted.push(p);
+      },
+    } as never;
+
+    const wrapped = wrapToolWithAnalytics(
+      'library_search',
+      config,
+      async () => {
+        throw new LibraryError('library_rebuild_required', 'index:title', 'broken');
+      },
+    );
+
+    await expect(wrapped({} as never)).rejects.toBeInstanceOf(LibraryError);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      tool: 'library_search',
+      success: false,
+      error_code: 'library_rebuild_required',
+    });
+  });
+
+  it('emits no tool arguments, so no query text leaves the machine', async () => {
+    const { wrapToolWithAnalytics } = await import('../../src/mcp/analytics.js');
+    const emitted: Array<Record<string, unknown>> = [];
+    const config = {
+      member_id: 'm1',
+      org_id: 'o1',
+      // emit_funnel is (eventName, payload) — the payload is the second arg.
+      emit_funnel: (_event: string, p: Record<string, unknown>) => {
+        emitted.push(p);
+      },
+    } as never;
+
+    const wrapped = wrapToolWithAnalytics('library_search', config, async () => ({
+      content: [{ type: 'text' as const, text: '{}' }],
+    }));
+    await wrapped({ query: 'a confidential internal question' } as never);
+
+    expect(JSON.stringify(emitted[0])).not.toContain('confidential');
+  });
+});

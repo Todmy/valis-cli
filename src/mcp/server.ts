@@ -15,6 +15,7 @@ import { handleEvolve } from './tools/evolve.js';
 import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
+import { handleLibrarySearch } from './tools/library-search.js';
 import { handleCreateProject } from './tools/create-project.js';
 import { handleCheckDiff } from './tools/check-diff.js';
 import { handleListAgents, handleConsultAgent } from './tools/agents.js';
@@ -252,6 +253,29 @@ const TOOL_DEFS = {
       title: 'List accessible projects',
     } as ToolAnnotations,
     schema: {},
+  },
+  library_search: {
+    description:
+      'Search the read-only reference library — externally authored engineering standards and handbooks, indexed separately from team decisions. Returns verbatim source passages with title and page so a claim can be cited. NOT part of the decision store: entries have no lifecycle, no outcomes, and take no part in contradiction detection or synthesis. The library is also excluded from project deletion, retention, self-heal, backup, and dashboard counts — an accepted non-coverage contract, recoverable from the ingest manifest. A hit is a candidate passage, not a claim of relevance: scores are rank-derived, so a healthy library returns its nearest passages whether or not it addresses the question. `contextual_text` is an LLM-written retrieval aid from ingest, not the source text — cite `chunk_text`. On any fault the tool returns a named error code, never an empty result.',
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: 'Search the reference library',
+    } as ToolAnnotations,
+    schema: {
+      query: z.string().min(1).describe('What to look for, in natural language'),
+      k: z.number().int().min(1).max(20).optional().describe('How many passages to return (default 5, max 20)'),
+      filters: z
+        .object({
+          lang: z.string().optional().describe("Language code, e.g. 'en', 'de', 'ja'"),
+          tier: z.string().optional().describe("Corpus tier, e.g. 'Core'"),
+          identifier: z.string().optional().describe('Standard identifier, when the work has one'),
+          work: z.string().optional().describe('Exact title of a single work'),
+        })
+        .optional()
+        .describe('Optional metadata narrowing'),
+    },
   },
   valis_create_project: {
     description:
@@ -824,6 +848,11 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
 
   registerToolFromDef(server, 'valis_list_projects', configOverride, async () => {
     const result = await handleListProjects(configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'library_search', configOverride, async (args) => {
+    const result = await handleLibrarySearch(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 

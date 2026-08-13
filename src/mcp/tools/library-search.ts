@@ -17,6 +17,9 @@
 
 import type { ServerConfig, ValisConfig } from '../../types.js';
 import type { ReadAccess } from '../../lib/project-access.js';
+import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-access.js';
+import { getQdrantClient } from '../../cloud/qdrant/client.js';
+import { loadConfig } from '../../config/store.js';
 
 export type LibraryErrorCode =
   | 'library_not_configured'
@@ -433,4 +436,71 @@ export function toLibraryResult(points: unknown[], scopedCount?: number): Librar
     dropped_uncitable: dropped,
     ...(points.length === 0 && (scopedCount ?? 0) > 0 ? { excluded_by_filters: true as const } : {}),
   };
+}
+
+/**
+ * MCP entry point.
+ *
+ * Order is deliberate: configuration, then authorisation, then schema, then
+ * retrieval. An unconfigured or unauthorised call produces no cluster traffic,
+ * and a broken collection is named before a query can turn its 400 into an
+ * empty list.
+ */
+export async function handleLibrarySearch(
+  args: LibrarySearchArgs,
+  configOverride?: ServerConfig,
+): Promise<LibraryResult> {
+  const fileConfig = configOverride ? undefined : ((await loadConfig()) ?? undefined);
+  const config = {
+    ...(configOverride ?? (fileConfig as unknown as ServerConfig) ?? {}),
+    library_project_id: resolveLibraryProjectId(
+      configOverride,
+      fileConfig as Partial<ValisConfig> | undefined,
+    ),
+  } as ServerConfig;
+
+  assertLibraryConfigured(config);
+  const libraryProjectId = config.library_project_id;
+
+  const supabase = getServiceRoleSupabase(
+    config.supabase_url,
+    config.supabase_service_role_key,
+  );
+  await assertLibraryReadable(
+    () => resolveReadAccess(supabase, config.member_id, libraryProjectId),
+    libraryProjectId,
+  );
+
+  const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+
+  try {
+    const { points, scopedCount } = await searchLibrary(
+      client as never,
+      libraryProjectId,
+      args,
+    );
+    return toLibraryResult(points, scopedCount ?? undefined);
+  } catch (err) {
+    if (err instanceof LibraryError) throw err;
+
+    // Qdrant answers a filter on an unindexed field with HTTP 400
+    // (`Index required but not found for "X"`). Parsing that message is
+    // enrichment only — the schema guard above is the authority, so an
+    // unrecognised failure stays `library_unavailable` rather than being
+    // reclassified on a wording change upstream.
+    const message = err instanceof Error ? err.message : String(err);
+    const field = /Index required but not found for "?([\w.]+)"?/.exec(message)?.[1];
+    if (field) {
+      throw new LibraryError(
+        'library_rebuild_required',
+        `index:${field}`,
+        `The reference library needs a payload index on "${field}".`,
+      );
+    }
+    throw new LibraryError(
+      'library_unavailable',
+      'query_failed',
+      'The reference library could not be queried.',
+    );
+  }
 }

@@ -79,7 +79,43 @@ export async function canReadProject(
   callerMemberId: string,
   targetProjectId: string,
 ): Promise<boolean> {
-  if (!callerMemberId || !targetProjectId) return false;
+  // Loose-typed legacy wrapper: existing callers pass a plain SupabaseClient.
+  // New code should call `resolveReadAccess` directly — it is `ServiceRoleClient`-
+  // typed and distinguishes an outage from a denial (gh#329, gh#330).
+  const access = await resolveReadAccess(
+    supabase as ServiceRoleClient,
+    callerMemberId,
+    targetProjectId,
+  );
+  return access === 'allow';
+}
+
+/**
+ * Tri-state read-access resolver (gh#329).
+ *
+ * `canReadProject` folds operational failure into `false`, so a Supabase
+ * outage is indistinguishable from a genuine denial — the caller is told
+ * "you may not read this" at the moment the system cannot know. This
+ * resolver keeps the same predicate but reports `'unavailable'` where the
+ * boolean would have said `false` on a query error.
+ *
+ * `'deny'` is an authoritative negative: the project does not exist, or it
+ * is private and the caller is not a member. `'unavailable'` means the
+ * question was not answered.
+ *
+ * Takes `ServiceRoleClient` rather than `SupabaseClient` because an
+ * RLS-bound client returns 0 `project_members` rows for a legitimate
+ * cross-org member — a confident false denial (the PR #56 class). The brand
+ * makes that a compile error rather than a convention.
+ */
+export type ReadAccess = 'allow' | 'deny' | 'unavailable';
+
+export async function resolveReadAccess(
+  supabase: ServiceRoleClient,
+  callerMemberId: string,
+  targetProjectId: string,
+): Promise<ReadAccess> {
+  if (!callerMemberId || !targetProjectId) return 'deny';
 
   const [projectResult, membershipResult] = await Promise.all([
     supabase
@@ -95,12 +131,13 @@ export async function canReadProject(
       .limit(1),
   ]);
 
-  if (projectResult.error || !projectResult.data) return false;
+  if (projectResult.error) return 'unavailable';
+  if (!projectResult.data) return 'deny';
 
-  if (projectResult.data.visibility === 'public') return true;
+  if (projectResult.data.visibility === 'public') return 'allow';
 
-  if (membershipResult.error) return false;
-  return (membershipResult.count ?? 0) > 0;
+  if (membershipResult.error) return 'unavailable';
+  return (membershipResult.count ?? 0) > 0 ? 'allow' : 'deny';
 }
 
 /**

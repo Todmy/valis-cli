@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { canReadProject } from '../../src/lib/project-access.js';
+import {
+  canReadProject,
+  resolveReadAccess,
+  type ServiceRoleClient,
+} from '../../src/lib/project-access.js';
 
 type FakeProject = { id: string; visibility: 'public' | 'private' } | null;
 type FakeMembership = { count: number; error?: { message: string } };
@@ -124,5 +128,66 @@ describe('canReadProject', () => {
       membership: { count: 0 },
     });
     expect(await canReadProject(sb, member, '')).toBe(false);
+  });
+});
+
+describe('resolveReadAccess (gh#329)', () => {
+  const member = '11111111-1111-1111-1111-111111111111';
+  const project = '22222222-2222-2222-2222-222222222222';
+  const asServiceRole = (sb: Parameters<typeof canReadProject>[0]) =>
+    sb as unknown as ServiceRoleClient;
+
+  it('allows a member of a private project', async () => {
+    const sb = makeSupabase({
+      project: { id: project, visibility: 'private' },
+      membership: { count: 1 },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('allow');
+  });
+
+  it('allows a non-member of a public project without consulting membership', async () => {
+    const sb = makeSupabase({
+      project: { id: project, visibility: 'public' },
+      membership: { count: 0, error: { message: 'membership table down' } },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('allow');
+  });
+
+  it('denies a non-member of a private project', async () => {
+    const sb = makeSupabase({
+      project: { id: project, visibility: 'private' },
+      membership: { count: 0 },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('deny');
+  });
+
+  it('denies a non-existent project', async () => {
+    const sb = makeSupabase({ project: null, membership: { count: 0 } });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('deny');
+  });
+
+  it('denies empty ids without querying', async () => {
+    const sb = makeSupabase({
+      project: { id: project, visibility: 'public' },
+      membership: { count: 0 },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), '', project)).toBe('deny');
+    expect(await resolveReadAccess(asServiceRole(sb), member, '')).toBe('deny');
+  });
+
+  it('reports a projects-lookup error as unavailable, not a denial', async () => {
+    const sb = makeSupabase({
+      project: { error: { message: 'db unavailable' } },
+      membership: { count: 1 },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('unavailable');
+  });
+
+  it('reports a membership-lookup error on a private project as unavailable', async () => {
+    const sb = makeSupabase({
+      project: { id: project, visibility: 'private' },
+      membership: { count: 0, error: { message: 'membership query failed' } },
+    });
+    expect(await resolveReadAccess(asServiceRole(sb), member, project)).toBe('unavailable');
   });
 });

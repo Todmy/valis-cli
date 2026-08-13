@@ -224,3 +224,104 @@ export function assertLibrarySchema(info: CollectionInfoLike | null | undefined)
     }
   }
 }
+
+const DENSE_MODEL = 'intfloat/multilingual-e5-small';
+const BM25_MODEL = 'Qdrant/bm25';
+const DEFAULT_K = 5;
+const MAX_K = 20;
+/** Prefetch depth per branch before fusion — mirrors the decision path. */
+const PREFETCH_FACTOR = 8;
+
+export interface LibraryFilters {
+  lang?: string;
+  tier?: string;
+  identifier?: string;
+  /** Matches the work's `title` payload key. */
+  work?: string;
+}
+
+export interface LibrarySearchArgs {
+  query: string;
+  k?: number;
+  filters?: LibraryFilters;
+}
+
+/**
+ * Scope filter. `project_id` alone, deliberately.
+ *
+ * Measured on the live cluster 2026-08-13: `project_id` selects 16,344 of
+ * 16,344 corpus points with none outside it, so `org_id` would add no
+ * restriction — and because a stamped org goes stale the moment the project
+ * moves between orgs, adding it would turn an intact corpus into a permanent
+ * false denial. Authorisation is a separate question, answered upstream by
+ * `assertLibraryReadable`.
+ */
+export function buildScopeFilter(libraryProjectId: string, filters?: LibraryFilters) {
+  const must: Array<{ key: string; match: { value: string } }> = [
+    { key: 'project_id', match: { value: libraryProjectId } },
+  ];
+  const mapped: ReadonlyArray<[keyof LibraryFilters, string]> = [
+    ['lang', 'lang'],
+    ['tier', 'tier'],
+    ['identifier', 'identifier'],
+    ['work', 'title'],
+  ];
+  for (const [arg, key] of mapped) {
+    const value = filters?.[arg];
+    if (value) must.push({ key, match: { value } });
+  }
+  return { must };
+}
+
+type QdrantLike = {
+  getCollection(name: string): Promise<unknown>;
+  query(name: string, body: Record<string, unknown>): Promise<{ points?: unknown[] }>;
+  count(name: string, body: Record<string, unknown>): Promise<{ count: number }>;
+};
+
+/**
+ * Guard, then retrieve. Server-side inference only — there is no local
+ * embedding fallback, because `ClientEmbeddingStrategy` uses AllMiniLML6V2
+ * (`embedding.ts:283`), a different model from the one this corpus was built
+ * with. When server inference is unavailable the right answer is a failure,
+ * not a wrong one.
+ *
+ * No relevance threshold, and no pretence of one: RRF scores are rank-derived,
+ * so the top hit is ~1.0 for any query including nonsense. A hit is a candidate
+ * passage, not a claim of relevance.
+ */
+export async function searchLibrary(
+  client: QdrantLike,
+  libraryProjectId: string,
+  args: LibrarySearchArgs,
+): Promise<{ points: unknown[]; scopedCount: number | null }> {
+  const query = args.query?.trim();
+  if (!query) {
+    throw new LibraryError(
+      'library_unavailable',
+      'query_failed',
+      'A non-empty query is required.',
+    );
+  }
+
+  assertLibrarySchema(
+    (await client.getCollection(SOURCES_COLLECTION).catch(() => null)) as never,
+  );
+
+  const k = Math.min(Math.max(1, args.k ?? DEFAULT_K), MAX_K);
+  const filter = buildScopeFilter(libraryProjectId, args.filters);
+  const prefetchLimit = k * PREFETCH_FACTOR;
+
+  const result = await client.query(SOURCES_COLLECTION, {
+    prefetch: [
+      { query: { text: query, model: DENSE_MODEL }, using: '', limit: prefetchLimit },
+      { query: { text: query, model: BM25_MODEL }, using: 'bm25', limit: prefetchLimit },
+    ],
+    query: { fusion: 'rrf' },
+    filter,
+    limit: k,
+    with_payload: true,
+  });
+
+  return { points: result.points ?? [], scopedCount: null };
+}

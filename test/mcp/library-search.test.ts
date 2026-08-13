@@ -6,15 +6,46 @@
  * and the read-only boundary is asserted across the whole file.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   LibraryError,
   assertLibraryConfigured,
   resolveLibraryProjectId,
   assertLibraryReadable,
   assertLibrarySchema,
+  searchLibrary,
 } from '../../src/mcp/tools/library-search.js';
 import type { ServerConfig } from '../../src/types.js';
+
+const HEALTHY_COLLECTION = {
+  config: {
+    params: {
+      vectors: { '': { size: 384, distance: 'Cosine' } },
+      sparse_vectors: { bm25: {} },
+    },
+  },
+  payload_schema: {
+    project_id: { data_type: 'keyword' },
+    lang: { data_type: 'keyword' },
+    tier: { data_type: 'keyword' },
+    identifier: { data_type: 'keyword' },
+    title: { data_type: 'keyword' },
+  },
+};
+
+const HIT = {
+  score: 0.45,
+  payload: {
+    title: 'Caterpillar Performance Handbook',
+    page: 124,
+    identifier: 'cat-perf-48',
+    lang: 'en',
+    year: 2018,
+    decision_id: 'work-1',
+    chunk_text: 'Rolling resistance is about 10 kg/metric ton on a firm surface.',
+    contextual_text: 'Table of rolling resistance factors by surface.',
+  },
+};
 
 describe('LibraryError envelope', () => {
   it('carries the structured payload in the message', () => {
@@ -263,5 +294,91 @@ describe('schema guard (gh#329 T7)', () => {
       code: 'library_rebuild_required',
       missing: 'index:title',
     });
+  });
+});
+
+function makeQdrant(hits: unknown[] = [], count = 0) {
+  return {
+    getCollection: vi.fn().mockResolvedValue(HEALTHY_COLLECTION),
+    query: vi.fn().mockResolvedValue({ points: hits }),
+    count: vi.fn().mockResolvedValue({ count }),
+    // Write surface — asserted never-called by the read-only test.
+    upsert: vi.fn(),
+    delete: vi.fn(),
+    setPayload: vi.fn(),
+    createPayloadIndex: vi.fn(),
+    deleteCollection: vi.fn(),
+  };
+}
+
+const LIB = 'lib-proj';
+
+describe('retrieval and scope filter (gh#329 T8)', () => {
+  it('filters project_id and nothing else by default', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, { query: 'rolling resistance' });
+    const [collection, body] = q.query.mock.calls[0] as [string, Record<string, never>];
+    expect(collection).toBe('sources_v1');
+    expect(body.filter).toEqual({
+      must: [{ key: 'project_id', match: { value: LIB } }],
+    });
+  });
+
+  it('issues a dense + sparse prefetch fused with RRF', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, { query: 'rolling resistance', k: 3 });
+    const body = (q.query.mock.calls[0] as [string, Record<string, never>])[1];
+    expect(body.prefetch).toEqual([
+      {
+        query: { text: 'rolling resistance', model: 'intfloat/multilingual-e5-small' },
+        using: '',
+        limit: 24,
+      },
+      { query: { text: 'rolling resistance', model: 'Qdrant/bm25' }, using: 'bm25', limit: 24 },
+    ]);
+    expect(body.query).toEqual({ fusion: 'rrf' });
+    expect(body.limit).toBe(3);
+    expect(body.with_payload).toBe(true);
+  });
+
+  it('maps the work filter onto the title payload key', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, {
+      query: 'x',
+      filters: { work: 'Caterpillar Performance Handbook', lang: 'en' },
+    });
+    const body = (q.query.mock.calls[0] as [string, Record<string, never>])[1];
+    expect(body.filter).toEqual({
+      must: [
+        { key: 'project_id', match: { value: LIB } },
+        { key: 'lang', match: { value: 'en' } },
+        { key: 'title', match: { value: 'Caterpillar Performance Handbook' } },
+      ],
+    });
+  });
+
+  it('defaults k to 5 and caps it at 20', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, { query: 'x' });
+    expect((q.query.mock.calls[0] as [string, { limit: number }])[1].limit).toBe(5);
+
+    const q2 = makeQdrant([HIT]);
+    await searchLibrary(q2 as never, LIB, { query: 'x', k: 500 });
+    expect((q2.query.mock.calls[0] as [string, { limit: number }])[1].limit).toBe(20);
+  });
+
+  it('checks the collection schema on every search, uncached', async () => {
+    const q = makeQdrant([HIT]);
+    await searchLibrary(q as never, LIB, { query: 'x' });
+    await searchLibrary(q as never, LIB, { query: 'y' });
+    expect(q.getCollection).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an empty or whitespace query before any client call', async () => {
+    const q = makeQdrant([HIT]);
+    await expect(searchLibrary(q as never, LIB, { query: '   ' })).rejects.toBeInstanceOf(
+      LibraryError,
+    );
+    expect(q.query).not.toHaveBeenCalled();
   });
 });

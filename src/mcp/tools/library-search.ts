@@ -329,15 +329,44 @@ export async function searchLibrary(
   const points = result.points ?? [];
   if (points.length > 0) return { points, scopedCount: null };
 
-  // Zero hits is ambiguous: a healthy corpus the caller's filters excluded, or
-  // a corpus that is not there. One exact count under the scope filter alone
-  // separates them — and the second case must never reach the caller as `[]`.
-  const { count } = await client.count(SOURCES_COLLECTION, {
-    filter: buildScopeFilter(libraryProjectId),
+  // Zero hits has three causes and conflating them is the failure this tool
+  // exists to prevent:
+  //   points match the active filter, yet retrieval returned none → broken
+  //   nothing matches the filter but the scope is populated       → excluded
+  //   nothing matches the scope either                            → absent
+  //
+  // Counting under the FULL active filter is what separates the first from the
+  // rest. Counting under the scope alone answers "is the corpus there", which
+  // is the wrong question when the caller sent no filters at all: a dead
+  // inference endpoint over a healthy corpus would be reported as
+  // `excluded_by_filters` — blaming filters that were never supplied.
+  const { count: matching } = await client.count(SOURCES_COLLECTION, {
+    filter,
     exact: true,
   });
 
-  if (count === 0) {
+  if (matching > 0) {
+    throw new LibraryError(
+      'library_unavailable',
+      'retrieval:empty',
+      'The reference library holds passages matching this request but returned none; retrieval is not working.',
+    );
+  }
+
+  // Nothing matches the active filter. With no caller filters that count WAS
+  // the scope count, so the corpus is absent and a second call would ask the
+  // same question twice.
+  const narrowed = filter.must.length > 1;
+  const scopedCount = narrowed
+    ? (
+        await client.count(SOURCES_COLLECTION, {
+          filter: buildScopeFilter(libraryProjectId),
+          exact: true,
+        })
+      ).count
+    : 0;
+
+  if (scopedCount === 0) {
     throw new LibraryError(
       'library_rebuild_required',
       'corpus:absent',
@@ -345,7 +374,7 @@ export async function searchLibrary(
     );
   }
 
-  return { points, scopedCount: count };
+  return { points, scopedCount };
 }
 
 export interface LibraryHit {

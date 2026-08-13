@@ -197,8 +197,21 @@ describe('handleLibrarySearch — failures never become empty results', () => {
 
   it('distinguishes filter exclusion from absence', async () => {
     qdrantMock.query.mockResolvedValue({ points: [] });
+    // Filter-aware counts (gh#329 R1): nothing matches `lang: ja`, but the
+    // scope is populated — the caller's own filters are the reason.
+    qdrantMock.count.mockImplementation(async (_n: string, body: Record<string, unknown>) => ({
+      count: (body.filter as { must: unknown[] }).must.length > 1 ? 0 : 16344,
+    }));
     const out = await handleLibrarySearch({ query: 'x', filters: { lang: 'ja' } }, CONFIG);
     expect(out).toEqual({ results: [], dropped_uncitable: 0, excluded_by_filters: true });
+  });
+
+  it('an unfiltered query that returns nothing over a populated corpus is a retrieval failure', async () => {
+    qdrantMock.query.mockResolvedValue({ points: [] });
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({
+      code: 'library_unavailable',
+      missing: 'retrieval:empty',
+    });
   });
 });
 

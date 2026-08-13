@@ -298,11 +298,18 @@ describe('schema guard (gh#329 T7)', () => {
   });
 });
 
-function makeQdrant(hits: unknown[] = [], count = 0) {
+/**
+ * `count` is filter-aware (gh#329 R1): `scopeCount` answers a project-only
+ * filter, `narrowedCount` answers one that also carries the caller's filters.
+ * The distinction is the whole point of the zero-hit classification.
+ */
+function makeQdrant(hits: unknown[] = [], scopeCount = 0, narrowedCount = 0) {
   return {
     getCollection: vi.fn().mockResolvedValue(HEALTHY_COLLECTION),
     query: vi.fn().mockResolvedValue({ points: hits }),
-    count: vi.fn().mockResolvedValue({ count }),
+    count: vi.fn(async (_n: string, body: Record<string, unknown>) => ({
+      count: (body.filter as { must: unknown[] }).must.length > 1 ? narrowedCount : scopeCount,
+    })),
     // Write surface — asserted never-called by the read-only test.
     upsert: vi.fn(),
     delete: vi.fn(),
@@ -390,9 +397,17 @@ describe('verify-on-empty (gh#329 T9)', () => {
     const out = await searchLibrary(q as never, LIB, { query: 'x', filters: { lang: 'ja' } });
     expect(out.points).toEqual([]);
     expect(out.scopedCount).toBe(16344);
-    // The count runs under the scope filter ALONE — the caller's own filters
-    // are what we are testing the corpus against.
+    // The FIRST count runs under the full active filter — that is what tells a
+    // broken retrieval path from filters that genuinely match nothing. Only
+    // once it comes back zero does the scope-only count decide absent vs
+    // excluded.
     expect((q.count.mock.calls[0] as [string, { filter: unknown }])[1].filter).toEqual({
+      must: [
+        { key: 'project_id', match: { value: LIB } },
+        { key: 'lang', match: { value: 'ja' } },
+      ],
+    });
+    expect((q.count.mock.calls[1] as [string, { filter: unknown }])[1].filter).toEqual({
       must: [{ key: 'project_id', match: { value: LIB } }],
     });
   });

@@ -15,6 +15,8 @@
  * a `LibraryError` with a named code rather than returning `[]`.
  */
 
+import type { ServerConfig, ValisConfig } from '../../types.js';
+
 export type LibraryErrorCode =
   | 'library_not_configured'
   | 'library_forbidden'
@@ -47,5 +49,58 @@ export class LibraryError extends Error {
     this.name = 'LibraryError';
     this.code = code;
     this.missing = missing;
+  }
+}
+
+/**
+ * Resolve the project that owns the reference library. Server-side only, in
+ * three steps, first hit wins.
+ *
+ * Step 2 and 3 exist because `startMcpServer()` calls `createMcpServer()` with
+ * no `ServerConfig` (`server.ts:916`) — without a stdio source the tool would
+ * be advertised on that transport while being able to answer only
+ * `library_not_configured`, which is an API promise with no implementation.
+ *
+ * Never a tool argument: a caller-supplied project id would turn a scoped
+ * library read into arbitrary cross-project retrieval.
+ */
+export function resolveLibraryProjectId(
+  serverConfig?: ServerConfig,
+  fileConfig?: Partial<ValisConfig>,
+): string | undefined {
+  return (
+    serverConfig?.library_project_id
+    ?? fileConfig?.library_project_id
+    ?? process.env.VALIS_LIBRARY_PROJECT_ID
+    ?? undefined
+  );
+}
+
+/** Credentials the handler cannot proceed without, in report order. */
+type LibraryConfig = ServerConfig & { library_project_id: string };
+
+/**
+ * Fail before any network call when the tool cannot possibly succeed, naming
+ * the field that is absent. An installation with no library is a valid
+ * installation — `library_not_configured` is an honest state, not a defect —
+ * so this is reported, never repaired.
+ */
+export function assertLibraryConfigured(
+  config: ServerConfig | undefined,
+): asserts config is LibraryConfig {
+  const missing = ([
+    ['library_project_id', config?.library_project_id],
+    ['qdrant_url', config?.qdrant_url],
+    ['supabase_url', config?.supabase_url],
+    ['supabase_service_role_key', config?.supabase_service_role_key],
+    ['member_id', config?.member_id],
+  ] as const).find(([, value]) => !value)?.[0];
+
+  if (missing) {
+    throw new LibraryError(
+      'library_not_configured',
+      missing,
+      `The reference library is not configured on this server: ${missing} is not set.`,
+    );
   }
 }

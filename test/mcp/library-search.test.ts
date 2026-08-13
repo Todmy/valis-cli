@@ -382,3 +382,31 @@ describe('retrieval and scope filter (gh#329 T8)', () => {
     expect(q.query).not.toHaveBeenCalled();
   });
 });
+
+describe('verify-on-empty (gh#329 T9)', () => {
+  it('reports an empty result as filter exclusion when the scope is populated', async () => {
+    const q = makeQdrant([], 16344);
+    const out = await searchLibrary(q as never, LIB, { query: 'x', filters: { lang: 'ja' } });
+    expect(out.points).toEqual([]);
+    expect(out.scopedCount).toBe(16344);
+    // The count runs under the scope filter ALONE — the caller's own filters
+    // are what we are testing the corpus against.
+    expect((q.count.mock.calls[0] as [string, { filter: unknown }])[1].filter).toEqual({
+      must: [{ key: 'project_id', match: { value: LIB } }],
+    });
+  });
+
+  it('reports an empty scope as corpus:absent, never as an empty result', async () => {
+    const q = makeQdrant([], 0);
+    await expect(searchLibrary(q as never, LIB, { query: 'x' })).rejects.toMatchObject({
+      code: 'library_rebuild_required',
+      missing: 'corpus:absent',
+    });
+  });
+
+  it('issues no count call when the query returned hits', async () => {
+    const q = makeQdrant([HIT], 16344);
+    await searchLibrary(q as never, LIB, { query: 'x' });
+    expect(q.count).not.toHaveBeenCalled();
+  });
+});

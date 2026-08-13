@@ -323,5 +323,24 @@ export async function searchLibrary(
     with_payload: true,
   });
 
-  return { points: result.points ?? [], scopedCount: null };
+  const points = result.points ?? [];
+  if (points.length > 0) return { points, scopedCount: null };
+
+  // Zero hits is ambiguous: a healthy corpus the caller's filters excluded, or
+  // a corpus that is not there. One exact count under the scope filter alone
+  // separates them — and the second case must never reach the caller as `[]`.
+  const { count } = await client.count(SOURCES_COLLECTION, {
+    filter: buildScopeFilter(libraryProjectId),
+    exact: true,
+  });
+
+  if (count === 0) {
+    throw new LibraryError(
+      'library_rebuild_required',
+      'corpus:absent',
+      'The reference library holds no documents under its configured scope; it needs reingesting.',
+    );
+  }
+
+  return { points, scopedCount: count };
 }

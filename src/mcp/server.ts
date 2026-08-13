@@ -16,6 +16,7 @@ import { handleCheckDuplicate } from './tools/check-duplicate.js';
 import { handleTaxonomy } from './tools/taxonomy.js';
 import { handleListProjects } from './tools/list-projects.js';
 import { handleLibrarySearch } from './tools/library-search.js';
+import { handleLibraryList } from './tools/library-list.js';
 import { handleCreateProject } from './tools/create-project.js';
 import { handleCheckDiff } from './tools/check-diff.js';
 import { handleListAgents, handleConsultAgent } from './tools/agents.js';
@@ -256,7 +257,7 @@ const TOOL_DEFS = {
   },
   library_search: {
     description:
-      'Search the read-only reference library — externally authored engineering standards and handbooks, indexed separately from team decisions. Returns verbatim source passages with title and page so a claim can be cited. NOT part of the decision store: entries have no lifecycle, no outcomes, and take no part in contradiction detection or synthesis. The library is also excluded from project deletion, retention, self-heal, backup, and dashboard counts — an accepted non-coverage contract, recoverable from the ingest manifest. A hit is a candidate passage, not a claim of relevance: scores are rank-derived, so a healthy library returns its nearest passages whether or not it addresses the question. `contextual_text` is an LLM-written retrieval aid from ingest, not the source text — cite `chunk_text`. On any fault the tool returns a named error code, never an empty result.',
+      "Search a project's read-only reference library — externally authored works (standards, handbooks) attached to that project and indexed separately from its decisions. Defaults to the active project; pass target_project_id to read another project's library, which succeeds only where you are a member or the project is public. Returns verbatim source passages with title and page so a claim can be cited. NOT part of the decision store: entries have no lifecycle, no outcomes, and take no part in contradiction detection or synthesis; they are likewise excluded from project deletion, retention, self-heal, backup, and dashboard counts — an accepted non-coverage contract. What any given library actually holds is not fixed and is not stated here: call library_list to find out. A hit is a candidate passage, not a claim of relevance: scores are rank-derived, so a healthy library returns its nearest passages whether or not it addresses the question. `contextual_text` is an LLM-written retrieval aid from ingest, not the source text — cite `chunk_text`. On any fault the tool returns a named error code, never an empty result.",
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,
@@ -275,6 +276,28 @@ const TOOL_DEFS = {
         })
         .optional()
         .describe('Optional metadata narrowing'),
+      target_project_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe("Read another project's library instead of the active one (gh#334)"),
+    },
+  },
+  library_list: {
+    description:
+      "State what a project's reference library actually holds: every work on the shelf with its passage count, plus the languages present. Read live from the corpus, so it cannot drift from what library_search will find. Call this before concluding that a library lacks evidence on a topic — and to discover the exact work titles the library_search `work` filter accepts. `has_library: false` means the project simply has no corpus attached, which is a legitimate state and not a fault. Defaults to the active project; pass target_project_id to describe another project's library, which succeeds only where you are a member or the project is public.",
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+      title: "List the reference library's works",
+    } as ToolAnnotations,
+    schema: {
+      target_project_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe("Describe another project's library instead of the active one"),
     },
   },
   valis_create_project: {
@@ -853,6 +876,11 @@ export function createMcpServer(configOverride?: ServerConfig): McpServer {
 
   registerToolFromDef(server, 'library_search', configOverride, async (args) => {
     const result = await handleLibrarySearch(args as never, configOverride);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  });
+
+  registerToolFromDef(server, 'library_list', configOverride, async (args) => {
+    const result = await handleLibraryList(args as never, configOverride);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   });
 

@@ -83,7 +83,7 @@ const CONFIG = {
   supabase_service_role_key: 'srk',
   qdrant_url: 'https://q',
   qdrant_api_key: 'qk',
-  library_project_id: 'lib-proj',
+  project_id: 'lib-proj',
 } as unknown as ServerConfig;
 
 beforeEach(() => {

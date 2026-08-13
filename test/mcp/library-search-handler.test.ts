@@ -70,7 +70,7 @@ const CONFIG = {
   supabase_service_role_key: 'srk',
   qdrant_url: 'https://q',
   qdrant_api_key: 'qk',
-  library_project_id: 'lib-proj',
+  project_id: 'lib-proj',
 } as unknown as ServerConfig;
 
 beforeEach(() => {
@@ -79,10 +79,6 @@ beforeEach(() => {
   qdrantMock.query.mockResolvedValue({ points: [HIT] });
   qdrantMock.count.mockResolvedValue({ count: 16344 });
   resolveReadAccess.mockResolvedValue('allow');
-});
-
-afterEach(() => {
-  delete process.env.VALIS_LIBRARY_PROJECT_ID;
 });
 
 const errOf = async (fn: () => Promise<unknown>) => {
@@ -109,16 +105,21 @@ describe('handleLibrarySearch — happy path', () => {
     expect(getServiceRoleSupabase).toHaveBeenCalledWith('https://x.supabase.co', 'srk');
   });
 
-  it('authorises against the LIBRARY project, never the caller-active one', async () => {
+  // gh#334 reversed this: the previous contract authorised against a
+  // deployment-wide library project and IGNORED the caller's active project.
+  // The project being read is now the unit of authorisation, whichever one it
+  // is — so the assertion is that the resolved project reaches the resolver,
+  // not that a fixed one does.
+  it('authorises against the project whose library is being read', async () => {
     await handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: 'some-other' });
     expect(resolveReadAccess).toHaveBeenCalledWith(
       expect.anything(),
       'member-1',
-      'lib-proj',
+      'some-other',
     );
   });
 
-  it('scopes the Qdrant filter to the library project alone', async () => {
+  it('scopes the Qdrant filter to the resolved project alone', async () => {
     await handleLibrarySearch({ query: 'x' }, CONFIG);
     const body = qdrantMock.query.mock.calls[0][1] as { filter: unknown };
     expect(body.filter).toEqual({ must: [{ key: 'project_id', match: { value: 'lib-proj' } }] });
@@ -127,11 +128,11 @@ describe('handleLibrarySearch — happy path', () => {
 
 describe('handleLibrarySearch — ordering guarantees', () => {
   it('issues no Qdrant call when the library is unconfigured', async () => {
-    const { library_project_id: _drop, ...rest } = CONFIG as unknown as Record<string, unknown>;
+    const { project_id: _drop, ...rest } = CONFIG as unknown as Record<string, unknown>;
     const noLibrary = rest as unknown as ServerConfig;
     expect(await errOf(() => handleLibrarySearch({ query: 'x' }, noLibrary))).toEqual({
       code: 'library_not_configured',
-      missing: 'library_project_id',
+      missing: 'project_id',
     });
     expect(qdrantMock.getCollection).not.toHaveBeenCalled();
     expect(qdrantMock.query).not.toHaveBeenCalled();
@@ -236,14 +237,51 @@ describe('handleLibrarySearch — failures never become empty results', () => {
   });
 });
 
-describe('handleLibrarySearch — stdio transport', () => {
-  it('resolves the library project from the env var when no ServerConfig is passed', async () => {
-    process.env.VALIS_LIBRARY_PROJECT_ID = 'env-lib';
-    // loadConfig is mocked to null, so the env var is the only remaining source.
-    // Without it the stdio transport would advertise a tool that can only fail.
-    expect(await errOf(() => handleLibrarySearch({ query: 'x' }))).toEqual({
-      code: 'library_not_configured',
-      missing: 'qdrant_url',
+describe('handleLibrarySearch — project scoping (gh#334)', () => {
+  it("scopes the Qdrant filter to the caller's own project by default", async () => {
+    await handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: 'caller-proj' });
+    const body = qdrantMock.query.mock.calls[0][1] as {
+      filter: { must: Array<{ key: string; match: { value: string } }> };
+    };
+    expect(body.filter.must[0]).toEqual({
+      key: 'project_id',
+      match: { value: 'caller-proj' },
     });
+  });
+
+  // The authorisation check must run against the TARGET project, not the
+  // caller's. Gating on the caller's own project would authorise every
+  // cross-project read the moment the caller could read anything at all.
+  it('authorises and scopes against an explicit target_project_id', async () => {
+    await handleLibrarySearch(
+      { query: 'x', target_project_id: 'other-proj' },
+      { ...CONFIG, project_id: 'caller-proj' },
+    );
+    expect(resolveReadAccess.mock.calls[0][2]).toBe('other-proj');
+    const body = qdrantMock.query.mock.calls[0][1] as {
+      filter: { must: Array<{ key: string; match: { value: string } }> };
+    };
+    expect(body.filter.must[0]).toEqual({ key: 'project_id', match: { value: 'other-proj' } });
+  });
+
+  // A denied target must not fall back to the caller's own library: silently
+  // answering a different question than the one asked is worse than refusing.
+  it('refuses a target the caller may not read, without falling back', async () => {
+    resolveReadAccess.mockResolvedValue('deny');
+    expect(
+      await errOf(() =>
+        handleLibrarySearch(
+          { query: 'x', target_project_id: 'other-proj' },
+          { ...CONFIG, project_id: 'caller-proj' },
+        ),
+      ),
+    ).toEqual({ code: 'library_forbidden', missing: 'project:other-proj' });
+    expect(qdrantMock.query).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing active project as project_id, not as a deployment setting', async () => {
+    expect(
+      await errOf(() => handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: null })),
+    ).toEqual({ code: 'library_not_configured', missing: 'project_id' });
   });
 });

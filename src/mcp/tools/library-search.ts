@@ -15,7 +15,7 @@
  * a `LibraryError` with a named code rather than returning `[]`.
  */
 
-import type { ServerConfig, ValisConfig } from '../../types.js';
+import type { ServerConfig } from '../../types.js';
 import type { ReadAccess } from '../../lib/project-access.js';
 import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-access.js';
 import { getQdrantClient } from '../../cloud/qdrant/client.js';
@@ -57,30 +57,35 @@ export class LibraryError extends Error {
 }
 
 /**
- * Resolve the project that owns the reference library. Server-side only, in
- * three steps, first hit wins.
+ * Resolve which project's library to read: the caller's own by default, or the
+ * one they explicitly named.
  *
- * Step 2 and 3 exist because `startMcpServer()` calls `createMcpServer()` with
- * no `ServerConfig` (`server.ts:916`) — without a stdio source the tool would
- * be advertised on that transport while being able to answer only
- * `library_not_configured`, which is an API promise with no implementation.
+ * A library is an attachment of a project, not a property of the installation
+ * (gh#334). The previous shape resolved it from a single `VALIS_LIBRARY_PROJECT_ID`
+ * env var, which made one project's corpus visible from every other project on
+ * the deployment and gave a second project no way to have a library at all.
  *
- * Never a tool argument: a caller-supplied project id would turn a scoped
- * library read into arbitrary cross-project retrieval.
+ * `target_project_id` is safe as a caller argument for the same reason it is on
+ * `valis_search` (feature 033): naming a project is not reading it. Every read
+ * passes through `assertLibraryReadable`, which resolves the TARGET project's
+ * own access rules — membership, or `visibility = 'public'`. A caller may name
+ * any project id and will still only ever read one they are entitled to.
  */
 export function resolveLibraryProjectId(
-  serverConfig?: ServerConfig,
-  fileConfig?: Partial<ValisConfig>,
+  args?: { target_project_id?: string },
+  config?: { project_id?: string | null },
 ): string | undefined {
-  return (
-    serverConfig?.library_project_id
-    ?? fileConfig?.library_project_id
-    ?? process.env.VALIS_LIBRARY_PROJECT_ID
-    ?? undefined
-  );
+  return args?.target_project_id?.trim() || config?.project_id || undefined;
 }
 
-/** Credentials the handler cannot proceed without, in report order. */
+/**
+ * Credentials the handler cannot proceed without, in report order.
+ *
+ * `library_project_id` is a resolved value carried on the config object for the
+ * length of one call, not a stored setting — `ServerConfig` no longer has such
+ * a field, because a deployment does not own a library (gh#334).
+ */
+type LibraryInput = ServerConfig & { library_project_id?: string };
 type LibraryConfig = ServerConfig & { library_project_id: string };
 
 /**
@@ -88,12 +93,16 @@ type LibraryConfig = ServerConfig & { library_project_id: string };
  * the field that is absent. An installation with no library is a valid
  * installation — `library_not_configured` is an honest state, not a defect —
  * so this is reported, never repaired.
+ *
+ * The first entry is reported as `project_id` rather than by its internal key:
+ * what the caller is actually missing is an active project (and they supplied
+ * no `target_project_id`), not a deployment setting they could go and set.
  */
 export function assertLibraryConfigured(
-  config: ServerConfig | undefined,
+  config: LibraryInput | undefined,
 ): asserts config is LibraryConfig {
   const missing = ([
-    ['library_project_id', config?.library_project_id],
+    ['project_id', config?.library_project_id],
     ['qdrant_url', config?.qdrant_url],
     ['supabase_url', config?.supabase_url],
     ['supabase_service_role_key', config?.supabase_service_role_key],
@@ -265,6 +274,8 @@ export interface LibrarySearchArgs {
   query: string;
   k?: number;
   filters?: LibraryFilters;
+  /** Read another project's library instead of the caller's own (gh#334). */
+  target_project_id?: string;
 }
 
 /**
@@ -294,10 +305,14 @@ export function buildScopeFilter(libraryProjectId: string, filters?: LibraryFilt
   return { must };
 }
 
-type QdrantLike = {
+export type QdrantLike = {
   getCollection(name: string): Promise<unknown>;
   query(name: string, body: Record<string, unknown>): Promise<{ points?: unknown[] }>;
   count(name: string, body: Record<string, unknown>): Promise<{ count: number }>;
+  facet(
+    name: string,
+    body: Record<string, unknown>,
+  ): Promise<{ hits?: Array<{ value?: unknown; count?: number }> }>;
 };
 
 /**
@@ -486,25 +501,29 @@ export function toLibraryResult(points: unknown[], scopedCount?: number): Librar
 }
 
 /**
- * MCP entry point.
+ * Shared preflight for every library tool.
  *
- * Order is deliberate: configuration, then authorisation, then schema, then
- * retrieval. An unconfigured or unauthorised call produces no cluster traffic,
- * and a broken collection is named before a query can turn its 400 into an
- * empty list.
+ * Order is deliberate: configuration, then authorisation, then the operation
+ * (which guards the schema before it queries). An unconfigured or unauthorised
+ * call produces no cluster traffic, and a broken collection is named before a
+ * query can turn its 400 into an empty list.
+ *
+ * This exists as one function rather than per-tool copies so the R2 guarantee —
+ * nothing past preflight escapes the `LibraryError` envelope — is proven once
+ * and inherited, instead of being re-implemented (and eventually re-broken) by
+ * each new library tool.
  */
-export async function handleLibrarySearch(
-  args: LibrarySearchArgs,
-  configOverride?: ServerConfig,
-): Promise<LibraryResult> {
+export async function withLibrary<T>(
+  args: { target_project_id?: string } | undefined,
+  configOverride: ServerConfig | undefined,
+  op: (client: QdrantLike, libraryProjectId: string) => Promise<T>,
+): Promise<T> {
   const fileConfig = configOverride ? undefined : ((await loadConfig()) ?? undefined);
-  const config = {
-    ...(configOverride ?? (fileConfig as unknown as ServerConfig) ?? {}),
-    library_project_id: resolveLibraryProjectId(
-      configOverride,
-      fileConfig as Partial<ValisConfig> | undefined,
-    ),
-  } as ServerConfig;
+  const base = (configOverride ?? (fileConfig as unknown as ServerConfig) ?? {}) as ServerConfig;
+  const config: LibraryInput = {
+    ...base,
+    library_project_id: resolveLibraryProjectId(args, base),
+  };
 
   assertLibraryConfigured(config);
   const libraryProjectId = config.library_project_id;
@@ -529,20 +548,10 @@ export async function handleLibrarySearch(
     const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     stage = 'retrieval';
 
-    const { points, scopedCount } = await searchLibrary(
-      client as never,
-      libraryProjectId,
-      args,
-    );
-    return toLibraryResult(points, scopedCount ?? undefined);
+    return await op(client as never, libraryProjectId);
   } catch (err) {
     if (err instanceof LibraryError) throw err;
 
-    // Qdrant answers a filter on an unindexed field with HTTP 400
-    // (`Index required but not found for "X"`). Parsing that message is
-    // enrichment only — the schema guard above is the authority, so an
-    // unrecognised failure stays `library_unavailable` rather than being
-    // reclassified on a wording change upstream.
     if (stage === 'authorization') {
       throw new LibraryError(
         'library_unavailable',
@@ -551,6 +560,11 @@ export async function handleLibrarySearch(
       );
     }
 
+    // Qdrant answers a filter on an unindexed field with HTTP 400
+    // (`Index required but not found for "X"`). Parsing that message is
+    // enrichment only — the schema guard is the authority, so an unrecognised
+    // failure stays `library_unavailable` rather than being reclassified on a
+    // wording change upstream.
     const message = err instanceof Error ? err.message : String(err);
     const field = /Index required but not found for "?([\w.]+)"?/.exec(message)?.[1];
     if (field) {
@@ -566,4 +580,15 @@ export async function handleLibrarySearch(
       'The reference library could not be queried.',
     );
   }
+}
+
+/** MCP entry point for `library_search`. */
+export async function handleLibrarySearch(
+  args: LibrarySearchArgs,
+  configOverride?: ServerConfig,
+): Promise<LibraryResult> {
+  return withLibrary(args, configOverride, async (client, libraryProjectId) => {
+    const { points, scopedCount } = await searchLibrary(client, libraryProjectId, args);
+    return toLibraryResult(points, scopedCount ?? undefined);
+  });
 }

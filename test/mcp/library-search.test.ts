@@ -84,7 +84,7 @@ describe('LibraryError envelope', () => {
   });
 });
 
-describe('library project resolution (gh#329 T5)', () => {
+describe('library project resolution (gh#334)', () => {
   const base = {
     supabase_url: 'https://x.supabase.co',
     supabase_service_role_key: 'srk',
@@ -93,32 +93,41 @@ describe('library project resolution (gh#329 T5)', () => {
     member_id: 'member-1',
   } as unknown as ServerConfig;
 
-  afterEach(() => {
-    delete process.env.VALIS_LIBRARY_PROJECT_ID;
-  });
-
-  it('prefers the hosted ServerConfig field', () => {
-    process.env.VALIS_LIBRARY_PROJECT_ID = 'from-env';
-    const cfg = { ...base, library_project_id: 'from-server-config' } as ServerConfig;
-    expect(resolveLibraryProjectId(cfg, { library_project_id: 'from-file' })).toBe(
-      'from-server-config',
+  it("defaults to the caller's own project", () => {
+    expect(resolveLibraryProjectId(undefined, { ...base, project_id: 'caller-proj' })).toBe(
+      'caller-proj',
     );
   });
 
-  it('falls back to the stdio config file', () => {
-    process.env.VALIS_LIBRARY_PROJECT_ID = 'from-env';
-    expect(resolveLibraryProjectId(undefined, { library_project_id: 'from-file' })).toBe(
-      'from-file',
-    );
+  it('prefers an explicit target_project_id over the caller project', () => {
+    expect(
+      resolveLibraryProjectId({ target_project_id: 'other-proj' }, {
+        ...base,
+        project_id: 'caller-proj',
+      }),
+    ).toBe('other-proj');
   });
 
-  it('falls back to the env var when neither config carries the field', () => {
-    process.env.VALIS_LIBRARY_PROJECT_ID = 'from-env';
-    expect(resolveLibraryProjectId(undefined, {})).toBe('from-env');
+  // A blank or whitespace-only argument is not a target. Treating it as one
+  // would resolve the scope to an empty string and query a filter that matches
+  // nothing — reporting an absent corpus instead of an unscoped call.
+  it.each(['', '   '])('ignores a blank target_project_id (%j)', (blank) => {
+    expect(
+      resolveLibraryProjectId({ target_project_id: blank }, { ...base, project_id: 'caller-proj' }),
+    ).toBe('caller-proj');
   });
 
-  it('returns undefined when all three sources are absent', () => {
+  it('returns undefined with no target and no active project', () => {
     expect(resolveLibraryProjectId(undefined, {})).toBeUndefined();
+    expect(resolveLibraryProjectId({}, { project_id: null })).toBeUndefined();
+  });
+
+  // gh#334: the deployment-wide env var is gone. Asserted rather than deleted,
+  // so re-adding it has to break a test first.
+  it('ignores VALIS_LIBRARY_PROJECT_ID entirely', () => {
+    process.env.VALIS_LIBRARY_PROJECT_ID = 'from-env';
+    expect(resolveLibraryProjectId(undefined, {})).toBeUndefined();
+    delete process.env.VALIS_LIBRARY_PROJECT_ID;
   });
 });
 
@@ -145,11 +154,11 @@ describe('preflight (gh#329 T5)', () => {
     expect(() => assertLibraryConfigured(full)).not.toThrow();
   });
 
-  it('names library_project_id when the library is not configured', () => {
+  it('names project_id when no project is in scope', () => {
     const { library_project_id: _drop, ...rest } = full as Record<string, unknown>;
     expect(codeOf(() => assertLibraryConfigured(rest as unknown as ServerConfig))).toEqual({
       code: 'library_not_configured',
-      missing: 'library_project_id',
+      missing: 'project_id',
     });
   });
 

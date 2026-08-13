@@ -107,6 +107,24 @@ export function assertLibraryConfigured(
       `The reference library is not configured on this server: ${missing} is not set.`,
     );
   }
+
+  // A present-but-malformed URL is a misconfiguration and has to be named
+  // here. Left to the client constructors it surfaces as a plain `TypeError`
+  // from outside this module's classification, so the caller receives a bare
+  // message instead of the `{error:{code,...}}` body — and a proxy that drops
+  // `isError` (`proxy.ts:84`) then presents it as success.
+  const malformed = ([
+    ['qdrant_url', config?.qdrant_url],
+    ['supabase_url', config?.supabase_url],
+  ] as const).find(([, value]) => !URL.canParse(value as string))?.[0];
+
+  if (malformed) {
+    throw new LibraryError(
+      'library_not_configured',
+      malformed,
+      `The reference library is not configured on this server: ${malformed} is not a valid URL.`,
+    );
+  }
 }
 
 /**
@@ -491,18 +509,26 @@ export async function handleLibrarySearch(
   assertLibraryConfigured(config);
   const libraryProjectId = config.library_project_id;
 
-  const supabase = getServiceRoleSupabase(
-    config.supabase_url,
-    config.supabase_service_role_key,
-  );
-  await assertLibraryReadable(
-    () => resolveReadAccess(supabase, config.member_id, libraryProjectId),
-    libraryProjectId,
-  );
-
-  const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+  // Everything past preflight runs inside one classifier. Client construction
+  // and authorisation used to sit outside it, so anything they threw — an
+  // unparseable URL, a Supabase client that died on init — reached the SDK as a
+  // plain Error with no code and no `missing` (gh#329 review R2). `stage` is
+  // what lets one catch name the right failure.
+  let stage: 'authorization' | 'retrieval' = 'authorization';
 
   try {
+    const supabase = getServiceRoleSupabase(
+      config.supabase_url,
+      config.supabase_service_role_key,
+    );
+    await assertLibraryReadable(
+      () => resolveReadAccess(supabase, config.member_id, libraryProjectId),
+      libraryProjectId,
+    );
+
+    const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
+    stage = 'retrieval';
+
     const { points, scopedCount } = await searchLibrary(
       client as never,
       libraryProjectId,
@@ -517,6 +543,14 @@ export async function handleLibrarySearch(
     // enrichment only — the schema guard above is the authority, so an
     // unrecognised failure stays `library_unavailable` rather than being
     // reclassified on a wording change upstream.
+    if (stage === 'authorization') {
+      throw new LibraryError(
+        'library_unavailable',
+        'authorization',
+        'The reference library could not verify access to itself.',
+      );
+    }
+
     const message = err instanceof Error ? err.message : String(err);
     const field = /Index required but not found for "?([\w.]+)"?/.exec(message)?.[1];
     if (field) {

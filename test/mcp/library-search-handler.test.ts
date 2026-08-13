@@ -155,6 +155,27 @@ describe('handleLibrarySearch — ordering guarantees', () => {
     expect(qdrantMock.query).not.toHaveBeenCalled();
   });
 
+  it('wraps a client-construction failure in the envelope (gh#329 R2)', async () => {
+    // Building the Supabase client and resolving access happened OUTSIDE the
+    // handler's try, so anything they threw reached the SDK as a plain Error —
+    // no code, no `missing`, and success-shaped once a proxy drops `isError`.
+    getServiceRoleSupabase.mockImplementationOnce(() => {
+      throw new TypeError('Invalid URL');
+    });
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({
+      code: 'library_unavailable',
+      missing: 'authorization',
+    });
+  });
+
+  it('wraps an authorisation crash in the envelope (gh#329 R2)', async () => {
+    resolveReadAccess.mockRejectedValue(new Error('supabase client exploded'));
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({
+      code: 'library_unavailable',
+      missing: 'authorization',
+    });
+  });
+
   it('checks the schema before querying', async () => {
     qdrantMock.getCollection.mockRejectedValue(new Error('404'));
     expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({

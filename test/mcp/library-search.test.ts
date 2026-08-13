@@ -168,6 +168,24 @@ describe('preflight (gh#329 T5)', () => {
       missing: 'member_id',
     });
   });
+
+  // gh#329 review R2: a present-but-malformed URL is a misconfiguration, and it
+  // has to be named here. Left to the client constructors it surfaces as a
+  // plain `TypeError` raised outside the handler's classification, so the SDK
+  // sends the caller a bare message instead of the `{error:{code,...}}` body —
+  // and in proxy mode, where `isError` is dropped, that reads as success.
+  it.each(['qdrant_url', 'supabase_url'])('names %s when it is not a URL', (field) => {
+    expect(codeOf(() => assertLibraryConfigured({ ...full, [field]: 'not-a-url' } as ServerConfig))).toEqual({
+      code: 'library_not_configured',
+      missing: field,
+    });
+  });
+
+  it('accepts a URL with a port and a path prefix', () => {
+    expect(() =>
+      assertLibraryConfigured({ ...full, qdrant_url: 'http://localhost:6333/qdrant' } as ServerConfig),
+    ).not.toThrow();
+  });
 });
 
 describe('authorisation (gh#329 T6)', () => {

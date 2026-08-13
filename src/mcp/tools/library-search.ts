@@ -344,3 +344,93 @@ export async function searchLibrary(
 
   return { points, scopedCount: count };
 }
+
+export interface LibraryHit {
+  title: string;
+  page: number;
+  identifier: string | null;
+  lang: string | null;
+  year: number | null;
+  work_id: string | null;
+  chunk_text: string;
+  contextual_text: string | null;
+  score: number;
+}
+
+export interface LibraryResult {
+  results: LibraryHit[];
+  /** Always present, so a partial drop is visible rather than silent. */
+  dropped_uncitable: number;
+  /** Set only when a healthy corpus was fully excluded by the caller's filters. */
+  excluded_by_filters?: true;
+}
+
+/** Fields without which a passage cannot be cited, in report order. */
+const CITATION_FIELDS = ['chunk_text', 'title', 'page'] as const;
+
+function firstMissingCitationField(
+  payload: Record<string, unknown> | undefined,
+): (typeof CITATION_FIELDS)[number] | null {
+  if (!payload) return 'chunk_text';
+  if (typeof payload.chunk_text !== 'string' || payload.chunk_text.trim() === '') {
+    return 'chunk_text';
+  }
+  if (typeof payload.title !== 'string' || payload.title.trim() === '') return 'title';
+  if (!Number.isInteger(payload.page)) return 'page';
+  return null;
+}
+
+/**
+ * Map raw points to the published response shape, dropping anything that
+ * cannot be cited.
+ *
+ * A hit needs verbatim `chunk_text`, a `title`, and an integer `page`;
+ * `identifier` and `year` are legitimately null across part of the corpus.
+ * `contextual_text` is an LLM-written retrieval aid from ingest — it is
+ * returned and labelled as such, never as the source text, because an LLM
+ * paraphrase of a standard is not the standard.
+ *
+ * An all-uncitable batch is a rebuild condition rather than an empty list: the
+ * one thing this tool may not do is let a broken library read as "no evidence".
+ */
+export function toLibraryResult(points: unknown[], scopedCount?: number): LibraryResult {
+  const results: LibraryHit[] = [];
+  let dropped = 0;
+  let firstMissing: string | null = null;
+
+  for (const raw of points) {
+    const point = raw as { score?: number; payload?: Record<string, unknown> };
+    const missing = firstMissingCitationField(point.payload);
+    if (missing) {
+      dropped += 1;
+      firstMissing ??= missing;
+      continue;
+    }
+    const p = point.payload as Record<string, unknown>;
+    results.push({
+      title: p.title as string,
+      page: p.page as number,
+      identifier: (p.identifier as string) ?? null,
+      lang: (p.lang as string) ?? null,
+      year: (p.year as number) ?? null,
+      work_id: (p.decision_id as string) ?? null,
+      chunk_text: p.chunk_text as string,
+      contextual_text: (p.contextual_text as string) ?? null,
+      score: point.score ?? 0,
+    });
+  }
+
+  if (points.length > 0 && results.length === 0) {
+    throw new LibraryError(
+      'library_rebuild_required',
+      `payload:${firstMissing ?? 'chunk_text'}`,
+      'The reference library returned passages that cannot be cited; it needs reingesting.',
+    );
+  }
+
+  return {
+    results,
+    dropped_uncitable: dropped,
+    ...(points.length === 0 && (scopedCount ?? 0) > 0 ? { excluded_by_filters: true as const } : {}),
+  };
+}

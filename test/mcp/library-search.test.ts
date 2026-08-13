@@ -14,6 +14,7 @@ import {
   assertLibraryReadable,
   assertLibrarySchema,
   searchLibrary,
+  toLibraryResult,
 } from '../../src/mcp/tools/library-search.js';
 import type { ServerConfig } from '../../src/types.js';
 
@@ -408,5 +409,66 @@ describe('verify-on-empty (gh#329 T9)', () => {
     const q = makeQdrant([HIT], 16344);
     await searchLibrary(q as never, LIB, { query: 'x' });
     expect(q.count).not.toHaveBeenCalled();
+  });
+});
+
+describe('citation validation (gh#329 T10)', () => {
+  const hitWithout = (key: string) => {
+    const clone = structuredClone(HIT) as Record<string, never>;
+    delete (clone.payload as Record<string, unknown>)[key];
+    return clone;
+  };
+
+  it('maps a healthy payload to the documented shape with chunk_text verbatim', () => {
+    expect(toLibraryResult([HIT])).toEqual({
+      results: [
+        {
+          title: 'Caterpillar Performance Handbook',
+          page: 124,
+          identifier: 'cat-perf-48',
+          lang: 'en',
+          year: 2018,
+          work_id: 'work-1',
+          chunk_text: 'Rolling resistance is about 10 kg/metric ton on a firm surface.',
+          contextual_text: 'Table of rolling resistance factors by surface.',
+          score: 0.45,
+        },
+      ],
+      dropped_uncitable: 0,
+    });
+  });
+
+  it('drops an uncitable hit and reports the count rather than hiding it', () => {
+    const out = toLibraryResult([HIT, hitWithout('page'), HIT]);
+    expect(out.results).toHaveLength(2);
+    expect(out.dropped_uncitable).toBe(1);
+  });
+
+  it('treats an all-uncitable batch as a rebuild condition, not an empty result', () => {
+    // A passage with no verbatim text is the paraphrase-as-evidence failure the
+    // feature exists to prevent, so it must never surface as "no evidence".
+    expect(() => toLibraryResult([hitWithout('chunk_text'), hitWithout('chunk_text')])).toThrow(
+      expect.objectContaining({
+        code: 'library_rebuild_required',
+        missing: 'payload:chunk_text',
+      }) as never,
+    );
+  });
+
+  it('keeps hits whose identifier and year are null', () => {
+    const sparse = structuredClone(HIT) as Record<string, never>;
+    (sparse.payload as Record<string, unknown>).identifier = null;
+    (sparse.payload as Record<string, unknown>).year = null;
+    const out = toLibraryResult([sparse]);
+    expect(out.dropped_uncitable).toBe(0);
+    expect(out.results[0]).toMatchObject({ identifier: null, year: null });
+  });
+
+  it('marks a filter-excluded empty result rather than returning a bare empty list', () => {
+    expect(toLibraryResult([], 16344)).toEqual({
+      results: [],
+      dropped_uncitable: 0,
+      excluded_by_filters: true,
+    });
   });
 });

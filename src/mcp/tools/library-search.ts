@@ -16,6 +16,7 @@
  */
 
 import type { ServerConfig, ValisConfig } from '../../types.js';
+import type { ReadAccess } from '../../lib/project-access.js';
 
 export type LibraryErrorCode =
   | 'library_not_configured'
@@ -103,4 +104,40 @@ export function assertLibraryConfigured(
       `The reference library is not configured on this server: ${missing} is not set.`,
     );
   }
+}
+
+/**
+ * Gate the read on the library project's own access rules — membership OR
+ * `visibility = 'public'` (feature 033), so a cross-org caller can be
+ * legitimately authorised.
+ *
+ * Takes the resolver as a parameter rather than calling it directly so the
+ * three outcomes can be asserted without a Supabase double. The distinction
+ * that matters: `'deny'` is an authoritative negative, `'unavailable'` means
+ * the question was never answered — reporting the second as the first would
+ * tell a legitimate reader "you may not" during an outage.
+ *
+ * On any non-`allow` outcome this throws before a Qdrant client is built, so
+ * an unauthorised caller produces no cluster traffic at all.
+ */
+export async function assertLibraryReadable(
+  resolve: () => Promise<ReadAccess>,
+  libraryProjectId: string,
+): Promise<void> {
+  const access = await resolve();
+  if (access === 'allow') return;
+
+  if (access === 'unavailable') {
+    throw new LibraryError(
+      'library_unavailable',
+      'authorization',
+      'Could not determine access to the reference library; the authorization backend is unavailable.',
+    );
+  }
+
+  throw new LibraryError(
+    'library_forbidden',
+    `project:${libraryProjectId}`,
+    'You do not have access to the reference library.',
+  );
 }

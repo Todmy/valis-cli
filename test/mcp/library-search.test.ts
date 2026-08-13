@@ -11,6 +11,7 @@ import {
   LibraryError,
   assertLibraryConfigured,
   resolveLibraryProjectId,
+  assertLibraryReadable,
 } from '../../src/mcp/tools/library-search.js';
 import type { ServerConfig } from '../../src/types.js';
 
@@ -133,5 +134,37 @@ describe('preflight (gh#329 T5)', () => {
       code: 'library_not_configured',
       missing: 'member_id',
     });
+  });
+});
+
+describe('authorisation (gh#329 T6)', () => {
+  const codeOf = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      return null;
+    } catch (err) {
+      return err instanceof LibraryError ? { code: err.code, missing: err.missing } : err;
+    }
+  };
+
+  it('passes through on allow', async () => {
+    await expect(
+      assertLibraryReadable(async () => 'allow', 'lib-proj'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('reports deny as library_forbidden', async () => {
+    expect(await codeOf(() => assertLibraryReadable(async () => 'deny', 'lib-proj'))).toEqual({
+      code: 'library_forbidden',
+      missing: 'project:lib-proj',
+    });
+  });
+
+  it('reports unavailable as library_unavailable, never as a denial', async () => {
+    // A Supabase outage is not an authorisation decision. Reporting it as one
+    // would be the feature's own failure mode, one layer up.
+    expect(
+      await codeOf(() => assertLibraryReadable(async () => 'unavailable', 'lib-proj')),
+    ).toEqual({ code: 'library_unavailable', missing: 'authorization' });
   });
 });

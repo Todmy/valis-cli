@@ -365,6 +365,12 @@ export interface ValisConfig {
   project_id?: string | null;
   /** Active project name from resolved config. Null when no project configured. */
   project_name?: string | null;
+  /**
+   * gh#329 — the project that owns the read-only reference library
+   * (`sources_v1`). Absent on installations with no library, which is a
+   * valid state, not a defect. Never accepted as a tool argument.
+   */
+  library_project_id?: string;
 }
 
 /**
@@ -383,6 +389,12 @@ export interface ServerConfig {
   qdrant_api_key: string;
   api_key: string;
   member_api_key: string;
+  /**
+   * gh#329 — the project that owns the read-only reference library
+   * (`sources_v1`). Absent on installations with no library, which is a
+   * valid state, not a defect. Never accepted as a tool argument.
+   */
+  library_project_id?: string;
   project_id?: string | null;
   project_name?: string | null;
   /**

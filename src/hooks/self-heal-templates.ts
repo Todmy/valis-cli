@@ -16,7 +16,33 @@ export const GLOBAL_KR_END = '<!-- valis:knowledge-retention:end -->';
  *
  * Format: ISO-date plus a slug. String-comparable lex order.
  */
-export const KR_POLICY_VERSION = '2026-05-19-active-project-scope';
+/**
+ * Every policy generation ever shipped, oldest first; the last entry IS the
+ * current version. Bumping the policy means appending here — there is no other
+ * way to change `KR_POLICY_VERSION`.
+ *
+ * That indirection exists to make one specific silent failure impossible. Each
+ * superseded generation must also have its body hash recorded in self-heal's
+ * `HISTORICAL_*_HASHES`, or every install still carrying that generation fails
+ * the historical-match gate, is classified `user_customized`, and never
+ * receives the new policy — with nothing reporting that it didn't. Because the
+ * two lists are now length-coupled (asserted in
+ * `test/hooks/library-routing-policy.test.ts`), a bump that forgets the hashes
+ * fails the suite instead of stranding users.
+ *
+ * The first two entries predate the version marker itself; they name the
+ * generations whose hashes were recorded retroactively, so index N here lines
+ * up with index N of each historical hash list.
+ */
+export const POLICY_VERSION_HISTORY = [
+  'pre-0.5.4',
+  '0.5.4-mirror-write',
+  '2026-05-19-active-project-scope',
+  '2026-08-14-reference-library-routing',
+] as const;
+
+export const KR_POLICY_VERSION: string =
+  POLICY_VERSION_HISTORY[POLICY_VERSION_HISTORY.length - 1];
 export const KR_POLICY_MARKER_PREFIX = '<!-- valis:policy-version:';
 export const KR_POLICY_MARKER_SUFFIX = ' -->';
 
@@ -123,6 +149,31 @@ const KR_LINES = [
   '   CLI stdio path: tell them to run `valis whoami` and `valis login`.',
   '3. **Wait** for the user to recover or to explicitly waive Valis ("just use',
   '   qdrant for now"). Explicit waiver is fine; silent drift is not.',
+  '',
+  '## Reference library — external sources, when a project has one',
+  '',
+  'Some projects carry a read-only corpus of externally authored works',
+  '(standards, handbooks, papers) attached alongside their decisions, reachable',
+  'via `library_search` and `library_list`. Valis holds what the team decided;',
+  'the library holds what the literature says. Most projects have none —',
+  '`library_list` answering `has_library: false` is a legitimate state, not a',
+  'fault. To read the library of a project other than the active one, pass',
+  '`target_project_id` explicitly; without it the call cannot resolve which',
+  'shelf you mean.',
+  '',
+  'Three rules no tool description can state, because each governs the boundary',
+  'between two tools:',
+  '',
+  '1. **A hybrid question calls both.** "Why did we pick X" is a decision AND a',
+  '   citation — run `valis_search` and `library_search`, then answer. Reaching',
+  '   for whichever tool the phrasing sounds closest to is the failure mode.',
+  '2. **Zero hits in Valis does not close the question.** Never write "there is',
+  '   nothing on this" until the library has been asked too.',
+  '3. **Cite `chunk_text`, never `contextual_text`** — the second is an',
+  '   LLM-written retrieval aid from ingest, not source text. Scores are',
+  '   rank-derived, so a healthy library returns its nearest passages whether',
+  '   or not they address the question. Read the passage; do not trust the',
+  '   number.',
   '',
   '## When to use which',
   '',

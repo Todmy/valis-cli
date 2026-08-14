@@ -19,6 +19,21 @@ Call \`valis_store\` when:
 
 When storing, always include: \`type\` (decision/constraint/pattern/lesson), \`summary\` (max 100 chars), \`affects\` (list of modules).
 
+### Reference library — external sources, when a project has one
+Some projects carry a read-only corpus of externally authored works (standards,
+handbooks) alongside their decisions, reachable via \`library_search\` and
+\`library_list\`. Valis holds what the team decided; the library holds what the
+literature says. Most projects have none — \`has_library: false\` is a legitimate
+state. Pass \`target_project_id\` to read a project other than the active one.
+
+1. **A hybrid question calls both tools.** "Why did we pick X" is a decision AND
+   a citation — run \`valis_search\` and \`library_search\`, then answer.
+2. **Zero hits in Valis does not close the question.** Never write "there is
+   nothing on this" until the library has been asked too.
+3. **Cite \`chunk_text\`, never \`contextual_text\`** — the second is a retrieval
+   aid written at ingest, not source text. Scores are rank-derived, so nearest
+   is not the same as relevant.
+
 ### Context loading
 Call \`valis_context\` at the start of every new task or when switching to a different part of the codebase.
 

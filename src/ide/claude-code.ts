@@ -83,6 +83,28 @@ Only legitimate Qdrant/mem0-ONLY writes (no Valis mirror needed):
 If \`valis_store\` fails: STOP. Follow the failure-mode contract below — do NOT
 write only to Qdrant/mem0. That is the silent-drift bug.
 
+### Reference library — external sources, when a project has one
+Some projects carry a read-only corpus of externally authored works (standards,
+handbooks, papers) attached alongside their decisions, reachable via
+\`library_search\` and \`library_list\`. Valis holds what the team decided; the
+library holds what the literature says. Most projects have none — \`library_list\`
+answering \`has_library: false\` is a legitimate state, not a fault. To read the
+library of a project other than the active one, pass \`target_project_id\`
+explicitly; without it the call cannot resolve which shelf you mean.
+
+Three rules no tool description can state, because each governs the boundary
+between two tools:
+
+1. **A hybrid question calls both.** "Why did we pick X" is a decision AND a
+   citation — run \`valis_search\` and \`library_search\`, then answer. Reaching
+   for whichever tool the phrasing sounds closest to is the failure mode.
+2. **Zero hits in Valis does not close the question.** Never write "there is
+   nothing on this" until the library has been asked too.
+3. **Cite \`chunk_text\`, never \`contextual_text\`** — the second is an
+   LLM-written retrieval aid from ingest, not source text. Scores are
+   rank-derived, so a healthy library returns its nearest passages whether or
+   not they address the question. Read the passage; do not trust the number.
+
 ### Context loading
 Call \`valis_context\` at the start of every new task or when switching to a different part of the work.
 

@@ -11,7 +11,15 @@ export async function injectAgentsMdMarkers(projectDir: string): Promise<void> {
 
 Use \`valis_search\` before making decisions.
 Use \`valis_store\` when decisions are made.
-Use \`valis_context\` at the start of each task.`;
+Use \`valis_context\` at the start of each task.
+
+Some projects also carry a read-only reference library of external works
+(\`library_search\` / \`library_list\`; \`has_library: false\` means none is
+attached, which is legitimate). A question that is both a decision and a
+citation calls both tools, and an empty \`valis_search\` result is not evidence
+of absence until the library has been asked. Pass \`target_project_id\` to read
+a project other than the active one. Cite \`chunk_text\`, never
+\`contextual_text\`.`;
 
   let content = '';
   try {

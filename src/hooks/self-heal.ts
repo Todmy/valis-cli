@@ -57,16 +57,23 @@ import {
  * To add an entry on a future policy bump: hash the OLD body with the
  * `contentHash` helper below before changing it, and append the result.
  *
+ * Index N corresponds to index N of `POLICY_VERSION_HISTORY` — one entry per
+ * superseded generation, in order. The suite asserts that coupling, so a bump
+ * that appends a version without appending a hash fails rather than silently
+ * stranding every install still on the old policy.
+ *
  * Mutable (not `readonly`) only so tests can append synthetic hashes
  * without owning the historical body strings — see `__internal`.
  */
 const HISTORICAL_GLOBAL_KR_HASHES: string[] = [
   '45038b086df136de', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
   'a2cbf7b74f35a0b7', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
+  '582d1352c9b10386', // 2026-05-19-active-project-scope — before the reference-library routing rule (gh#338)
 ];
 const HISTORICAL_AGENT_INSTRUCTIONS_HASHES: string[] = [
   '46818720c327567f', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
   'a0619db7222f5279', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
+  '1f03007493359e4c', // 2026-05-19-active-project-scope — before the reference-library routing rule (gh#338)
 ];
 
 function contentHash(s: string): string {

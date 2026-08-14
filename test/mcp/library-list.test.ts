@@ -227,7 +227,7 @@ describe('listLibrary — schema guard runs first', () => {
 });
 
 describe('listLibrary — truncation is stated, never silent', () => {
-  it('caps the shelf at 200 works and says so', async () => {
+  it('caps the shelf at 200 works and says the list may be incomplete', async () => {
     const titles = Array.from({ length: 201 }, (_, i) => ({ value: `Work ${i}`, count: 201 - i }));
     const client = makeClient({ total: 20000, titles });
     const out = await listLibrary(client, PROJECT);
@@ -261,10 +261,13 @@ describe('listLibrary — truncation is stated, never silent', () => {
     expect(out.untitled_passages).toBe(70);
   });
 
-  // gh#334 review round 4: truncation was decided after unusable buckets were
-  // filtered out, so one blank bucket among the 201 returned dropped the count
-  // to 200 and the shelf omitted works while claiming to be complete.
-  it('reports truncation even when an unusable bucket masks the count', async () => {
+  // gh#334 review rounds 4-5. Truncation was decided after unusable buckets
+  // were filtered out, so one blank bucket among the 201 returned dropped the
+  // count to 200 and the shelf claimed completeness it could not know. The flag
+  // reports a saturated facet — "I stopped counting here" — not a proven cut:
+  // at the ceiling, whether another distinct title exists is exactly what the
+  // cluster declined to answer.
+  it('flags a saturated facet even when an unusable bucket masks the count', async () => {
     const titles: Array<{ value: unknown; count?: number }> = [
       { value: '', count: 7 },
       ...Array.from({ length: 200 }, (_, i) => ({ value: `Work ${i}`, count: 4 })),

@@ -22,7 +22,7 @@ import {
   type QdrantLike,
 } from './library-search.js';
 
-/** Facet ceiling. A shelf longer than this is reported as truncated, not cut silently. */
+/** Facet ceiling. A shelf that reaches it is reported as possibly cut, never cut silently. */
 const MAX_WORKS = 200;
 
 export interface LibraryListArgs {
@@ -47,7 +47,17 @@ export interface LibraryListResult {
   total_passages: number;
   works: LibraryWork[];
   languages: string[];
-  /** Set only when more distinct works exist than `works` could carry. */
+  /**
+   * Set when the facet hit its ceiling, i.e. `works` may be incomplete.
+   *
+   * Deliberately "may", not "is" (gh#334 review round 5). A saturated facet is
+   * the only evidence available: at 201 returned buckets the cluster stopped
+   * enumerating, so whether a 202nd distinct title exists is unknown — and the
+   * previous, stronger reading could not be honoured without a second facet
+   * call that is subject to the same ceiling. Claiming certainty either way
+   * would be the invented half of the answer; an explicit "I stopped counting
+   * here" is what a caller can actually act on.
+   */
   truncated?: true;
   /**
    * Passages inside the scope that no listed work accounts for — points whose
@@ -126,7 +136,7 @@ export async function listLibrary(
     };
   }
 
-  // One over the ceiling: the extra hit is how truncation is detected without
+  // One over the ceiling: a 201st bucket is how saturation is detected without
   // a second round trip, and it is dropped before the result is returned.
   const rawTitles = await client.facet(SOURCES_COLLECTION, {
     key: 'title',

@@ -151,7 +151,12 @@ export async function listLibrary(
 
   const languages = await facetValues(client, libraryProjectId, 'lang', 50);
 
-  const truncated = titles.length > MAX_WORKS;
+  // Saturation is read from the RAW bucket count, not the filtered one
+  // (gh#334 review round 4). Filtering first meant a single unusable bucket
+  // among the 201 returned dropped the usable count to 200, and the shelf then
+  // omitted works while reporting no truncation — the silent cut this ceiling
+  // exists to make visible.
+  const truncated = (rawTitles.hits ?? []).length > MAX_WORKS;
   const works = titles
     .slice(0, MAX_WORKS)
     .map(({ value, count }) => ({ title: value, passages: count }))

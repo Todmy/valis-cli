@@ -261,6 +261,20 @@ describe('listLibrary — truncation is stated, never silent', () => {
     expect(out.untitled_passages).toBe(70);
   });
 
+  // gh#334 review round 4: truncation was decided after unusable buckets were
+  // filtered out, so one blank bucket among the 201 returned dropped the count
+  // to 200 and the shelf omitted works while claiming to be complete.
+  it('reports truncation even when an unusable bucket masks the count', async () => {
+    const titles: Array<{ value: unknown; count?: number }> = [
+      { value: '', count: 7 },
+      ...Array.from({ length: 200 }, (_, i) => ({ value: `Work ${i}`, count: 4 })),
+    ];
+    const client = makeClient({ total: 5000, blankTitle: 7, titles });
+    const out = await listLibrary(client, PROJECT);
+    expect(out.works).toHaveLength(200);
+    expect(out.truncated).toBe(true);
+  });
+
   it('requests one over the cap, which is how truncation is detected', async () => {
     const client = makeClient({ total: 5, titles: [{ value: 'A', count: 5 }] });
     await listLibrary(client, PROJECT);

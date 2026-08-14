@@ -19,6 +19,7 @@ import type { ServerConfig } from '../../types.js';
 import type { ReadAccess } from '../../lib/project-access.js';
 import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-access.js';
 import { getQdrantClient } from '../../cloud/qdrant/client.js';
+import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { loadConfig } from '../../config/store.js';
 
 export type LibraryErrorCode =
@@ -517,6 +518,7 @@ export async function withLibrary<T>(
   args: { target_project_id?: string } | undefined,
   configOverride: ServerConfig | undefined,
   op: (client: QdrantLike, libraryProjectId: string) => Promise<T>,
+  tool = 'library_search',
 ): Promise<T> {
   const fileConfig = configOverride ? undefined : ((await loadConfig()) ?? undefined);
   const base = (configOverride ?? (fileConfig as unknown as ServerConfig) ?? {}) as ServerConfig;
@@ -544,6 +546,36 @@ export async function withLibrary<T>(
       () => resolveReadAccess(supabase, config.member_id, libraryProjectId),
       libraryProjectId,
     );
+
+    // Feature 033 FR-015/SC-005 — a project's owner must be able to observe who
+    // read across into it. `valis_search` and `valis_context` already emit this
+    // on their cross-org path (`search.ts:242`, `context.ts:305`); a library
+    // read is the same act against the same projects and was silently exempt
+    // until gh#334 gave it a cross-project path at all.
+    //
+    // Best-effort by the same rule they follow: an audit failure must not turn
+    // a successful read into an error, which is why it carries its own catch
+    // rather than falling through to the stage classifier below.
+    if (libraryProjectId !== base.project_id) {
+      try {
+        await storeAuditEntry(supabase, {
+          id: crypto.randomUUID(),
+          org_id: config.org_id,
+          project_id: libraryProjectId,
+          member_id: config.member_id,
+          action: 'cross_org_read',
+          target_type: 'project',
+          target_id: libraryProjectId,
+          previous_state: null,
+          new_state: { tool },
+          reason: null,
+        });
+      } catch (err) {
+        console.error(
+          `[library] audit emit failed for cross_org_read: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     stage = 'retrieval';

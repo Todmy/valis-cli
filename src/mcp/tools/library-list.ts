@@ -136,7 +136,10 @@ export async function handleLibraryList(
   args: LibraryListArgs,
   configOverride?: ServerConfig,
 ): Promise<LibraryListResult> {
-  return withLibrary(args, configOverride, (client, libraryProjectId) =>
-    listLibrary(client, libraryProjectId),
+  return withLibrary(
+    args,
+    configOverride,
+    (client, libraryProjectId) => listLibrary(client, libraryProjectId),
+    'library_list',
   );
 }

@@ -30,6 +30,11 @@ vi.mock('../../src/config/store.js', () => ({
   loadConfig: async () => null,
 }));
 
+const storeAuditEntry = vi.fn();
+vi.mock('../../src/cloud/supabase/audit.js', () => ({
+  storeAuditEntry: (...a: unknown[]) => storeAuditEntry(...(a as [])),
+}));
+
 import { handleLibrarySearch, LibraryError } from '../../src/mcp/tools/library-search.js';
 import type { ServerConfig } from '../../src/types.js';
 
@@ -277,6 +282,51 @@ describe('handleLibrarySearch — project scoping (gh#334)', () => {
       ),
     ).toEqual({ code: 'library_forbidden', missing: 'project:other-proj' });
     expect(qdrantMock.query).not.toHaveBeenCalled();
+  });
+
+  // Feature 033 FR-015/SC-005: a project owner must be able to see who read
+  // across into their project. valis_search and valis_context already emit
+  // this; a library read is the same act and must not be exempt.
+  it('audits a cross-project read the way valis_search does', async () => {
+    await handleLibrarySearch(
+      { query: 'x', target_project_id: 'other-proj' },
+      { ...CONFIG, project_id: 'caller-proj' },
+    );
+    const entry = storeAuditEntry.mock.calls[0][1] as Record<string, unknown>;
+    expect(entry).toMatchObject({
+      action: 'cross_org_read',
+      project_id: 'other-proj',
+      target_id: 'other-proj',
+      member_id: 'member-1',
+      new_state: { tool: 'library_search' },
+    });
+  });
+
+  it('does not audit a read of the caller\'s own library', async () => {
+    await handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: 'caller-proj' });
+    expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  // The audit is observability, not a gate. A failing audit backend must not
+  // convert a successful, authorised read into an error.
+  it('returns the results when the audit write fails', async () => {
+    storeAuditEntry.mockRejectedValue(new Error('audit table down'));
+    const out = await handleLibrarySearch(
+      { query: 'x', target_project_id: 'other-proj' },
+      { ...CONFIG, project_id: 'caller-proj' },
+    );
+    expect(out.results).toHaveLength(1);
+  });
+
+  it('does not audit a read it refused', async () => {
+    resolveReadAccess.mockResolvedValue('deny');
+    await errOf(() =>
+      handleLibrarySearch(
+        { query: 'x', target_project_id: 'other-proj' },
+        { ...CONFIG, project_id: 'caller-proj' },
+      ),
+    );
+    expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 
   it('reports a missing active project as project_id, not as a deployment setting', async () => {

@@ -698,12 +698,26 @@ export async function withLibrary<T>(
         `The reference library needs a payload index on "${field}".`,
       );
     }
+    // Carry the underlying message. A named code without it says only "the
+    // query did not work", which is exactly as far as an operator can get —
+    // and the first real deployment of this tool stalled there: a permissions
+    // rejection and a malformed query body are indistinguishable, and neither
+    // is reproducible from the tool's own output (gh#337).
+    //
+    // The text is bounded and safe to relay: it comes from the cluster, and
+    // the only caller-supplied value it can echo is the caller's own query.
     throw new LibraryError(
       'library_unavailable',
       'query_failed',
-      'The reference library could not be queried.',
+      `The reference library could not be queried: ${truncateCause(message)}`,
     );
   }
+}
+
+/** Bound a relayed upstream message so one long stack cannot dominate the envelope. */
+function truncateCause(message: string): string {
+  const flat = message.replace(/\s+/g, ' ').trim();
+  return flat.length > 300 ? `${flat.slice(0, 300)}…` : flat || 'no message from the cluster';
 }
 
 /** MCP entry point for `library_search`. */

@@ -482,6 +482,36 @@ describe('handleLibrarySearch — stage classification (gh#334 R4)', () => {
  * cross into another org. `valis_search` closes the same hole at
  * `search.ts:209-213`.
  */
+// gh#337. A named code with no cause told an operator only that the query did
+// not work — a permissions rejection and a malformed body looked identical, and
+// neither was reproducible from the tool's output.
+describe('handleLibrarySearch — a query failure names its cause', () => {
+  it('relays the cluster message inside the envelope', async () => {
+    qdrantMock.query.mockRejectedValue(new Error('Forbidden: inference is not enabled for this key'));
+    try {
+      await handleLibrarySearch({ query: 'x' }, CONFIG);
+      throw new Error('expected a LibraryError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(LibraryError);
+      const payload = JSON.parse((e as LibraryError).message);
+      expect(payload.error.missing).toBe('query_failed');
+      expect(payload.error.message).toContain('inference is not enabled for this key');
+    }
+  });
+
+  it('bounds a long message rather than pasting a whole stack', async () => {
+    qdrantMock.query.mockRejectedValue(new Error('x'.repeat(900)));
+    try {
+      await handleLibrarySearch({ query: 'x' }, CONFIG);
+      throw new Error('expected a LibraryError');
+    } catch (e) {
+      const payload = JSON.parse((e as LibraryError).message);
+      expect(payload.error.message.length).toBeLessThan(400);
+      expect(payload.error.message).toContain('…');
+    }
+  });
+});
+
 describe('handleLibrarySearch — cross-org reads are audited by org, not by signal', () => {
   // gh#334 review round 3. Provenance used to be inferred from HOW the scope
   // arrived — an explicit target, or the per-agent endpoint's forced flag. Both

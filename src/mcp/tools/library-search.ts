@@ -17,11 +17,19 @@
 
 import type { ServerConfig } from '../../types.js';
 import type { ReadAccess } from '../../lib/project-access.js';
-import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-access.js';
+import {
+  getServiceRoleSupabase,
+  resolveProjectOrgId,
+  resolveReadAccess,
+} from '../../lib/project-access.js';
 import { getQdrantClient } from '../../cloud/qdrant/client.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { loadConfig } from '../../config/store.js';
-import { findProjectConfigPath, findProjectMarker } from '../../config/project.js';
+import {
+  findPresentProjectMarkerPath,
+  findProjectConfigPath,
+  findProjectMarker,
+} from '../../config/project.js';
 
 export type LibraryErrorCode =
   | 'library_not_configured'
@@ -520,7 +528,8 @@ export function toLibraryResult(points: unknown[], scopedCount?: number): Librar
  */
 async function resolveStdioProjectId(base: ServerConfig): Promise<string | null | undefined> {
   const start = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-  const markerPath = await findProjectConfigPath(start).catch(() => null);
+  const markerPath =
+    (await findProjectConfigPath(start).catch(() => null)) ?? (await findPresentProjectMarkerPath(start));
   if (!markerPath) return base.project_id;
 
   const marker = await findProjectMarker(start);
@@ -606,23 +615,31 @@ export async function withLibrary<T>(
     // Best-effort by the same rule they follow: an audit failure must not turn
     // a successful read into an error, which is why it carries its own catch
     // rather than falling through to the stage classifier below.
-    // Same rule `valis_search` applies (`search.ts:209-213`): a scope that did
-    // NOT come from the caller's own membership resolution is a cross-org read.
-    // Two such scopes, and the second is why a plain inequality is not enough —
-    // the per-agent endpoint REPLACES `project_id` with the forced target, so
-    // target and active are equal and an inequality test sees nothing to audit
-    // (gh#334 review round 2, N3).
     //
-    // Compared against the RESOLVED active project rather than `base.project_id`
-    // because on stdio the latter is the global config file, which logged a
-    // plain read of the user's own `.valis.json` project as a cross-org read.
+    // Whether the read crosses an org is decided by asking which org owns the
+    // target — not by inferring it from how the scope arrived (gh#334 review
+    // round 3). The inference was wrong in both directions: a per-agent
+    // endpoint sets `forced_project_id` unconditionally, so a member reading
+    // THEIR OWN project was logged as a cross-org read; and stdio can resolve a
+    // local marker straight onto another org's public project, with no explicit
+    // target and no forced flag, so a genuine cross-org read went unlogged.
+    //
+    // `null` (org unknown — missing row or failed lookup) is deliberately not
+    // equal to the caller's org, so a fault over-records rather than going
+    // quiet. The action is named `cross_org_read`, so same-org reads of a
+    // different project are correctly not audited here.
+    //
+    // Two independent conditions, not one. Crossing an org is the guarantee
+    // feature 033 names; deliberately reaching into another project by naming
+    // it is the read-across `valis_search` already records (`search.ts:209-213`),
+    // and dropping it here would make the library quieter than the tool it is
+    // meant to match.
+    const targetOrgId = await resolveProjectOrgId(supabase, libraryProjectId);
     const namedTarget = args?.target_project_id?.trim();
-    const crossScope =
-      namedTarget && namedTarget !== activeProjectId
-        ? namedTarget
-        : base.forced_project_id || undefined;
+    const crossOrg = targetOrgId !== config.org_id;
+    const namedAnotherProject = Boolean(namedTarget && namedTarget !== activeProjectId);
 
-    if (crossScope) {
+    if (crossOrg || namedAnotherProject) {
       try {
         await storeAuditEntry(supabase, {
           id: crypto.randomUUID(),

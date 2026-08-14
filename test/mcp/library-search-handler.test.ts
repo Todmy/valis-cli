@@ -15,6 +15,7 @@ const qdrantMock = {
   count: vi.fn(),
 };
 const resolveReadAccess = vi.fn();
+const resolveProjectOrgId = vi.fn(async () => 'org-1' as string | null);
 const getServiceRoleSupabase = vi.fn(() => ({ brand: 'service-role' }));
 
 vi.mock('../../src/cloud/qdrant/client.js', () => ({
@@ -24,6 +25,7 @@ vi.mock('../../src/cloud/qdrant/client.js', () => ({
 vi.mock('../../src/lib/project-access.js', () => ({
   getServiceRoleSupabase: (...a: unknown[]) => getServiceRoleSupabase(...(a as [])),
   resolveReadAccess: (...a: unknown[]) => resolveReadAccess(...(a as [])),
+  resolveProjectOrgId: (...a: unknown[]) => resolveProjectOrgId(...(a as [])),
 }));
 
 const loadConfig = vi.fn(async () => null as unknown);
@@ -33,9 +35,11 @@ vi.mock('../../src/config/store.js', () => ({
 
 const findProjectConfigPath = vi.fn(async () => null as unknown);
 const findProjectMarker = vi.fn(async () => null as unknown);
+const findPresentProjectMarkerPath = vi.fn(async () => null as unknown);
 vi.mock('../../src/config/project.js', () => ({
   findProjectConfigPath: () => findProjectConfigPath(),
   findProjectMarker: () => findProjectMarker(),
+  findPresentProjectMarkerPath: () => findPresentProjectMarkerPath(),
 }));
 
 const getQdrantClient = vi.fn(() => qdrantMock);
@@ -97,6 +101,8 @@ beforeEach(() => {
   loadConfig.mockResolvedValue(null);
   findProjectConfigPath.mockResolvedValue(null);
   findProjectMarker.mockResolvedValue(null);
+  findPresentProjectMarkerPath.mockResolvedValue(null);
+  resolveProjectOrgId.mockResolvedValue('org-1');
   delete process.env.CLAUDE_PROJECT_DIR;
   getQdrantClient.mockReturnValue(qdrantMock);
   // clearAllMocks clears calls, not implementations — a rejection set by one
@@ -394,6 +400,24 @@ describe('handleLibrarySearch — stdio project resolution (gh#334 R1)', () => {
     expect(resolveReadAccess.mock.calls[0][2]).toBe('global-proj');
   });
 
+  // gh#334 review round 3, N1. `findProjectConfigPath` catches every readFile
+  // failure — including EACCES — and keeps climbing, so an unreadable marker
+  // reached this code as "no marker" and fell through to the stale global
+  // project_id. A presence probe separates the two; an empty project_id is not
+  // a legitimate disagreement (the schema requires a UUID), so it fails closed.
+  it('refuses to fall back when a marker exists but cannot be read', async () => {
+    loadConfig.mockResolvedValue({ ...STDIO, project_id: 'stale-global' });
+    findProjectConfigPath.mockResolvedValue(null);
+    findPresentProjectMarkerPath.mockResolvedValue('/w/.valis.json');
+    findProjectMarker.mockResolvedValue(null);
+
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }))).toEqual({
+      code: 'library_not_configured',
+      missing: 'valis_project_marker',
+    });
+    expect(qdrantMock.query).not.toHaveBeenCalled();
+  });
+
   it('still lets an explicit target win over .valis.json', async () => {
     loadConfig.mockResolvedValue({ ...STDIO, project_id: 'global-proj' });
     findProjectConfigPath.mockResolvedValue('/w/.valis.json');
@@ -458,18 +482,45 @@ describe('handleLibrarySearch — stage classification (gh#334 R4)', () => {
  * cross into another org. `valis_search` closes the same hole at
  * `search.ts:209-213`.
  */
-describe('handleLibrarySearch — forced scope is audited (gh#334 R2/N3)', () => {
-  it('audits a forced cross-org read even though target equals active', async () => {
+describe('handleLibrarySearch — cross-org reads are audited by org, not by signal', () => {
+  // gh#334 review round 3. Provenance used to be inferred from HOW the scope
+  // arrived — an explicit target, or the per-agent endpoint's forced flag. Both
+  // directions were wrong, and both are pinned below.
+  it('audits a read of a project owned by another org', async () => {
+    resolveProjectOrgId.mockResolvedValue('org-2');
+    await handleLibrarySearch({ query: 'x', target_project_id: 'public-proj' }, CONFIG);
+    const entry = storeAuditEntry.mock.calls[0][1] as Record<string, unknown>;
+    expect(entry).toMatchObject({ action: 'cross_org_read', project_id: 'public-proj' });
+  });
+
+  // A local `.valis.json` can point straight at another org's public project:
+  // no explicit target, no forced flag, and previously no audit row at all.
+  it('audits a cross-org read that arrived with no explicit target', async () => {
+    resolveProjectOrgId.mockResolvedValue('org-2');
+    await handleLibrarySearch({ query: 'x' }, CONFIG);
+    expect(storeAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  // The per-agent endpoint sets `forced_project_id` unconditionally, so a
+  // member reading THEIR OWN project was reported as a cross-org read.
+  it('does not audit a forced scope that stays inside the caller\'s own org', async () => {
     await handleLibrarySearch(
       { query: 'x' },
       { ...CONFIG, project_id: 'forced-proj', forced_project_id: 'forced-proj' } as ServerConfig,
     );
-    const entry = storeAuditEntry.mock.calls[0][1] as Record<string, unknown>;
-    expect(entry).toMatchObject({ action: 'cross_org_read', project_id: 'forced-proj' });
+    expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 
-  it('still does not audit an ordinary read of the caller\'s own project', async () => {
+  it('does not audit an ordinary read of the caller\'s own project', async () => {
     await handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: 'own-proj' });
     expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  // An audit trail that goes quiet during a database fault is the same silent
+  // false absence in a new place, so an unknown org over-records.
+  it('audits when the target org cannot be established', async () => {
+    resolveProjectOrgId.mockResolvedValue(null);
+    await handleLibrarySearch({ query: 'x' }, CONFIG);
+    expect(storeAuditEntry).toHaveBeenCalledTimes(1);
   });
 });

@@ -141,6 +141,33 @@ export async function resolveReadAccess(
 }
 
 /**
+ * The org a project belongs to, for callers that already know they may read it
+ * and now need to know whether doing so crosses an organisation boundary
+ * (gh#334 review round 3).
+ *
+ * Returns `null` when the org cannot be established — a missing row, or a
+ * failed query. Callers must treat `null` as "not known to be the same org"
+ * rather than "same org": an audit trail that goes quiet during a database
+ * fault is the silent-false-absence failure in a new place, so the safe
+ * direction is to over-record, never to under-record.
+ */
+export async function resolveProjectOrgId(
+  supabase: ServiceRoleClient,
+  projectId: string,
+): Promise<string | null> {
+  if (!projectId) return null;
+
+  const { data, error } = await supabase
+    .from('projects')
+    .select('org_id')
+    .eq('id', projectId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return (data as { org_id?: string | null }).org_id ?? null;
+}
+
+/**
  * Write-side access resolver (issue #54).
  *
  * Returns true only when the caller is an actual member of the project.

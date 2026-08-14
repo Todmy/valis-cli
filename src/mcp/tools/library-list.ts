@@ -62,6 +62,11 @@ export interface LibraryListResult {
    * Not a thrown error: one damaged point must not make an otherwise usable
    * shelf unreadable. It is reported so the damage is visible and countable —
    * and it is reported under truncation too, where the old derivation hid it.
+   *
+   * Absent and blank titles are counted exactly, independently of the facet
+   * ceiling. The one residue is whitespace-only titles on a shelf large enough
+   * to truncate: those live in facet buckets that were never returned. When
+   * `truncated` is set, read this figure as a lower bound.
    */
   untitled_passages: number;
 }
@@ -130,11 +135,18 @@ export async function listLibrary(
     exact: true,
   });
   const titles = usableValues(rawTitles.hits);
-  // Buckets that exist but cannot name a work: blank strings, non-strings. They
-  // are dropped from `works` and must reappear in the damage count instead of
-  // vanishing between the two numbers.
+  // Buckets that exist but cannot name a work: whitespace-only strings and
+  // non-strings. They are dropped from `works` and must reappear in the damage
+  // count instead of vanishing between the two numbers.
+  //
+  // The exactly-empty bucket is excluded here and counted directly below
+  // instead: a facet bucket is only visible under the ceiling, so on a shelf
+  // with more distinct titles than fit, an entire `title: ""` population went
+  // unseen and the shelf reported zero damage (gh#334 review round 3, N2).
   const droppedBucketPassages = (rawTitles.hits ?? [])
-    .filter((h) => typeof h.value !== 'string' || h.value.trim() === '')
+    .filter(
+      (h) => typeof h.value !== 'string' || (h.value.trim() === '' && h.value !== ''),
+    )
     .reduce((sum, h) => sum + (h.count ?? 0), 0);
 
   const languages = await facetValues(client, libraryProjectId, 'lang', 50);
@@ -162,7 +174,19 @@ export async function listLibrary(
     filter: { must: [...buildScopeFilter(libraryProjectId).must, { is_empty: { key: 'title' } }] },
     exact: true,
   });
-  const untitled = missingTitle + droppedBucketPassages;
+
+  // `is_empty` matches a missing or null key — NOT a present-but-blank string.
+  // Blank titles are the other dominant damage class and are counted exactly,
+  // for the same reason: an exact count is independent of the facet ceiling,
+  // where a bucket is not.
+  const { count: blankTitle } = await client.count(SOURCES_COLLECTION, {
+    filter: {
+      must: [...buildScopeFilter(libraryProjectId).must, { key: 'title', match: { value: '' } }],
+    },
+    exact: true,
+  });
+
+  const untitled = missingTitle + blankTitle + droppedBucketPassages;
 
   if (works.length === 0) {
     // A populated scope whose points carry no usable `title` cannot be cited

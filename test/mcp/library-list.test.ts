@@ -32,6 +32,8 @@ function makeClient(opts: {
   collection?: unknown;
   /** Points whose `title` payload key is absent — counted, not derived. */
   missingTitle?: number;
+  /** Points whose `title` is present but an empty string — also counted, not faceted. */
+  blankTitle?: number;
 }) {
   const facet = vi.fn(async (_n: string, body: Record<string, unknown>) => ({
     hits: body.key === 'title' ? (opts.titles ?? []) : (opts.langs ?? []),
@@ -44,7 +46,13 @@ function makeClient(opts: {
     count: vi.fn(async (_n: string, body: Record<string, unknown>) => {
       const must = (body.filter as { must: Array<Record<string, unknown>> }).must;
       const isEmptyProbe = must.some((c) => 'is_empty' in c);
-      return { count: isEmptyProbe ? (opts.missingTitle ?? 0) : (opts.total ?? 0) };
+      if (isEmptyProbe) return { count: opts.missingTitle ?? 0 };
+      const blankProbe = must.some(
+        (c) =>
+          c.key === 'title' && (c.match as { value?: unknown } | undefined)?.value === '',
+      );
+      if (blankProbe) return { count: opts.blankTitle ?? 0 };
+      return { count: opts.total ?? 0 };
     }),
     facet,
   } as unknown as QdrantLike & { facet: typeof facet };
@@ -147,6 +155,7 @@ describe('listLibrary — empty is not the same as broken', () => {
     const client = makeClient({
       total: 900,
       missingTitle: 0,
+      blankTitle: 1,
       titles: [
         { value: '', count: 1 },
         { value: '  ', count: 2 },
@@ -238,6 +247,18 @@ describe('listLibrary — truncation is stated, never silent', () => {
     const out = await listLibrary(client, PROJECT);
     expect(out.truncated).toBe(true);
     expect(out.untitled_passages).toBe(40);
+  });
+
+  // gh#334 review round 3, N2: blank titles were only ever seen as a facet
+  // bucket, and a bucket beyond the ceiling is never returned — so the largest
+  // shelves reported zero damage while carrying a whole uncitable population.
+  // An exact count is independent of the ceiling.
+  it('counts blank titles on a truncated shelf, where no bucket for them is returned', async () => {
+    const titles = Array.from({ length: 250 }, (_, i) => ({ value: `Work ${i}`, count: 4 }));
+    const client = makeClient({ total: 1070, missingTitle: 0, blankTitle: 70, titles });
+    const out = await listLibrary(client, PROJECT);
+    expect(out.truncated).toBe(true);
+    expect(out.untitled_passages).toBe(70);
   });
 
   it('requests one over the cap, which is how truncation is detected', async () => {

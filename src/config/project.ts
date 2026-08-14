@@ -10,7 +10,7 @@
  * @module config/project
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join, parse, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
@@ -77,6 +77,43 @@ export async function findProjectConfigPath(startDir: string): Promise<string | 
     if (parent === dir || dir === root) {
       return null;
     }
+    dir = parent;
+  }
+}
+
+/**
+ * Presence-only twin of `findProjectConfigPath` (gh#334 review round 3).
+ *
+ * The walker above catches every `readFile` failure — including `EACCES` — and
+ * keeps climbing as though nothing were there. That is correct for its callers:
+ * a hook must never be blocked by an unreadable file in some ancestor
+ * directory. But it makes "no marker" and "a marker I am not allowed to open"
+ * indistinguishable, so a caller that must fail closed on a configuration fault
+ * cannot tell the two apart.
+ *
+ * This asks only whether the file EXISTS. Callers use it as a second pass after
+ * the reading walker returns null; a non-null answer means the absence was a
+ * fault, not an absence. Nothing here reads file contents, so an unreadable
+ * marker is still never opened.
+ */
+export async function findPresentProjectMarkerPath(startDir: string): Promise<string | null> {
+  let dir = startDir;
+  const root = parse(dir).root;
+  const home = homedir();
+
+  while (true) {
+    if (dir === home) return null;
+
+    for (const candidate of [join(dir, '.valis', 'config.json'), join(dir, '.valis.json')]) {
+      const present = await stat(candidate).then(
+        (s) => s.isFile(),
+        () => false,
+      );
+      if (present) return candidate;
+    }
+
+    const parent = dirname(dir);
+    if (parent === dir || dir === root) return null;
     dir = parent;
   }
 }

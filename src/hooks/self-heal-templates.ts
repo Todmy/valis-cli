@@ -319,6 +319,24 @@ export function composeManagedBody(policyBody: string, previousBlock?: string): 
   ].join('\n');
 }
 
+/**
+ * A synthetic block that carries nothing but `text` as its custom region.
+ *
+ * Exists so a migration can hand arbitrary recovered text to
+ * `composeManagedBody` through the same path an existing block takes — the
+ * composer reads the custom region through the four-marker validation, and
+ * this is the honest way to satisfy it rather than bypassing the check.
+ */
+export function carrierForCustomText(text: string): string {
+  return [
+    POLICY_REGION_START,
+    POLICY_REGION_END,
+    CUSTOM_REGION_START,
+    text,
+    CUSTOM_REGION_END,
+  ].join('\n');
+}
+
 /** The policy region's contents, or the whole block when it predates the split. */
 export function extractPolicyRegion(block: string): string {
   const start = block.indexOf(POLICY_REGION_START);

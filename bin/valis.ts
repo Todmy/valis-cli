@@ -5,6 +5,7 @@ import { VERSION } from '../src/index.js';
 import { initCommand } from '../src/commands/init.js';
 import { serveCommand } from '../src/commands/serve.js';
 import { statusCommand } from '../src/commands/status.js';
+import { doctorCommand } from '../src/commands/doctor.js';
 import { dashboardCommand } from '../src/commands/dashboard.js';
 import { searchCommand } from '../src/commands/search-cmd.js';
 import { configGetCommand, configSetCommand, configWizardCommand } from '../src/commands/config-cmd.js';
@@ -170,6 +171,19 @@ program
   .action(async () => {
     try {
       await serveCommand();
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('doctor')
+  .description('Check the Valis instruction blocks and offer to un-freeze stale ones')
+  .option('--fix', 'Migrate every frozen block without asking')
+  .action(async (options: { fix?: boolean }) => {
+    try {
+      await doctorCommand({ fix: options.fix });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

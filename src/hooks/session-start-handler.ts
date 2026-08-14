@@ -23,6 +23,41 @@ import { findProjectMarker } from '../config/project.js';
 import { record } from './telemetry.js';
 import { maybeNotifyOfUpdate } from './update-notifier.js';
 import { VERSION } from '../index.js';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { policyDriftNoticePath } from './paths.js';
+
+const NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** Exported for tests: the notice is the whole point of gh#340 A, so it is
+ * verified directly rather than through the hook's deliberately silent shell. */
+export async function maybeNoticePolicyDrift(projectDir?: string): Promise<void> {
+  const statePath = policyDriftNoticePath();
+  try {
+    const last = Number(await readFile(statePath, 'utf-8'));
+    if (Number.isFinite(last) && Date.now() - last < NOTICE_INTERVAL_MS) return;
+  } catch {
+    // No prior notice — fall through and check.
+  }
+
+  const { detectPolicyDrift, needsAttention } = await import('./policy-drift.js');
+  const problems = needsAttention(await detectPolicyDrift(projectDir));
+  if (problems.length === 0) return;
+
+  const worst = problems.reduce((a, b) => (b.generationsBehind > a.generationsBehind ? b : a));
+  const what =
+    worst.state === 'malformed'
+      ? 'has broken Valis markers'
+      : worst.state === 'newer'
+        ? 'carries a policy version this CLI does not know (update Valis)'
+        : `is ${worst.generationsBehind} policy generation${worst.generationsBehind === 1 ? '' : 's'} behind`;
+  process.stderr.write(
+    `valis: ${worst.path} ${what} and is not receiving updates — run \`valis doctor\` to review\n`,
+  );
+
+  await mkdir(dirname(statePath), { recursive: true });
+  await writeFile(statePath, String(Date.now()));
+}
 
 export async function hookSessionStartCommand(): Promise<void> {
   const startedAt = Date.now();
@@ -38,6 +73,17 @@ export async function hookSessionStartCommand(): Promise<void> {
   }
 
   const marker = await findProjectMarker();
+
+  // gh#340 (A) — the GLOBAL block is checked even outside a Valis project.
+  // Gating this behind a project marker would mean a user whose global block is
+  // frozen never hears about it as long as they work in uninitialized repos —
+  // the same silence, moved one level out (review round 1).
+  try {
+    await maybeNoticePolicyDrift(marker?.projectDir);
+  } catch {
+    // Notices never block a session.
+  }
+
   if (!marker) {
     return; // Not a Valis-configured directory — nothing to heal.
   }

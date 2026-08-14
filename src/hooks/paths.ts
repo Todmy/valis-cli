@@ -62,6 +62,16 @@ export function installReportedPath(): string {
   return join(valisHome(), 'install-reported');
 }
 
+/**
+ * Timestamp of the last "your instruction block is frozen" notice (gh#340 A).
+ * A frozen block is a standing condition, not an event — without a throttle the
+ * notice would print on every single session and be tuned out within a day,
+ * which is the same silence it exists to break.
+ */
+export function policyDriftNoticePath(): string {
+  return join(valisHome(), 'policy-drift-notice');
+}
+
 export function sessionMarkerPath(sessionId: string): string {
   return join(valisHome(), 'session-markers', `${sessionId}.json`);
 }

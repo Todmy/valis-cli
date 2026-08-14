@@ -14,7 +14,9 @@ export const GLOBAL_KR_END = '<!-- valis:knowledge-retention:end -->';
  * marker to distinguish "stale canonical from a previous CLI version" (auto-
  * upgrade) from "engineer edited the block by hand" (leave alone).
  *
- * Format: ISO-date plus a slug. String-comparable lex order.
+ * Format: ISO-date plus a slug. Ordering comes from the position in
+ * `POLICY_VERSION_HISTORY` (see `isOlderPolicy`), NOT from string comparison —
+ * two generations can share a date, and then lex order is simply wrong.
  */
 /**
  * Every policy generation ever shipped, oldest first; the last entry IS the
@@ -39,6 +41,7 @@ export const POLICY_VERSION_HISTORY = [
   '0.5.4-mirror-write',
   '2026-05-19-active-project-scope',
   '2026-08-14-reference-library-routing',
+  '2026-08-14-managed-policy-region',
 ] as const;
 
 export const KR_POLICY_VERSION: string =
@@ -201,12 +204,151 @@ const KR_LINES = [
 
 export const GLOBAL_KR_BODY = KR_LINES.join('\n');
 
-export function canonicalGlobalKrBlock(): string {
-  return `${GLOBAL_KR_START}\n${GLOBAL_KR_BODY}\n${GLOBAL_KR_END}`;
+export function canonicalGlobalKrBlock(previousBlock?: string): string {
+  const body = composeManagedBody(GLOBAL_KR_BODY, previousBlock);
+  return `${GLOBAL_KR_START}\n${body}\n${GLOBAL_KR_END}`;
 }
 
 export const PROJECT_VALIS_START = '<!-- valis:start -->';
 export const PROJECT_VALIS_END = '<!-- valis:end -->';
+
+/**
+ * gh#340 option C — a managed region and a region that is never touched.
+ *
+ * Before this split, the whole block was Valis's to write but users edited it
+ * anyway (it is the only place the policy is visible), and self-heal then had
+ * to choose between overwriting their text and never upgrading them. It chose
+ * the latter, correctly and silently: on the author's own machine the global
+ * block sat unchanged through four policy generations, 1,904 refusals, with no
+ * report to the user.
+ *
+ * The split removes the choice. Everything between the POLICY markers is
+ * rewritten on every heal with no hash gate, because it is not the user's text.
+ * Everything between the CUSTOM markers is carried across verbatim and Valis
+ * never reads it for a decision — it is where additions belong now.
+ *
+ * This does nothing for a block already customized in place; those stay
+ * `user_customized` and still need the reporting half of gh#340. It removes the
+ * class of failure going forward, which is what it is for.
+ */
+export const POLICY_REGION_START = '<!-- valis:policy:start -->';
+export const POLICY_REGION_END = '<!-- valis:policy:end -->';
+export const CUSTOM_REGION_START = '<!-- valis:custom:start -->';
+export const CUSTOM_REGION_END = '<!-- valis:custom:end -->';
+
+/** Seeded once into a new custom region; replaced the moment the user writes. */
+export const CUSTOM_REGION_PLACEHOLDER =
+  'Your own instructions go here. Valis rewrites the policy region above on\nevery upgrade, and never edits anything between these two markers.';
+
+/** How many times `needle` occurs in `s`. */
+function countOccurrences(s: string, needle: string): number {
+  let n = 0;
+  let i = s.indexOf(needle);
+  while (i !== -1) {
+    n += 1;
+    i = s.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * Is the block a well-formed managed block?
+ *
+ * Every one of the four markers must appear EXACTLY once, in order. Anything
+ * else — a deleted custom marker, a reversed pair, or one of these strings
+ * pasted into the user's own text (entirely plausible in a repo whose docs
+ * discuss the markers) — is malformed, and a malformed block is never rewritten.
+ * The alternative is worse than doing nothing: `extractCustomRegion` would stop
+ * at the wrong offset and the rewrite would drop the user's text on the floor.
+ */
+export function isWellFormedManagedBlock(block: string): boolean {
+  const markers = [
+    POLICY_REGION_START,
+    POLICY_REGION_END,
+    CUSTOM_REGION_START,
+    CUSTOM_REGION_END,
+  ];
+  if (markers.some((m) => countOccurrences(block, m) !== 1)) return false;
+  const at = markers.map((m) => block.indexOf(m));
+  return at[0] < at[1] && at[1] < at[2] && at[2] < at[3];
+}
+
+/**
+ * The custom region's contents from an existing block, or `null` when the block
+ * predates the split or is malformed. `null` and `''` are deliberately
+ * different: the first means "there was no usable region", the second means
+ * "the user emptied it".
+ *
+ * Only the two structural newlines the composer inserted are removed — the rest
+ * is returned byte for byte, so an indented code block or a deliberate blank
+ * line survives an upgrade unchanged.
+ */
+export function extractCustomRegion(block: string): string | null {
+  if (!isWellFormedManagedBlock(block)) return null;
+  const start = block.indexOf(CUSTOM_REGION_START);
+  const end = block.indexOf(CUSTOM_REGION_END);
+  const raw = block.slice(start + CUSTOM_REGION_START.length, end);
+  return raw.replace(/^\n/, '').replace(/\n$/, '');
+}
+
+/**
+ * True when the block carries a well-formed managed split — i.e. when the
+ * policy region may be rewritten without reading, and the custom region can be
+ * carried across safely. A malformed block reports false and falls back to the
+ * legacy hash gate, which leaves it alone.
+ */
+export function hasManagedRegions(block: string): boolean {
+  return isWellFormedManagedBlock(block);
+}
+
+/**
+ * Wrap a policy body in the two regions, carrying any existing custom text
+ * across. `previousBlock` is the block being replaced, if there is one.
+ */
+export function composeManagedBody(policyBody: string, previousBlock?: string): string {
+  const carried = previousBlock ? extractCustomRegion(previousBlock) : null;
+  const custom = carried ?? CUSTOM_REGION_PLACEHOLDER;
+  return [
+    POLICY_REGION_START,
+    policyBody,
+    POLICY_REGION_END,
+    '',
+    CUSTOM_REGION_START,
+    custom,
+    CUSTOM_REGION_END,
+  ].join('\n');
+}
+
+/** The policy region's contents, or the whole block when it predates the split. */
+export function extractPolicyRegion(block: string): string {
+  const start = block.indexOf(POLICY_REGION_START);
+  const end = block.indexOf(POLICY_REGION_END);
+  if (start === -1 || end === -1 || end < start) return block;
+  return block.slice(start + POLICY_REGION_START.length, end);
+}
+
+/**
+ * Is `version` an older generation than what ships now?
+ *
+ * Ordered by position in `POLICY_VERSION_HISTORY`, not lexically. The lex
+ * comparison this replaces was a trap: it happened to work only while every
+ * slug began with an increasing ISO date, and the very next bump broke it —
+ * `2026-08-14-managed-policy-region` sorts BEFORE
+ * `2026-08-14-reference-library-routing`, so a correct upgrade would have read
+ * as a downgrade and every install on that generation would have been stranded.
+ *
+ * `null` (pre-marker) is older. An UNKNOWN non-null version is not: it is
+ * almost always a file written by a NEWER build that this one has never heard
+ * of — a rollback, a stale global install, an `npx` cache — and treating it as
+ * older would silently downgrade the policy every session, each build fighting
+ * the other. Fail closed and leave it alone instead.
+ */
+export function isOlderPolicy(version: string | null): boolean {
+  if (version === null) return true;
+  const idx = (POLICY_VERSION_HISTORY as readonly string[]).indexOf(version);
+  if (idx === -1) return false;
+  return idx < POLICY_VERSION_HISTORY.length - 1;
+}
 
 export const SETTINGS_HOOK_COMMANDS = [
   'valis hook session-start',

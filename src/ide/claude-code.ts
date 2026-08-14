@@ -4,9 +4,11 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { trackFile } from '../config/manifest.js';
 import { COMMAND_TEMPLATES } from './command-templates.js';
-import { policyMarkerLine } from '../hooks/self-heal-templates.js';
+import { policyMarkerLine, composeManagedBody } from '../hooks/self-heal-templates.js';
 
-const AGENT_INSTRUCTIONS = `${policyMarkerLine()}
+/** The canonical project policy body. Exported so self-heal can detect drift
+ * inside the managed region without re-deriving it. */
+export const AGENT_INSTRUCTIONS = `${policyMarkerLine()}
 
 ## Team Knowledge (Valis)
 
@@ -160,11 +162,24 @@ export async function injectClaudeMdMarkers(projectDir: string): Promise<void> {
     // File doesn't exist, create new
   }
 
-  const block = `${startMarker}\n${AGENT_INSTRUCTIONS}\n${endMarker}`;
+  // Fail closed on ambiguous outer markers. If either appears more than once —
+  // most plausibly because the user quoted one inside their own instructions —
+  // the non-greedy replace below would cut the block at the wrong offset and
+  // overwrite whatever sits before the stray marker. Leaving the file untouched
+  // is the only option that cannot lose their text (gh#340 review).
+  const outerCount = (s: string, m: string) => s.split(m).length - 1;
+  if (outerCount(content, startMarker) > 1 || outerCount(content, endMarker) > 1) {
+    return;
+  }
+
+  const previousBlock = extractBlock(content, startMarker, endMarker);
+  const block = `${startMarker}\n${composeManagedBody(AGENT_INSTRUCTIONS, previousBlock)}\n${endMarker}`;
 
   if (content.includes(startMarker) && content.includes(endMarker)) {
     // Replace existing block in place — preserves whatever position the
     // user moved it to after first install (idempotent on subsequent runs).
+    // The block's own custom region is carried into the replacement above,
+    // so only the policy region actually changes (gh#340 C).
     const regex = new RegExp(
       `${escapeRegex(startMarker)}[\\s\\S]*?${escapeRegex(endMarker)}`,
     );
@@ -279,6 +294,14 @@ export async function scaffoldBuiltInCommands(projectDir: string): Promise<strin
   }
 
   return installed;
+}
+
+/** The wrapped block including its markers, or undefined when absent. */
+function extractBlock(content: string, start: string, end: string): string | undefined {
+  const s = content.indexOf(start);
+  const e = content.indexOf(end);
+  if (s === -1 || e === -1 || e < s) return undefined;
+  return content.slice(s, e + end.length);
 }
 
 function escapeRegex(str: string): string {

@@ -46,6 +46,11 @@ import {
   canonicalGlobalKrBlock,
   KR_POLICY_VERSION,
   parsePolicyVersion,
+  extractPolicyRegion,
+  hasManagedRegions,
+  isOlderPolicy,
+  POLICY_VERSION_HISTORY,
+  POLICY_REGION_START,
 } from './self-heal-templates.js';
 
 /**
@@ -69,11 +74,13 @@ const HISTORICAL_GLOBAL_KR_HASHES: string[] = [
   '45038b086df136de', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
   'a2cbf7b74f35a0b7', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
   '582d1352c9b10386', // 2026-05-19-active-project-scope — before the reference-library routing rule (gh#338)
+  '0d2cfa0f896cf44f', // 2026-08-14-reference-library-routing — last generation before the managed-region split (gh#340)
 ];
 const HISTORICAL_AGENT_INSTRUCTIONS_HASHES: string[] = [
   '46818720c327567f', // pre-v0.5.4 — before MIRROR-WRITE + failure-mode contract
   'a0619db7222f5279', // v0.5.4 — before ACTIVE PROJECT SCOPE section (BUG #176 fix)
   '1f03007493359e4c', // 2026-05-19-active-project-scope — before the reference-library routing rule (gh#338)
+  '2c08b575768c7ffa', // 2026-08-14-reference-library-routing — last generation before the managed-region split (gh#340)
 ];
 
 function contentHash(s: string): string {
@@ -143,18 +150,20 @@ function extractBetween(haystack: string, start: string, end: string): string {
  *      lesson d29548c3, 2026-04-08).
  */
 export function applyGlobalKrSection(existing: string): string {
-  const canonical = canonicalGlobalKrBlock();
-
   // Case 1: marker block already present (any state, fresh or drifted) —
   // replace just the wrapped block, preserving everything outside the
-  // markers verbatim.
+  // markers verbatim, and carrying the block's own custom region across
+  // (gh#340 C — the custom region survives every upgrade).
   const markerStart = existing.indexOf(GLOBAL_KR_START);
   const markerEnd = existing.indexOf(GLOBAL_KR_END);
   if (markerStart !== -1 && markerEnd !== -1 && markerEnd > markerStart) {
     const before = existing.slice(0, markerStart);
     const after = existing.slice(markerEnd + GLOBAL_KR_END.length);
-    return before + canonical + after;
+    const previousBlock = existing.slice(markerStart, markerEnd + GLOBAL_KR_END.length);
+    return before + canonicalGlobalKrBlock(previousBlock) + after;
   }
+
+  const canonical = canonicalGlobalKrBlock();
 
   // Case 2: legacy "# Knowledge Retention" heading without markers —
   // replace from the heading to the next top-level heading or EOF.
@@ -196,21 +205,84 @@ async function healGlobalClaudeMd(): Promise<HealReport> {
     content.includes(GLOBAL_KR_START) && content.includes(GLOBAL_KR_END);
 
   if (hasMarkers) {
+    // Ambiguous outer markers — most plausibly one quoted inside the user's own
+    // notes — would make every offset below point at the wrong place, and the
+    // rewrite would eat text it never read. Refuse and say so (gh#340 review).
+    const occurrences = (m: string) => content.split(m).length - 1;
+    if (occurrences(GLOBAL_KR_START) > 1 || occurrences(GLOBAL_KR_END) > 1) {
+      return {
+        target,
+        outcome: 'user_customized',
+        notes:
+          'ambiguous markers: valis:knowledge-retention:start/end appears more than once — refusing to rewrite',
+      };
+    }
+
     const between = extractBetween(content, GLOBAL_KR_START, GLOBAL_KR_END);
     const currentHash = contentHash(between);
     if (currentHash === CANONICAL_GLOBAL_KR_HASH) {
       return { target, outcome: 'fresh' };
     }
 
-    // Policy-version-aware drift gate. If the block carries a current
-    // policy marker, drift = user-customized (leave alone). If the
-    // marker is missing OR older AND the body matches a known historical
-    // canonical hash, drift = stale canonical → auto-upgrade silently.
-    // Anything else is genuine user customization.
-    const blockVersion = parsePolicyVersion(between);
+    const blockVersion = parsePolicyVersion(extractPolicyRegion(between));
+
+    // Half a managed block — a region marker present but the four-marker set
+    // broken. It is neither managed (offsets unreliable) nor legacy (the
+    // legacy gate would call a current marker `fresh` and hide the damage).
+    // Say what it is and touch nothing (review round 2).
+    if (between.includes(POLICY_REGION_START) && !hasManagedRegions(between)) {
+      return {
+        target,
+        outcome: 'user_customized',
+        notes: 'malformed managed block: region markers are incomplete or out of order — refusing to rewrite',
+      };
+    }
+
+    // gh#340 (C) — once the block carries the managed-region split, the policy
+    // region is not the user's text and needs no hash gate: an older version
+    // upgrades, full stop. Edits inside it are overwritten by design, which is
+    // the whole point of labelling it. The custom region rides across untouched
+    // via `canonicalGlobalKrBlock(between)`.
+    if (hasManagedRegions(between)) {
+      const policyDrifted =
+        contentHash(extractPolicyRegion(between)) !== contentHash(GLOBAL_KR_BODY);
+
+      // A version this build has never heard of is almost always a file written
+      // by a NEWER build. Say that, rather than reporting `fresh` and hiding a
+      // version incompatibility the user may need to act on (review round 2).
+      if (blockVersion !== null && !(POLICY_VERSION_HISTORY as readonly string[]).includes(blockVersion)) {
+        return {
+          target,
+          outcome: 'user_customized',
+          notes: `unknown policy version '${blockVersion}' — newer CLI? leaving the block alone`,
+        };
+      }
+
+      if (!isOlderPolicy(blockVersion) && !policyDrifted) {
+        // Current policy, canonical text, body differs → the difference is in
+        // the custom region, which is theirs. NOT a drift report.
+        return { target, outcome: 'fresh' };
+      }
+      // Older version OR an edited policy region. Both are rewritten: "the
+      // policy region is not the user's text" only means something if an edit
+      // inside it is repaired now, not at the next bump (review round 2).
+      await backupOriginal(targetPath, 'global-claude-md');
+      await atomicWrite(targetPath, applyGlobalKrSection(content));
+      return {
+        target,
+        outcome: 'repaired',
+        notes: policyDrifted
+          ? `policy region restored to ${KR_POLICY_VERSION} (custom region preserved)`
+          : `policy region upgraded: ${blockVersion ?? 'pre-policy'} → ${KR_POLICY_VERSION} (custom region preserved)`,
+      };
+    }
+
+    // Legacy blocks (no managed regions). Version-aware drift gate: marker
+    // missing OR older AND the body matches a known historical canonical hash
+    // → stale canonical, auto-upgrade silently. Anything else is genuine user
+    // customization and is left alone.
     const isStaleCanonical =
-      (blockVersion === null || blockVersion < KR_POLICY_VERSION) &&
-      HISTORICAL_GLOBAL_KR_HASHES.includes(currentHash);
+      isOlderPolicy(blockVersion) && HISTORICAL_GLOBAL_KR_HASHES.includes(currentHash);
 
     if (isStaleCanonical) {
       await backupOriginal(targetPath, 'global-claude-md');
@@ -261,14 +333,78 @@ async function healProjectClaudeMd(projectDir: string): Promise<HealReport> {
     // policy marker → fresh. Older / missing AND body hash matches a
     // known historical canonical → silent auto-upgrade with backup.
     // Anything else (genuine user customization) is left alone.
+    // Same fail-closed rule as the global path: ambiguous outer markers make
+    // every offset unreliable, and `injectClaudeMdMarkers` refuses to write in
+    // that state — so report it rather than claiming a repair that never ran.
+    const occurrences = (m: string) => content.split(m).length - 1;
+    if (occurrences(PROJECT_VALIS_START) > 1 || occurrences(PROJECT_VALIS_END) > 1) {
+      return {
+        target,
+        outcome: 'user_customized',
+        notes: 'ambiguous markers: valis:start/end appears more than once — refusing to rewrite',
+      };
+    }
+
     const between = extractBetween(content, PROJECT_VALIS_START, PROJECT_VALIS_END);
-    const blockVersion = parsePolicyVersion(between);
+    const blockVersion = parsePolicyVersion(extractPolicyRegion(between));
+
+    // Half a managed block — a region marker present but the four-marker set
+    // broken. It is neither managed (offsets unreliable) nor legacy (the
+    // legacy gate would call a current marker `fresh` and hide the damage).
+    // Say what it is and touch nothing (review round 2).
+    if (between.includes(POLICY_REGION_START) && !hasManagedRegions(between)) {
+      return {
+        target,
+        outcome: 'user_customized',
+        notes: 'malformed managed block: region markers are incomplete or out of order — refusing to rewrite',
+      };
+    }
+
+    // gh#340 (C) — managed split present: the policy region is ours to rewrite,
+    // the custom region rides across. No hash gate, so an install can never be
+    // stranded again for having edited the visible text.
+    //
+    // Ordering is load-bearing (review round 2): the current-version shortcut
+    // must come AFTER this validation, or a block missing a custom marker but
+    // carrying a current marker reports `fresh` and never falls through to the
+    // legacy gate that would have left it alone honestly.
+    if (hasManagedRegions(between)) {
+      const { AGENT_INSTRUCTIONS, injectClaudeMdMarkers } = await import(
+        '../ide/claude-code.js'
+      );
+      const policyDrifted =
+        contentHash(extractPolicyRegion(between)) !== contentHash(AGENT_INSTRUCTIONS);
+
+      if (blockVersion !== null && !(POLICY_VERSION_HISTORY as readonly string[]).includes(blockVersion)) {
+        return {
+          target,
+          outcome: 'user_customized',
+          notes: `unknown policy version '${blockVersion}' — newer CLI? leaving the block alone`,
+        };
+      }
+
+      if (!isOlderPolicy(blockVersion) && !policyDrifted) {
+        return { target, outcome: 'fresh' };
+      }
+
+      await backupOriginal(targetPath, 'project-claude-md');
+      await injectClaudeMdMarkers(projectDir);
+      return {
+        target,
+        outcome: 'repaired',
+        notes: policyDrifted
+          ? `policy region restored to ${KR_POLICY_VERSION} (custom region preserved)`
+          : `policy region upgraded: ${blockVersion ?? 'pre-policy'} → ${KR_POLICY_VERSION} (custom region preserved)`,
+      };
+    }
+
     if (blockVersion === KR_POLICY_VERSION) {
       return { target, outcome: 'fresh' };
     }
+
     const blockHash = contentHash(between);
     const isStaleCanonical =
-      (blockVersion === null || blockVersion < KR_POLICY_VERSION) &&
+      isOlderPolicy(blockVersion) &&
       HISTORICAL_AGENT_INSTRUCTIONS_HASHES.includes(blockHash);
 
     if (isStaleCanonical) {

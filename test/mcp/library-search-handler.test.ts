@@ -18,7 +18,7 @@ const resolveReadAccess = vi.fn();
 const getServiceRoleSupabase = vi.fn(() => ({ brand: 'service-role' }));
 
 vi.mock('../../src/cloud/qdrant/client.js', () => ({
-  getQdrantClient: () => qdrantMock,
+  getQdrantClient: (...a: unknown[]) => getQdrantClient(...(a as [])),
 }));
 
 vi.mock('../../src/lib/project-access.js', () => ({
@@ -26,9 +26,17 @@ vi.mock('../../src/lib/project-access.js', () => ({
   resolveReadAccess: (...a: unknown[]) => resolveReadAccess(...(a as [])),
 }));
 
+const loadConfig = vi.fn(async () => null as unknown);
 vi.mock('../../src/config/store.js', () => ({
-  loadConfig: async () => null,
+  loadConfig: () => loadConfig(),
 }));
+
+const findProjectConfig = vi.fn(async () => null as unknown);
+vi.mock('../../src/config/project.js', () => ({
+  findProjectConfig: () => findProjectConfig(),
+}));
+
+const getQdrantClient = vi.fn(() => qdrantMock);
 
 const storeAuditEntry = vi.fn();
 vi.mock('../../src/cloud/supabase/audit.js', () => ({
@@ -84,6 +92,12 @@ beforeEach(() => {
   qdrantMock.query.mockResolvedValue({ points: [HIT] });
   qdrantMock.count.mockResolvedValue({ count: 16344 });
   resolveReadAccess.mockResolvedValue('allow');
+  loadConfig.mockResolvedValue(null);
+  findProjectConfig.mockResolvedValue(null);
+  getQdrantClient.mockReturnValue(qdrantMock);
+  // clearAllMocks clears calls, not implementations — a rejection set by one
+  // test would otherwise leak into every later one.
+  storeAuditEntry.mockReset();
 });
 
 const errOf = async (fn: () => Promise<unknown>) => {
@@ -333,5 +347,95 @@ describe('handleLibrarySearch — project scoping (gh#334)', () => {
     expect(
       await errOf(() => handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: null })),
     ).toEqual({ code: 'library_not_configured', missing: 'project_id' });
+  });
+});
+
+/**
+ * gh#334 review R1. On stdio the active project is `.valis.json` in the working
+ * tree — that is what `valis init` writes and what `serve.ts:38` already reads
+ * before discarding it. Resolving from the GLOBAL `~/.valis/config.json`
+ * instead means a correctly initialised user is told the library is not
+ * configured, or silently reads a project they switched away from.
+ */
+describe('handleLibrarySearch — stdio project resolution (gh#334 R1)', () => {
+  const STDIO = {
+    member_id: 'member-1',
+    org_id: 'org-1',
+    supabase_url: 'https://x.supabase.co',
+    supabase_service_role_key: 'srk',
+    qdrant_url: 'https://q',
+    qdrant_api_key: 'qk',
+  };
+
+  it('prefers .valis.json over the global config file', async () => {
+    loadConfig.mockResolvedValue({ ...STDIO, project_id: 'stale-global' });
+    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+
+    await handleLibrarySearch({ query: 'x' });
+
+    expect(resolveReadAccess.mock.calls[0][2]).toBe('active-local');
+    const body = qdrantMock.query.mock.calls[0][1] as {
+      filter: { must: Array<{ match: { value: string } }> };
+    };
+    expect(body.filter.must[0].match.value).toBe('active-local');
+  });
+
+  it('falls back to the global config when no .valis.json is present', async () => {
+    loadConfig.mockResolvedValue({ ...STDIO, project_id: 'global-proj' });
+    findProjectConfig.mockResolvedValue(null);
+    await handleLibrarySearch({ query: 'x' });
+    expect(resolveReadAccess.mock.calls[0][2]).toBe('global-proj');
+  });
+
+  it('still lets an explicit target win over .valis.json', async () => {
+    loadConfig.mockResolvedValue({ ...STDIO, project_id: 'global-proj' });
+    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+    await handleLibrarySearch({ query: 'x', target_project_id: 'explicit' });
+    expect(resolveReadAccess.mock.calls[0][2]).toBe('explicit');
+  });
+
+  // Reading your own active project is not a cross-org read. Comparing the
+  // resolved scope against the GLOBAL config file logged every stdio call as
+  // one, filling the target project's audit trail with its own owner.
+  it('does not audit a read of the .valis.json project as a cross-org read', async () => {
+    loadConfig.mockResolvedValue({ ...STDIO, project_id: 'stale-global' });
+    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+    await handleLibrarySearch({ query: 'x' });
+    expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('names project_id when neither source has one', async () => {
+    loadConfig.mockResolvedValue(STDIO);
+    findProjectConfig.mockResolvedValue(null);
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }))).toEqual({
+      code: 'library_not_configured',
+      missing: 'project_id',
+    });
+  });
+});
+
+/**
+ * gh#334 review R4. `getQdrantClient` runs after authorisation has already
+ * succeeded. Folding it into the `authorization` stage told an operator that
+ * access verification failed when the cluster client was at fault — a wrong
+ * diagnosis sends them to the wrong system.
+ */
+describe('handleLibrarySearch — stage classification (gh#334 R4)', () => {
+  it('does not blame authorization for a Qdrant client construction failure', async () => {
+    getQdrantClient.mockImplementation(() => {
+      throw new Error('client init exploded');
+    });
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({
+      code: 'library_unavailable',
+      missing: 'qdrant_client',
+    });
+  });
+
+  it('still blames authorization when the resolver itself throws', async () => {
+    resolveReadAccess.mockRejectedValue(new Error('supabase died'));
+    expect(await errOf(() => handleLibrarySearch({ query: 'x' }, CONFIG))).toEqual({
+      code: 'library_unavailable',
+      missing: 'authorization',
+    });
   });
 });

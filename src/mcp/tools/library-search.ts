@@ -21,6 +21,7 @@ import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-acc
 import { getQdrantClient } from '../../cloud/qdrant/client.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { loadConfig } from '../../config/store.js';
+import { findProjectConfig } from '../../config/project.js';
 
 export type LibraryErrorCode =
   | 'library_not_configured'
@@ -522,9 +523,23 @@ export async function withLibrary<T>(
 ): Promise<T> {
   const fileConfig = configOverride ? undefined : ((await loadConfig()) ?? undefined);
   const base = (configOverride ?? (fileConfig as unknown as ServerConfig) ?? {}) as ServerConfig;
+
+  // On stdio the active project is `.valis.json` in the working tree, NOT the
+  // `project_id` in the global `~/.valis/config.json` — that is what `valis
+  // init` writes and what `serve.ts:38` already treats as authoritative before
+  // discarding it at `:104` (gh#334 review R1). Reading the global one instead
+  // means a correctly initialised user gets `library_not_configured`, or worse,
+  // silently reads a stale project they switched away from.
+  //
+  // Hosted callers pass a `configOverride` whose `project_id` is already the
+  // session's resolved scope, so this lookup is skipped for them entirely.
+  const activeProjectId = configOverride
+    ? base.project_id
+    : ((await findProjectConfig(process.cwd()).catch(() => null))?.project_id ?? base.project_id);
+
   const config: LibraryInput = {
     ...base,
-    library_project_id: resolveLibraryProjectId(args, base),
+    library_project_id: resolveLibraryProjectId(args, { project_id: activeProjectId }),
   };
 
   assertLibraryConfigured(config);
@@ -535,7 +550,12 @@ export async function withLibrary<T>(
   // unparseable URL, a Supabase client that died on init — reached the SDK as a
   // plain Error with no code and no `missing` (gh#329 review R2). `stage` is
   // what lets one catch name the right failure.
-  let stage: 'authorization' | 'retrieval' = 'authorization';
+  // Three stages, not two. `getQdrantClient` runs after authorisation has
+  // already succeeded, so folding it into the `authorization` stage told an
+  // operator that access verification failed when what actually failed was the
+  // cluster client (gh#334 review R4). A wrong diagnosis sends them to the
+  // wrong system.
+  let stage: 'authorization' | 'connect' | 'retrieval' = 'authorization';
 
   try {
     const supabase = getServiceRoleSupabase(
@@ -556,7 +576,10 @@ export async function withLibrary<T>(
     // Best-effort by the same rule they follow: an audit failure must not turn
     // a successful read into an error, which is why it carries its own catch
     // rather than falling through to the stage classifier below.
-    if (libraryProjectId !== base.project_id) {
+    // Against the RESOLVED active project, not `base.project_id`: on stdio the
+    // latter is the global config file, so comparing with it logged a plain
+    // read of the user's own `.valis.json` project as a cross-org read.
+    if (libraryProjectId !== activeProjectId) {
       try {
         await storeAuditEntry(supabase, {
           id: crypto.randomUUID(),
@@ -577,6 +600,7 @@ export async function withLibrary<T>(
       }
     }
 
+    stage = 'connect';
     const client = getQdrantClient(config.qdrant_url, config.qdrant_api_key);
     stage = 'retrieval';
 
@@ -589,6 +613,14 @@ export async function withLibrary<T>(
         'library_unavailable',
         'authorization',
         'The reference library could not verify access to itself.',
+      );
+    }
+
+    if (stage === 'connect') {
+      throw new LibraryError(
+        'library_unavailable',
+        'qdrant_client',
+        'The reference library could not open a connection to its search cluster.',
       );
     }
 

@@ -49,6 +49,20 @@ export interface LibraryListResult {
   languages: string[];
   /** Set only when more distinct works exist than `works` could carry. */
   truncated?: true;
+  /**
+   * Passages inside the scope that no listed work accounts for — points whose
+   * `title` is absent, blank, or not a string.
+   *
+   * Always present, for the same reason `library_search` always emits
+   * `dropped_uncitable`: sanitising bad data into a clean-looking answer is the
+   * silent-partial-truth version of the failure this feature exists to prevent
+   * (gh#334 review R3). A caller comparing `total_passages` against the sum of
+   * `works` would otherwise find a gap with nothing to explain it.
+   *
+   * Not a thrown error: one damaged point must not make an otherwise usable
+   * shelf unreadable. It is reported so the damage is visible and countable.
+   */
+  untitled_passages: number;
 }
 
 async function facetValues(
@@ -96,6 +110,7 @@ export async function listLibrary(
       total_passages: 0,
       works: [],
       languages: [],
+      untitled_passages: 0,
     };
   }
 
@@ -109,6 +124,14 @@ export async function listLibrary(
     .slice(0, MAX_WORKS)
     .map(({ value, count }) => ({ title: value, passages: count }))
     .sort((a, b) => b.passages - a.passages);
+
+  // Reconcile against the scope count. Under truncation the shortfall is
+  // expected — it is the works that did not fit — so it is not damage and is
+  // not reported as such. Without truncation, every scoped passage should be
+  // accounted for by some work, and any shortfall is a point with no usable
+  // title.
+  const accounted = works.reduce((sum, w) => sum + w.passages, 0);
+  const untitled = truncated ? 0 : Math.max(0, total - accounted);
 
   if (works.length === 0) {
     // A populated scope whose points carry no usable `title` cannot be cited
@@ -127,6 +150,7 @@ export async function listLibrary(
     total_passages: total,
     works,
     languages: languages.map((l) => l.value).sort(),
+    untitled_passages: untitled,
     ...(truncated ? { truncated: true as const } : {}),
   };
 }

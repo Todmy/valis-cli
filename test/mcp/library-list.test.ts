@@ -113,6 +113,7 @@ describe('listLibrary — empty is not the same as broken', () => {
       total_passages: 0,
       works: [],
       languages: [],
+      untitled_passages: 0,
     });
   });
 
@@ -132,7 +133,11 @@ describe('listLibrary — empty is not the same as broken', () => {
     });
   });
 
-  it('drops blank and non-string facet values rather than listing them as works', async () => {
+  // gh#334 review R3: this used to assert only that bad buckets were dropped —
+  // pinning the defect, not the guarantee. Dropping them is correct; doing so
+  // WITHOUT telling the caller is the silent-partial-truth version of the
+  // failure this feature exists to prevent. The count is the guarantee.
+  it('reports the passages no listed work accounts for, instead of hiding them', async () => {
     const client = makeClient({
       total: 900,
       titles: [
@@ -144,6 +149,27 @@ describe('listLibrary — empty is not the same as broken', () => {
     });
     const out = await listLibrary(client, PROJECT);
     expect(out.works).toEqual([{ title: 'Real Work', passages: 894 }]);
+    expect(out.untitled_passages).toBe(6);
+    expect(out.total_passages).toBe(900);
+  });
+
+  it('reports zero unaccounted passages for an intact shelf', async () => {
+    const client = makeClient({
+      total: 900,
+      titles: [{ value: 'A', count: 500 }, { value: 'B', count: 400 }],
+    });
+    expect((await listLibrary(client, PROJECT)).untitled_passages).toBe(0);
+  });
+
+  // A facet bucket with no count is missing data, not a work with zero
+  // passages — the shortfall it creates must surface in the same place.
+  it('counts a bucket with a missing count as unaccounted, not as zero passages', async () => {
+    const client = makeClient({
+      total: 100,
+      titles: [{ value: 'A', count: 90 }, { value: 'B' }],
+    });
+    const out = await listLibrary(client, PROJECT);
+    expect(out.untitled_passages).toBe(10);
   });
 });
 
@@ -177,6 +203,9 @@ describe('listLibrary — truncation is stated, never silent', () => {
     const out = await listLibrary(client, PROJECT);
     expect(out.works).toHaveLength(200);
     expect(out.truncated).toBe(true);
+    // Under truncation the shortfall IS the works that did not fit. Reporting
+    // it as damage would cry wolf on every large but healthy library.
+    expect(out.untitled_passages).toBe(0);
   });
 
   it('requests one over the cap, which is how truncation is detected', async () => {

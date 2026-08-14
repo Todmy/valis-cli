@@ -21,7 +21,7 @@ import { getServiceRoleSupabase, resolveReadAccess } from '../../lib/project-acc
 import { getQdrantClient } from '../../cloud/qdrant/client.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { loadConfig } from '../../config/store.js';
-import { findProjectConfig } from '../../config/project.js';
+import { findProjectConfigPath, findProjectMarker } from '../../config/project.js';
 
 export type LibraryErrorCode =
   | 'library_not_configured'
@@ -503,6 +503,38 @@ export function toLibraryResult(points: unknown[], scopedCount?: number): Librar
 }
 
 /**
+ * The active project on stdio, resolved the way the rest of the codebase
+ * resolves it (gh#334 review R1, round 2).
+ *
+ * Two distinctions this makes that a bare `findProjectConfig(process.cwd())`
+ * did not:
+ *
+ * 1. `findProjectMarker` honours `CLAUDE_PROJECT_DIR` before `process.cwd()`.
+ *    `valis init` registers a global `valis serve` entry with no project
+ *    directory (`init/helpers.ts:223`), so cwd is whatever the harness happened
+ *    to launch in — frequently not the workspace.
+ * 2. A marker file that EXISTS but cannot be read is a fault, not an absence.
+ *    Swallowing it fell through to the global config's `project_id`, so a
+ *    corrupt `.valis.json` made the tool quietly read a project the user had
+ *    switched away from. Absence stays absence; damage is named.
+ */
+async function resolveStdioProjectId(base: ServerConfig): Promise<string | null | undefined> {
+  const start = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const markerPath = await findProjectConfigPath(start).catch(() => null);
+  if (!markerPath) return base.project_id;
+
+  const marker = await findProjectMarker(start);
+  if (!marker?.projectId) {
+    throw new LibraryError(
+      'library_not_configured',
+      'valis_project_marker',
+      `The project marker at ${markerPath} could not be read; the active project is unknown.`,
+    );
+  }
+  return marker.projectId;
+}
+
+/**
  * Shared preflight for every library tool.
  *
  * Order is deliberate: configuration, then authorisation, then the operation
@@ -533,9 +565,7 @@ export async function withLibrary<T>(
   //
   // Hosted callers pass a `configOverride` whose `project_id` is already the
   // session's resolved scope, so this lookup is skipped for them entirely.
-  const activeProjectId = configOverride
-    ? base.project_id
-    : ((await findProjectConfig(process.cwd()).catch(() => null))?.project_id ?? base.project_id);
+  const activeProjectId = configOverride ? base.project_id : await resolveStdioProjectId(base);
 
   const config: LibraryInput = {
     ...base,
@@ -576,10 +606,23 @@ export async function withLibrary<T>(
     // Best-effort by the same rule they follow: an audit failure must not turn
     // a successful read into an error, which is why it carries its own catch
     // rather than falling through to the stage classifier below.
-    // Against the RESOLVED active project, not `base.project_id`: on stdio the
-    // latter is the global config file, so comparing with it logged a plain
-    // read of the user's own `.valis.json` project as a cross-org read.
-    if (libraryProjectId !== activeProjectId) {
+    // Same rule `valis_search` applies (`search.ts:209-213`): a scope that did
+    // NOT come from the caller's own membership resolution is a cross-org read.
+    // Two such scopes, and the second is why a plain inequality is not enough —
+    // the per-agent endpoint REPLACES `project_id` with the forced target, so
+    // target and active are equal and an inequality test sees nothing to audit
+    // (gh#334 review round 2, N3).
+    //
+    // Compared against the RESOLVED active project rather than `base.project_id`
+    // because on stdio the latter is the global config file, which logged a
+    // plain read of the user's own `.valis.json` project as a cross-org read.
+    const namedTarget = args?.target_project_id?.trim();
+    const crossScope =
+      namedTarget && namedTarget !== activeProjectId
+        ? namedTarget
+        : base.forced_project_id || undefined;
+
+    if (crossScope) {
       try {
         await storeAuditEntry(supabase, {
           id: crypto.randomUUID(),

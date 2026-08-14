@@ -31,9 +31,11 @@ vi.mock('../../src/config/store.js', () => ({
   loadConfig: () => loadConfig(),
 }));
 
-const findProjectConfig = vi.fn(async () => null as unknown);
+const findProjectConfigPath = vi.fn(async () => null as unknown);
+const findProjectMarker = vi.fn(async () => null as unknown);
 vi.mock('../../src/config/project.js', () => ({
-  findProjectConfig: () => findProjectConfig(),
+  findProjectConfigPath: () => findProjectConfigPath(),
+  findProjectMarker: () => findProjectMarker(),
 }));
 
 const getQdrantClient = vi.fn(() => qdrantMock);
@@ -93,7 +95,9 @@ beforeEach(() => {
   qdrantMock.count.mockResolvedValue({ count: 16344 });
   resolveReadAccess.mockResolvedValue('allow');
   loadConfig.mockResolvedValue(null);
-  findProjectConfig.mockResolvedValue(null);
+  findProjectConfigPath.mockResolvedValue(null);
+  findProjectMarker.mockResolvedValue(null);
+  delete process.env.CLAUDE_PROJECT_DIR;
   getQdrantClient.mockReturnValue(qdrantMock);
   // clearAllMocks clears calls, not implementations — a rejection set by one
   // test would otherwise leak into every later one.
@@ -369,7 +373,8 @@ describe('handleLibrarySearch — stdio project resolution (gh#334 R1)', () => {
 
   it('prefers .valis.json over the global config file', async () => {
     loadConfig.mockResolvedValue({ ...STDIO, project_id: 'stale-global' });
-    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+    findProjectConfigPath.mockResolvedValue('/w/.valis.json');
+    findProjectMarker.mockResolvedValue({ projectId: 'active-local' });
 
     await handleLibrarySearch({ query: 'x' });
 
@@ -382,14 +387,17 @@ describe('handleLibrarySearch — stdio project resolution (gh#334 R1)', () => {
 
   it('falls back to the global config when no .valis.json is present', async () => {
     loadConfig.mockResolvedValue({ ...STDIO, project_id: 'global-proj' });
-    findProjectConfig.mockResolvedValue(null);
+    findProjectConfigPath.mockResolvedValue(null);
+  findProjectMarker.mockResolvedValue(null);
+  delete process.env.CLAUDE_PROJECT_DIR;
     await handleLibrarySearch({ query: 'x' });
     expect(resolveReadAccess.mock.calls[0][2]).toBe('global-proj');
   });
 
   it('still lets an explicit target win over .valis.json', async () => {
     loadConfig.mockResolvedValue({ ...STDIO, project_id: 'global-proj' });
-    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+    findProjectConfigPath.mockResolvedValue('/w/.valis.json');
+    findProjectMarker.mockResolvedValue({ projectId: 'active-local' });
     await handleLibrarySearch({ query: 'x', target_project_id: 'explicit' });
     expect(resolveReadAccess.mock.calls[0][2]).toBe('explicit');
   });
@@ -399,14 +407,17 @@ describe('handleLibrarySearch — stdio project resolution (gh#334 R1)', () => {
   // one, filling the target project's audit trail with its own owner.
   it('does not audit a read of the .valis.json project as a cross-org read', async () => {
     loadConfig.mockResolvedValue({ ...STDIO, project_id: 'stale-global' });
-    findProjectConfig.mockResolvedValue({ project_id: 'active-local' });
+    findProjectConfigPath.mockResolvedValue('/w/.valis.json');
+    findProjectMarker.mockResolvedValue({ projectId: 'active-local' });
     await handleLibrarySearch({ query: 'x' });
     expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 
   it('names project_id when neither source has one', async () => {
     loadConfig.mockResolvedValue(STDIO);
-    findProjectConfig.mockResolvedValue(null);
+    findProjectConfigPath.mockResolvedValue(null);
+  findProjectMarker.mockResolvedValue(null);
+  delete process.env.CLAUDE_PROJECT_DIR;
     expect(await errOf(() => handleLibrarySearch({ query: 'x' }))).toEqual({
       code: 'library_not_configured',
       missing: 'project_id',
@@ -437,5 +448,28 @@ describe('handleLibrarySearch — stage classification (gh#334 R4)', () => {
       code: 'library_unavailable',
       missing: 'authorization',
     });
+  });
+});
+
+/**
+ * Round 2, N3. The per-agent endpoint REPLACES `project_id` with the forced
+ * target and raises `forced_project_id` alongside it. An inequality test
+ * therefore sees target == active and audits nothing, even though the read may
+ * cross into another org. `valis_search` closes the same hole at
+ * `search.ts:209-213`.
+ */
+describe('handleLibrarySearch — forced scope is audited (gh#334 R2/N3)', () => {
+  it('audits a forced cross-org read even though target equals active', async () => {
+    await handleLibrarySearch(
+      { query: 'x' },
+      { ...CONFIG, project_id: 'forced-proj', forced_project_id: 'forced-proj' } as ServerConfig,
+    );
+    const entry = storeAuditEntry.mock.calls[0][1] as Record<string, unknown>;
+    expect(entry).toMatchObject({ action: 'cross_org_read', project_id: 'forced-proj' });
+  });
+
+  it('still does not audit an ordinary read of the caller\'s own project', async () => {
+    await handleLibrarySearch({ query: 'x' }, { ...CONFIG, project_id: 'own-proj' });
+    expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 });

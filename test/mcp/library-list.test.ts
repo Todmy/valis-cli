@@ -30,6 +30,8 @@ function makeClient(opts: {
   titles?: Array<{ value: unknown; count?: number }>;
   langs?: Array<{ value: unknown; count?: number }>;
   collection?: unknown;
+  /** Points whose `title` payload key is absent — counted, not derived. */
+  missingTitle?: number;
 }) {
   const facet = vi.fn(async (_n: string, body: Record<string, unknown>) => ({
     hits: body.key === 'title' ? (opts.titles ?? []) : (opts.langs ?? []),
@@ -39,7 +41,11 @@ function makeClient(opts: {
       .fn()
       .mockResolvedValue('collection' in opts ? opts.collection : HEALTHY),
     query: vi.fn(),
-    count: vi.fn().mockResolvedValue({ count: opts.total ?? 0 }),
+    count: vi.fn(async (_n: string, body: Record<string, unknown>) => {
+      const must = (body.filter as { must: Array<Record<string, unknown>> }).must;
+      const isEmptyProbe = must.some((c) => 'is_empty' in c);
+      return { count: isEmptyProbe ? (opts.missingTitle ?? 0) : (opts.total ?? 0) };
+    }),
     facet,
   } as unknown as QdrantLike & { facet: typeof facet };
 }
@@ -140,6 +146,7 @@ describe('listLibrary — empty is not the same as broken', () => {
   it('reports the passages no listed work accounts for, instead of hiding them', async () => {
     const client = makeClient({
       total: 900,
+      missingTitle: 0,
       titles: [
         { value: '', count: 1 },
         { value: '  ', count: 2 },
@@ -153,6 +160,19 @@ describe('listLibrary — empty is not the same as broken', () => {
     expect(out.total_passages).toBe(900);
   });
 
+  // The dominant damage class is points with NO title key at all. Deriving the
+  // figure from total-minus-accounted made it invisible under truncation and
+  // meaningless under concurrent ingest; it is counted directly now.
+  it('counts points with no title key via an exact is_empty probe', async () => {
+    const client = makeClient({
+      total: 1000,
+      missingTitle: 40,
+      titles: [{ value: 'A', count: 960 }],
+    });
+    const out = await listLibrary(client, PROJECT);
+    expect(out.untitled_passages).toBe(40);
+  });
+
   it('reports zero unaccounted passages for an intact shelf', async () => {
     const client = makeClient({
       total: 900,
@@ -161,15 +181,16 @@ describe('listLibrary — empty is not the same as broken', () => {
     expect((await listLibrary(client, PROJECT)).untitled_passages).toBe(0);
   });
 
-  // A facet bucket with no count is missing data, not a work with zero
-  // passages — the shortfall it creates must surface in the same place.
-  it('counts a bucket with a missing count as unaccounted, not as zero passages', async () => {
+  // Concurrent ingest between the count and the facet used to make the old
+  // subtraction meaningless, clamped to zero by Math.max. An exact probe is
+  // independent of both round trips.
+  it('is unaffected when facet counts exceed the earlier scope count', async () => {
     const client = makeClient({
       total: 100,
-      titles: [{ value: 'A', count: 90 }, { value: 'B' }],
+      missingTitle: 0,
+      titles: [{ value: 'A', count: 150 }],
     });
-    const out = await listLibrary(client, PROJECT);
-    expect(out.untitled_passages).toBe(10);
+    expect((await listLibrary(client, PROJECT)).untitled_passages).toBe(0);
   });
 });
 
@@ -203,9 +224,20 @@ describe('listLibrary — truncation is stated, never silent', () => {
     const out = await listLibrary(client, PROJECT);
     expect(out.works).toHaveLength(200);
     expect(out.truncated).toBe(true);
-    // Under truncation the shortfall IS the works that did not fit. Reporting
-    // it as damage would cry wolf on every large but healthy library.
+    // A large healthy shelf must not be reported as damaged just because works
+    // did not fit — the shortfall from truncation is not corruption.
     expect(out.untitled_passages).toBe(0);
+  });
+
+  // gh#334 review round 2, N2: the previous version suppressed the damage
+  // figure whenever the shelf truncated, so the largest libraries were exactly
+  // the ones whose corruption stayed invisible.
+  it('still reports damage on a truncated shelf', async () => {
+    const titles = Array.from({ length: 250 }, (_, i) => ({ value: `Work ${i}`, count: 4 }));
+    const client = makeClient({ total: 1040, missingTitle: 40, titles });
+    const out = await listLibrary(client, PROJECT);
+    expect(out.truncated).toBe(true);
+    expect(out.untitled_passages).toBe(40);
   });
 
   it('requests one over the cap, which is how truncation is detected', async () => {

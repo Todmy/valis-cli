@@ -60,9 +60,18 @@ export interface LibraryListResult {
    * `works` would otherwise find a gap with nothing to explain it.
    *
    * Not a thrown error: one damaged point must not make an otherwise usable
-   * shelf unreadable. It is reported so the damage is visible and countable.
+   * shelf unreadable. It is reported so the damage is visible and countable —
+   * and it is reported under truncation too, where the old derivation hid it.
    */
   untitled_passages: number;
+}
+
+function usableValues(
+  hits: Array<{ value?: unknown; count?: number }> | undefined,
+): Array<{ value: string; count: number }> {
+  return (hits ?? [])
+    .filter((h) => typeof h.value === 'string' && (h.value as string).trim() !== '')
+    .map((h) => ({ value: h.value as string, count: h.count ?? 0 }));
 }
 
 async function facetValues(
@@ -77,9 +86,7 @@ async function facetValues(
     limit,
     exact: true,
   });
-  return (hits ?? [])
-    .filter((h) => typeof h.value === 'string' && (h.value as string).trim() !== '')
-    .map((h) => ({ value: h.value as string, count: h.count ?? 0 }));
+  return usableValues(hits);
 }
 
 /**
@@ -116,7 +123,20 @@ export async function listLibrary(
 
   // One over the ceiling: the extra hit is how truncation is detected without
   // a second round trip, and it is dropped before the result is returned.
-  const titles = await facetValues(client, libraryProjectId, 'title', MAX_WORKS + 1);
+  const rawTitles = await client.facet(SOURCES_COLLECTION, {
+    key: 'title',
+    filter: buildScopeFilter(libraryProjectId),
+    limit: MAX_WORKS + 1,
+    exact: true,
+  });
+  const titles = usableValues(rawTitles.hits);
+  // Buckets that exist but cannot name a work: blank strings, non-strings. They
+  // are dropped from `works` and must reappear in the damage count instead of
+  // vanishing between the two numbers.
+  const droppedBucketPassages = (rawTitles.hits ?? [])
+    .filter((h) => typeof h.value !== 'string' || h.value.trim() === '')
+    .reduce((sum, h) => sum + (h.count ?? 0), 0);
+
   const languages = await facetValues(client, libraryProjectId, 'lang', 50);
 
   const truncated = titles.length > MAX_WORKS;
@@ -125,13 +145,24 @@ export async function listLibrary(
     .map(({ value, count }) => ({ title: value, passages: count }))
     .sort((a, b) => b.passages - a.passages);
 
-  // Reconcile against the scope count. Under truncation the shortfall is
-  // expected — it is the works that did not fit — so it is not damage and is
-  // not reported as such. Without truncation, every scoped passage should be
-  // accounted for by some work, and any shortfall is a point with no usable
-  // title.
-  const accounted = works.reduce((sum, w) => sum + w.passages, 0);
-  const untitled = truncated ? 0 : Math.max(0, total - accounted);
+  // Count the damage directly instead of deriving it from `total - accounted`.
+  //
+  // The subtraction was wrong in two ways (gh#334 review round 2, N2). Under
+  // truncation the shortfall is dominated by works that simply did not fit, so
+  // the old code suppressed the figure entirely — hiding real corruption on
+  // exactly the largest shelves. And because the count and the facet are
+  // separate round trips, concurrent ingest could make the arithmetic
+  // meaningless in either direction, with `Math.max(0, …)` quietly clamping it.
+  //
+  // An exact count under `is_empty` is snapshot-independent and unaffected by
+  // the facet ceiling. Blank and non-string titles are not `is_empty`, so the
+  // dropped buckets are added back; that term alone is still facet-bounded,
+  // which is why the count carries the dominant, exact part.
+  const { count: missingTitle } = await client.count(SOURCES_COLLECTION, {
+    filter: { must: [...buildScopeFilter(libraryProjectId).must, { is_empty: { key: 'title' } }] },
+    exact: true,
+  });
+  const untitled = missingTitle + droppedBucketPassages;
 
   if (works.length === 0) {
     // A populated scope whose points carry no usable `title` cannot be cited

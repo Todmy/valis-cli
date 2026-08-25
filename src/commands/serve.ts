@@ -65,13 +65,22 @@ export async function serveCommand(): Promise<void> {
   //    confusion when #91 Level 1 ships future auto-extraction. Tracked in
   //    BACKLOG: re-enable after #91 Level 1 lands.
   const watcherEnabled = process.env.VALIS_DISABLE_WATCHER === '0';
-  const watcher = watcherEnabled
-    ? startWatcher((filePath) => {
+  let watcher: ReturnType<typeof startWatcher> | null = null;
+  if (watcherEnabled) {
+    // gh#342 — a watcher failure must never take the MCP server down with it.
+    try {
+      watcher = startWatcher((filePath) => {
         console.error(`Activity detected: ${filePath}`);
         // Channel push would happen here if channels are connected
         const _reminder = buildCaptureReminder();
-      })
-    : null;
+      });
+    } catch (err) {
+      console.error(
+        `[watcher] Failed to start (${(err as Error).message}) — continuing without activity detection. ` +
+          'Keep it off by unsetting VALIS_DISABLE_WATCHER.',
+      );
+    }
+  }
   if (!watcherEnabled) {
     console.error('[watcher] Disabled by default (set VALIS_DISABLE_WATCHER=0 to enable). Pending #91 Level 1.');
   }

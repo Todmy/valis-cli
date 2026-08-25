@@ -73,6 +73,31 @@ export function startWatcher(onActivity: ActivityCallback): ReturnType<typeof wa
     }
   });
 
+  // gh#342 — chokidar surfaces fd exhaustion (EMFILE) through 'error'. Without a
+  // listener Node rethrows it as an unhandled 'error' event and kills the whole
+  // process, which in `valis serve` means the MCP handshake dies with no
+  // diagnostic. EMFILE fires once per failing path, so log once and shut the
+  // watcher down — activity detection is best-effort, the MCP server is not.
+  let errorReported = false;
+  watcher.on('error', (err) => {
+    if (errorReported) return;
+    errorReported = true;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[watcher] Stopped after a file-watch error (EMFILE / too many open files is the usual cause): ${message}. ` +
+        'MCP tools are unaffected; only activity detection is off for this session. ' +
+        'Raise the fd limit (ulimit -n) to recover, or keep the watcher off by unsetting VALIS_DISABLE_WATCHER.',
+    );
+    watcher.close().catch(() => {
+      // Already tearing down — nothing further to do.
+    });
+    // close() synchronously drops every listener, including this one, while
+    // further EMFILE errors can still arrive from in-flight fs callbacks.
+    // Re-arm a silent listener so a late error stays a no-op instead of an
+    // unhandled 'error' event.
+    watcher.on('error', () => {});
+  });
+
   return watcher;
 }
 

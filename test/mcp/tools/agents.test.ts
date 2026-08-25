@@ -4,7 +4,7 @@
  * `handleListAgents` is pure (reads the static registry). `handleConsultAgent`
  * routes a query to the matched agent's KB by reusing the existing search
  * handler with `target_project_id` set to the agent's project_id — the same
- * cross-org public-KB read path (feature 033) gated by `canReadProject`.
+ * cross-org public-KB read path (feature 033) gated by `resolveReadAccess`.
  *
  * Search deps are mocked exactly like search.public.test.ts; `handleSearch`
  * itself is wrapped in a spy (via importActual) so we can assert it is/ isn't
@@ -57,7 +57,9 @@ vi.mock('../../../src/cloud/supabase.js', () => ({
 }));
 
 vi.mock('../../../src/lib/project-access.js', () => ({
-  canReadProject: vi.fn(),
+  assertServiceRoleClient: (c: unknown) => c,
+  canReadProject: vi.fn().mockResolvedValue(true),
+  resolveReadAccess: vi.fn(),
 }));
 
 vi.mock('../../../src/cloud/supabase/audit.js', () => ({
@@ -77,7 +79,7 @@ vi.mock('../../../src/mcp/tools/search.js', async (importActual) => {
 
 import { handleListAgents, handleConsultAgent } from '../../../src/mcp/tools/agents.js';
 import { handleSearch } from '../../../src/mcp/tools/search.js';
-import { canReadProject } from '../../../src/lib/project-access.js';
+import { resolveReadAccess } from '../../../src/lib/project-access.js';
 import type { SearchResponse } from '../../../src/types.js';
 
 const NEGOTIATOR_PROJECT_ID = 'd023233b-de54-46d4-a500-525acb4d9c0d';
@@ -130,7 +132,7 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
   });
 
   it('consult_agent routes to the matched agent KB via target_project_id', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
 
     await handleConsultAgent(
       { agent: 'negotiator', query: 'how do I counter a lowball?' },
@@ -144,7 +146,7 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
   });
 
   it('consult_agent returns empty results (not 403/throw) when access is denied', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('deny');
 
     const result = (await handleConsultAgent(
       { agent: 'negotiator', query: 'q' },
@@ -155,7 +157,7 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
   });
 
   it('emits exactly one agent_consulted funnel event with agent_slug + count', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
     const emit_funnel = vi.fn();
 
     await handleConsultAgent(
@@ -170,7 +172,7 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
   });
 
   it('agent_consulted payload carries NO query/result/decision-id (privacy — Principle XIII)', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
     const emit_funnel = vi.fn();
     const query = 'SECRET sensitive negotiation question about the acme deal';
 
@@ -191,7 +193,7 @@ describe('navigator tools — list_agents + consult_agent (Task 2)', () => {
   });
 
   it('a throwing funnel sink never breaks the consult response (non-blocking — Principle III)', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
     const emit_funnel = vi.fn(() => {
       throw new Error('sink down');
     });

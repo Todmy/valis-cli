@@ -26,7 +26,7 @@ import {
 } from '../../cloud/supabase.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import { resolveProposedPendingBlock } from './proposed-pending-block.js';
-import { canReadProject } from '../../lib/project-access.js';
+import { assertServiceRoleClient, resolveReadAccess } from '../../lib/project-access.js';
 import {
   buildScopeEnvelope,
   buildScopeHint,
@@ -203,10 +203,15 @@ export async function handleSearch(
   //      forced scope also replaces `project_id`, so a same-value
   //      `target_project_id` from handleConsultAgent would otherwise slip past
   //      the differ-check below — the forced signal closes that hole.
-  // EITHER case MUST pass `canReadProject` before any results are returned;
-  // denial returns an empty response indistinguishable from "no results" /
-  // "project does not exist" (FR-006, never leaks existence, never 403). The
-  // caller's own membership-default scope keeps the existing fast path.
+  // EITHER case MUST pass the read-access resolver before any results are
+  // returned; denial returns an empty response indistinguishable from "no
+  // results" / "project does not exist" (FR-006, never leaks existence, never
+  // 403). The caller's own membership-default scope keeps the existing fast path.
+  //
+  // gh#330 — the resolver is tri-state: an unanswerable question ('unavailable',
+  // e.g. Supabase outage) surfaces as a backend error, NOT as a denial. Folding
+  // an outage into the FR-006 empty response told the caller "you may not read
+  // this" at the moment the system could not know.
   const forcedScope = configOverride?.forced_project_id;
   const membershipProjectId = configOverride?.project_id;
   const gateTarget =
@@ -225,12 +230,22 @@ export async function handleSearch(
       configOverride.supabase_url,
       configOverride.supabase_service_role_key,
     );
-    const granted = await canReadProject(
-      supabaseAdmin,
+    const access = await resolveReadAccess(
+      assertServiceRoleClient(supabaseAdmin),
       configOverride.member_id,
       gateTarget,
     );
-    if (!granted) {
+    if (access === 'unavailable') {
+      // gh#330 — the gate is only reachable in server (HTTP MCP) mode, so the
+      // envelope is the server one: `backend_unavailable` + `error_message`,
+      // matching the transport catch below. Never `offline` here.
+      return {
+        results: [],
+        backend_unavailable: true,
+        error_message: 'Read-access check unavailable: project access backend did not answer.',
+      };
+    }
+    if (access === 'deny') {
       return { results: [] };
     }
     projectId = gateTarget;

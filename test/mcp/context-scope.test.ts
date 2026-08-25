@@ -63,7 +63,9 @@ vi.mock('../../src/cloud/search-proxy.js', () => ({
 }));
 
 vi.mock('../../src/lib/project-access.js', () => ({
+  assertServiceRoleClient: (c: unknown) => c,
   canReadProject: vi.fn().mockResolvedValue(true),
+  resolveReadAccess: vi.fn().mockResolvedValue('allow'),
 }));
 
 vi.mock('../../src/cloud/supabase/audit.js', () => ({

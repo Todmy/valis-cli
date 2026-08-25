@@ -61,7 +61,9 @@ vi.mock('../../../src/cloud/supabase.js', () => ({
 }));
 
 vi.mock('../../../src/lib/project-access.js', () => ({
-  canReadProject: vi.fn(),
+  assertServiceRoleClient: (c: unknown) => c,
+  canReadProject: vi.fn().mockResolvedValue(true),
+  resolveReadAccess: vi.fn(),
 }));
 
 vi.mock('../../../src/cloud/supabase/audit.js', () => ({
@@ -69,7 +71,7 @@ vi.mock('../../../src/cloud/supabase/audit.js', () => ({
 }));
 
 import { handleContext } from '../../../src/mcp/tools/context.js';
-import { canReadProject } from '../../../src/lib/project-access.js';
+import { resolveReadAccess } from '../../../src/lib/project-access.js';
 import { proxySearch } from '../../../src/cloud/search-proxy.js';
 import { storeAuditEntry } from '../../../src/cloud/supabase/audit.js';
 
@@ -96,14 +98,14 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
   });
 
   it('returns context when target project is public', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
 
     const result = await handleContext(
       { task_description: 'how to handle auth', target_project_id: PUBLIC_TARGET },
       httpServerOverride,
     );
 
-    expect(canReadProject).toHaveBeenCalledWith(
+    expect(resolveReadAccess).toHaveBeenCalledWith(
       expect.anything(),
       'caller-member-id',
       PUBLIC_TARGET,
@@ -120,7 +122,7 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
   });
 
   it('returns empty context when target project is private (non-member)', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('deny');
 
     const result = await handleContext(
       { task_description: 'how to handle auth', target_project_id: 'private-target' },
@@ -141,7 +143,7 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
       target_project_id: PUBLIC_TARGET,
     });
 
-    expect(canReadProject).not.toHaveBeenCalled();
+    expect(resolveReadAccess).not.toHaveBeenCalled();
     expect(result.total_in_brain).toBe(0);
     expect(proxySearch).not.toHaveBeenCalled();
   });
@@ -151,14 +153,14 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
       { task_description: 'how to handle auth' },
       httpServerOverride,
     );
-    expect(canReadProject).not.toHaveBeenCalled();
+    expect(resolveReadAccess).not.toHaveBeenCalled();
     expect(proxySearch).toHaveBeenCalled();
     // No cross-org → no audit emit for cross_org_read.
     expect(storeAuditEntry).not.toHaveBeenCalled();
   });
 
   it('emits a cross_org_read audit row on successful cross-org context load', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(true);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('allow');
 
     await handleContext(
       { task_description: 'how to handle auth', target_project_id: PUBLIC_TARGET },
@@ -178,7 +180,7 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
   });
 
   it('does NOT emit cross_org_read audit when access is denied', async () => {
-    vi.mocked(canReadProject).mockResolvedValueOnce(false);
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('deny');
 
     await handleContext(
       { task_description: 'how to handle auth', target_project_id: 'private-target' },
@@ -186,5 +188,52 @@ describe('handleContext — public-KB cross-org reads (feature 033)', () => {
     );
 
     expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * gh#330 — mirror of the `valis_search` regression: an outage in the
+ * read-access check must reach the caller as a backend error, never as the
+ * FR-006 empty context that means "you may not read this".
+ */
+describe('handleContext — read-access unavailable vs denied (gh#330)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports a backend error when the access check is unavailable', async () => {
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('unavailable');
+
+    const result = await handleContext(
+      { task_description: 'how to handle auth', target_project_id: PUBLIC_TARGET },
+      httpServerOverride,
+    );
+
+    expect(result.backend_unavailable).toBe(true);
+    expect(result.infrastructure_error).toBe(true);
+    expect(result.error_message).toBeTruthy();
+    // Server mode never emits the CLI-stdio `offline` cue.
+    expect(result.offline).toBeUndefined();
+    expect(result.total_in_brain).toBe(0);
+    expect(proxySearch).not.toHaveBeenCalled();
+    expect(storeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('keeps deny as a plain empty context with no error signal (FR-006)', async () => {
+    vi.mocked(resolveReadAccess).mockResolvedValueOnce('deny');
+
+    const result = await handleContext(
+      { task_description: 'how to handle auth', target_project_id: 'private-target' },
+      httpServerOverride,
+    );
+
+    expect(result).toEqual({
+      decisions: [],
+      constraints: [],
+      patterns: [],
+      lessons: [],
+      historical: [],
+      total_in_brain: 0,
+    });
   });
 });

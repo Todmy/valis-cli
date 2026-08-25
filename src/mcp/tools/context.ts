@@ -7,7 +7,7 @@ import { resolveProposedPendingBlock } from './proposed-pending-block.js';
 import { isHostedMode } from '../../cloud/api-url.js';
 import { rerank } from '../../search/reranker.js';
 import { suppressResults } from '../../search/suppression.js';
-import { canReadProject } from '../../lib/project-access.js';
+import { assertServiceRoleClient, resolveReadAccess } from '../../lib/project-access.js';
 import { storeAuditEntry } from '../../cloud/supabase/audit.js';
 import {
   buildScopeEnvelope,
@@ -254,9 +254,13 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
   // Feature 033 + review HIGH (308) — public-KB cross-org / forced-scope gate.
   // Mirrors handleSearch: any scope NOT derived from the caller's own
   // membership (explicit `target_project_id` that differs, OR a
-  // `forced_project_id` from the per-agent endpoint) MUST pass canReadProject
-  // before any context is returned. The forced signal closes the hole where a
-  // same-value target slips past the differ-check. Deny → empty.
+  // `forced_project_id` from the per-agent endpoint) MUST pass the read-access
+  // resolver before any context is returned. The forced signal closes the hole
+  // where a same-value target slips past the differ-check. Deny → empty.
+  //
+  // gh#330 — the resolver is tri-state: 'unavailable' (Supabase outage) is
+  // reported as a backend error, not as a denial. Only an authoritative 'deny'
+  // produces the FR-006 empty context.
   const forcedScope = configOverride?.forced_project_id;
   const membershipProjectId = configOverride?.project_id;
   const gateTarget =
@@ -283,12 +287,30 @@ export async function handleContext(args: ContextArgs, configOverride?: ServerCo
       configOverride.supabase_url,
       configOverride.supabase_service_role_key,
     );
-    const granted = await canReadProject(
-      supabaseAdmin,
+    const access = await resolveReadAccess(
+      assertServiceRoleClient(supabaseAdmin),
       configOverride.member_id,
       gateTarget,
     );
-    if (!granted) {
+    if (access === 'unavailable') {
+      // gh#330 — the gate is only reachable in server (HTTP MCP) mode, so this
+      // takes the same server-mode envelope as the catch block at the bottom of
+      // this handler: `infrastructure_error` + `backend_unavailable` +
+      // `error_message`. Never `offline`, never a silent empty context.
+      return withMismatch({
+        decisions: [],
+        constraints: [],
+        patterns: [],
+        lessons: [],
+        historical: [],
+        total_in_brain: 0,
+        suppressed_count: 0,
+        infrastructure_error: true,
+        backend_unavailable: true,
+        error_message: 'Read-access check unavailable: project access backend did not answer.',
+      });
+    }
+    if (access === 'deny') {
       return withMismatch({
         decisions: [],
         constraints: [],

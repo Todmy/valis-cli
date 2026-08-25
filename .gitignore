@@ -9,3 +9,6 @@ src/generated/
 .env
 .env.local
 .env.*.local
+
+# E2E created-org manifest (gh#318) — run-local record of orgs pending teardown.
+test/e2e/.created-orgs.jsonl

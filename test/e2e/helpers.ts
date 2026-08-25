@@ -1,10 +1,19 @@
 /**
  * E2E test helpers for VALIS quickstart flow.
  *
- * These tests require a real Supabase + Qdrant backend.
- * Set environment variables before running:
- *   VALIS_E2E_API_URL   — Vercel API URL (e.g. https://valis.krukit.co)
- *   VALIS_E2E_SUPABASE_URL — Supabase project URL
+ * These tests require a real Supabase + Qdrant backend and create REAL orgs
+ * through the public /api/register path. Full contract: docs/e2e-environment.md.
+ *
+ *   VALIS_E2E_API_URL      — API URL of a NON-production deployment
+ *   VALIS_E2E_SUPABASE_URL — a NON-production Supabase project URL
+ *
+ * Teardown credentials (registration only ever returns a member key, which
+ * cannot delete an org). Without these the run leaks — see gh#318:
+ *   VALIS_E2E_SUPABASE_SERVICE_ROLE_KEY
+ *   VALIS_E2E_QDRANT_URL
+ *   VALIS_E2E_QDRANT_API_KEY
+ *
+ * Pointing this at production throws at import time (prod-guard.ts). No override.
  *
  * Skip all E2E tests when env vars are missing:
  *   pnpm test -- --grep e2e
@@ -15,6 +24,8 @@ import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import type { ValisConfig, ProjectConfig, RegistrationResponse } from '../../src/types.js';
+import { assertNotProduction } from './prod-guard.js';
+import { trackCreatedOrg, readTeardownCreds, MANIFEST_PATH } from './cleanup.js';
 
 // ---------------------------------------------------------------------------
 // Environment detection
@@ -23,9 +34,25 @@ import type { ValisConfig, ProjectConfig, RegistrationResponse } from '../../src
 export const E2E_API_URL = process.env.VALIS_E2E_API_URL ?? '';
 export const E2E_SUPABASE_URL = process.env.VALIS_E2E_SUPABASE_URL ?? '';
 
+// Fail at module-evaluation time — before any test body, before any HTTP call —
+// if the suite is aimed at production (gh#318). No override exists by design.
+assertNotProduction(E2E_SUPABASE_URL, E2E_API_URL);
+
 /** Returns true when E2E env vars are configured. */
 export function canRunE2E(): boolean {
   return !!(E2E_API_URL && E2E_SUPABASE_URL);
+}
+
+// The suite creates orgs the backend never rolls back. Without admin creds
+// teardown cannot delete them, so say it once, up front, rather than letting
+// the run finish green over a fresh leak.
+if (canRunE2E() && readTeardownCreds() === null) {
+  console.warn(
+    '\n[e2e] TEARDOWN DISABLED — VALIS_E2E_SUPABASE_SERVICE_ROLE_KEY / ' +
+      'VALIS_E2E_QDRANT_URL / VALIS_E2E_QDRANT_API_KEY are not set.\n' +
+      `      Orgs created by this run will be recorded in ${MANIFEST_PATH}\n` +
+      '      and must be removed with: node scripts/e2e-sweep.mjs --apply\n',
+  );
 }
 
 /** Unique suffix for this test run — prevents collisions across parallel runs. */
@@ -71,6 +98,15 @@ export async function registerTestOrg(
   }
 
   const response = (await res.json()) as RegistrationResponse;
+
+  // Record it before the caller can use it: a run killed mid-test still leaves
+  // a durable trace of what it created (gh#318).
+  await trackCreatedOrg({
+    org_id: response.org_id,
+    org_name: response.org_name,
+    created_at: new Date().toISOString(),
+    run_id: TEST_RUN_ID,
+  });
 
   const config: ValisConfig = {
     org_id: response.org_id,

@@ -20,7 +20,7 @@ export class ProxyError extends Error {
 interface JsonRpcResponse {
   jsonrpc: '2.0';
   id: number;
-  result?: { content: unknown[] };
+  result?: { content: unknown[]; isError?: boolean };
   error?: { code: number; message: string; data?: unknown };
 }
 
@@ -74,16 +74,29 @@ export async function initializeProxy(
   return (res.result ?? {}) as Record<string, unknown>;
 }
 
-/** Forward a single tool call and return the content blocks. */
+/**
+ * Forward a single tool call and return the content blocks together with the
+ * remote `isError` flag.
+ *
+ * The MCP SDK turns a thrown handler error into a *successful* JSON-RPC result
+ * carrying `isError: true` (see `@modelcontextprotocol/sdk` 1.27.1,
+ * `server/mcp.js` `createToolError`). That flag is the only failure signal in
+ * the envelope, so it must survive the proxy hop. `isError` is optional in the
+ * MCP schema and stays absent when the remote omitted it.
+ */
 export async function proxyToolCall(
   mcpEndpoint: string,
   bearerToken: string,
   toolName: string,
   args: Record<string, unknown>,
-): Promise<unknown[]> {
+): Promise<{ content: unknown[]; isError?: boolean }> {
   const res = await rpc(mcpEndpoint, bearerToken, 'tools/call', {
     name: toolName,
     arguments: args,
   });
-  return res.result?.content ?? [];
+  const out: { content: unknown[]; isError?: boolean } = {
+    content: res.result?.content ?? [],
+  };
+  if (res.result?.isError !== undefined) out.isError = res.result.isError;
+  return out;
 }

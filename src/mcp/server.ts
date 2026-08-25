@@ -928,8 +928,13 @@ export function createProxyMcpServer(config: ValisConfig): McpServer {
       def.schema,
       async (args: Record<string, unknown>) => {
         try {
-          const content = await proxyToolCall(endpoint, token, toolName, args);
-          return { content: content as Array<{ type: 'text'; text: string }> };
+          const { content, isError } = await proxyToolCall(endpoint, token, toolName, args);
+          // gh#331: the remote's isError flag is the only failure signal in the
+          // envelope — forward it, and only when the remote actually set it.
+          return {
+            content: content as Array<{ type: 'text'; text: string }>,
+            ...(isError !== undefined ? { isError } : {}),
+          };
         } catch (err) {
           // T007: Offline fallback for store calls
           if (toolName === 'valis_store' && args.text && !(err instanceof ProxyError && err.statusCode === 401)) {

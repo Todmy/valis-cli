@@ -173,6 +173,12 @@ export const ERRORS = {
     why: 'Another organization is already using this name. Organization names must be globally unique.',
     fix: 'Choose a different organization name and try again.',
   },
+  member_exists: {
+    code: 'member_exists',
+    what: 'You are already a member of this organization',
+    why: 'Registration only issues credentials for a new organization. Returning credentials to anyone who knew an org name plus a member name was a disclosure hole (gh#320), so that path is closed.',
+    fix: 'Run `valis login` to authenticate this machine, then re-run `valis init` from your project directory.',
+  },
   invalid_org_name: {
     code: 'invalid_org_name',
     what: 'Invalid organization name',

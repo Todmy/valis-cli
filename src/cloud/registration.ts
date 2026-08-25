@@ -70,7 +70,11 @@ export async function register(
 
   switch (response.status) {
     case 409:
-      throw new Error(formatError(ERRORS.org_name_taken));
+      // gh#320 — the org exists AND this author is already a member. That is a
+      // different remedy from a name collision: authenticate, do not re-register.
+      throw new Error(
+        formatError(code === 'member_exists' ? ERRORS.member_exists : ERRORS.org_name_taken),
+      );
     case 429:
       throw new Error(formatError(ERRORS.rate_limit_exceeded));
     case 400:

@@ -1,6 +1,9 @@
 import pc from 'picocolors';
 import { resolveConfig } from '../config/project.js';
 import { getSupabaseClient, getSupabaseJwtClient } from '../cloud/supabase.js';
+import { getToken } from '../auth/jwt.js';
+import { HOSTED_API_URL, type ValisConfig } from '../types.js';
+import { isHostedMode } from '../cloud/api-url.js';
 
 export async function wakeUpCommand(): Promise<void> {
   const resolved = await resolveConfig();
@@ -17,6 +20,13 @@ export async function wakeUpCommand(): Promise<void> {
   const orgId = config.org_id;
 
   console.log(pc.bold(`\nValis Wake-up — project "${projectName}"\n`));
+
+  // Hosted JWT users must use the server context endpoint. A direct
+  // Supabase client has no valid anon key and would send the URL as `apikey`.
+  if (config.auth_mode === 'jwt' && isHostedMode(config)) {
+    await wakeUpHosted(config, projectId);
+    return;
+  }
 
   // Use JWT client for hosted mode, service role for community mode
   const supabase = config.auth_mode === 'jwt'
@@ -82,6 +92,50 @@ export async function wakeUpCommand(): Promise<void> {
     console.log(pc.red(`Error: ${(err as Error).message}`));
     process.exit(1);
   }
+}
+
+export async function wakeUpHosted(
+  config: ValisConfig,
+  projectId: string | undefined,
+): Promise<void> {
+  if (!projectId) {
+    console.error(pc.red('Error: configure a project before running wake-up.'));
+    process.exit(1);
+  }
+  const token = await getToken(config.supabase_url, config.member_api_key || config.api_key, projectId);
+  if (!token) {
+    console.error(pc.red('Error: could not authenticate with the hosted Valis API.'));
+    process.exit(1);
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${HOSTED_API_URL}/api/projects/${projectId}/context`, {
+      headers: { Authorization: `Bearer ${token.jwt.token}` },
+    });
+  } catch (err) {
+    console.error(pc.red(`Error fetching context: ${(err as Error).message}`));
+    process.exit(1);
+  }
+  if (!response.ok) {
+    console.error(pc.red(`Error fetching context: HTTP ${response.status}`));
+    process.exit(1);
+  }
+  const data = (await response.json()) as {
+    decisions?: Array<{ summary?: string; status?: string }>;
+    violation_count?: number;
+  };
+  const decisions = data.decisions ?? [];
+  if (decisions.length === 0) {
+    console.log(pc.dim('  No activity yet — start by having your agent make decisions in this project.\n'));
+    return;
+  }
+  console.log('Recent decisions:');
+  for (const decision of decisions) {
+    const statusColor = decision.status === 'active' ? pc.green : pc.dim;
+    console.log(`  • [${statusColor(decision.status ?? 'unknown')}] ${decision.summary || '(no summary)'}`);
+  }
+  console.log(`\nOpen contradictions: ${data.violation_count ?? 0}`);
+  console.log(pc.dim('\nRun `valis search <query>` to find specific decisions.\n'));
 }
 
 function formatTimeAgo(date: Date): string {

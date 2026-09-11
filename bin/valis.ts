@@ -47,6 +47,7 @@ import {
 import { addCommandCommand } from '../src/commands/add-command.js';
 import { indexCommand } from '../src/commands/index-cmd.js';
 import { schemaCommand } from '../src/commands/schema-cmd.js';
+import { exportCommand } from '../src/commands/export.js';
 import { helpTopicCommand } from '../src/commands/help-topics.js';
 import { maybeFireDay30 } from '../src/hooks/consent.js';
 
@@ -246,6 +247,22 @@ program
   .action(async (query, options) => {
     try {
       await searchCommand(query, options);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('export')
+  .description('Export project decisions as lossless JSON or Markdown ADRs')
+  .requiredOption('--format <format>', 'Output format: json or md')
+  .option('--project <id>', 'Project UUID (defaults to the active project)')
+  .option('--all-projects', 'Export every project accessible to the current member')
+  .option('--output <path>', 'Output file (JSON) or directory (Markdown)')
+  .action(async (options) => {
+    try {
+      await exportCommand({ ...options, format: options.format });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

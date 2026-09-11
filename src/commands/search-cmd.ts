@@ -8,7 +8,7 @@ import {
   mmrRerank,
 } from '../cloud/qdrant.js';
 import {
-  getSupabaseClient,
+  getSupabaseForConfig,
   listMemberProjects,
   type ProjectInfo,
 } from '../cloud/supabase.js';
@@ -125,7 +125,7 @@ export async function searchCommand(
     let known: ProjectInfo[] = [];
     try {
       if (config.member_id) {
-        const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+        const supabase = getSupabaseForConfig(config);
         known = await listMemberProjects(supabase, config.member_id);
       }
     } catch {
@@ -167,7 +167,7 @@ export async function searchCommand(
 
       try {
         if (config.member_id) {
-          const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+          const supabase = getSupabaseForConfig(config);
           const projects: ProjectInfo[] = await listMemberProjects(supabase, config.member_id);
           projectIds = projects.map((p) => p.id);
           for (const p of projects) {

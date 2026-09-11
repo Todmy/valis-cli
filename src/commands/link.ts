@@ -17,7 +17,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
 import { findProjectConfigPath } from '../config/project.js';
-import { getSupabaseClient, listMemberProjects, type ProjectInfo } from '../cloud/supabase.js';
+import { getSupabaseForConfig, listMemberProjects, type ProjectInfo } from '../cloud/supabase.js';
 
 /** Matches `linked_projects.max(20)` in `projectConfigSchema`. */
 const LINK_CAP = 20;
@@ -68,7 +68,7 @@ async function loadProjects(): Promise<ProjectInfo[]> {
     console.error(pc.red('Error: not authenticated. Run `valis init` first.'));
     process.exit(1);
   }
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  const supabase = getSupabaseForConfig(config);
   try {
     return await listMemberProjects(supabase, config.member_id);
   } catch (err) {

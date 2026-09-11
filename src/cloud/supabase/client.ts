@@ -11,6 +11,7 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { getAccessTokenFn } from '../../auth/jwt.js';
+import type { ValisConfig } from '../../types.js';
 
 let client: SupabaseClient | null = null;
 
@@ -61,6 +62,18 @@ export function getSupabaseJwtClient(
 
 export function resetJwtClient(): void {
   jwtClient = null;
+}
+
+/**
+ * Return the client appropriate for the configured authentication mode.
+ * Command-layer callers must use this instead of assuming the legacy
+ * service-role key is present; migrate-auth deliberately clears that key.
+ */
+export function getSupabaseForConfig(config: Pick<ValisConfig, 'supabase_url' | 'auth_mode' | 'member_api_key' | 'api_key' | 'supabase_service_role_key'>): SupabaseClient {
+  if (config.auth_mode === 'jwt') {
+    return getSupabaseJwtClient(config.supabase_url, config.member_api_key || config.api_key);
+  }
+  return getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
 }
 
 /**

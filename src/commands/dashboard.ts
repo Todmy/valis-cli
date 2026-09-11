@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
 import { resolveConfig } from '../config/project.js';
-import { getSupabaseClient, getDashboardStats, getProposedDecisions } from '../cloud/supabase.js';
+import { getSupabaseForConfig, getDashboardStats, getProposedDecisions } from '../cloud/supabase.js';
 
 export async function dashboardCommand(): Promise<void> {
   const config = await loadConfig();
@@ -15,7 +15,7 @@ export async function dashboardCommand(): Promise<void> {
   const projectId = resolved.project?.project_id;
   const projectName = resolved.project?.project_name;
 
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  const supabase = getSupabaseForConfig(config);
 
   try {
     // T027: Pass projectId to scope dashboard stats

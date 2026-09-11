@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getSupabaseClient, resetClient, healthCheck } from '../../src/cloud/supabase.js';
+import { getSupabaseClient, getSupabaseForConfig, resetClient, resetJwtClient, healthCheck } from '../../src/cloud/supabase.js';
 
 // We can only test the client creation and basic logic without a real Supabase instance
 describe('Supabase Client', () => {
@@ -28,5 +28,18 @@ describe('Supabase Client', () => {
     const client = getSupabaseClient('https://invalid.supabase.co', 'bad-key');
     const result = await healthCheck(client);
     expect(result).toBe(false);
+  });
+
+  it('uses the JWT client when migrated config has no service-role key', () => {
+    resetClient();
+    resetJwtClient();
+    const client = getSupabaseForConfig({
+      supabase_url: 'https://test.supabase.co',
+      auth_mode: 'jwt',
+      member_api_key: 'tmm_test',
+      api_key: '',
+      supabase_service_role_key: '',
+    });
+    expect(client).toBeDefined();
   });
 });

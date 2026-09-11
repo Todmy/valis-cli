@@ -15,7 +15,7 @@ import { stdin, stdout } from 'node:process';
 import pc from 'picocolors';
 import { loadConfig } from '../config/store.js';
 import { findProjectConfig, writeProjectConfig } from '../config/project.js';
-import { getSupabaseClient, listMemberProjects, type ProjectInfo } from '../cloud/supabase.js';
+import { getSupabaseForConfig, listMemberProjects, type ProjectInfo } from '../cloud/supabase.js';
 import { ERRORS, formatError } from '../errors.js';
 
 async function prompt(question: string): Promise<string> {
@@ -59,7 +59,7 @@ export async function switchCommand(options: { project?: string }): Promise<void
   }
 
   // Fetch projects from Supabase
-  const supabase = getSupabaseClient(config.supabase_url, config.supabase_service_role_key);
+  const supabase = getSupabaseForConfig(config);
 
   let projects: ProjectInfo[];
   try {

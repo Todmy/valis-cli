@@ -6,7 +6,7 @@ import { startWatcher, saveState, initWatcherState } from '../capture/watcher.js
 import { startHookHandler, stopHookHandler } from '../capture/hook-handler.js';
 import { startupSweep } from '../capture/startup-sweep.js';
 import { buildCaptureReminder } from '../channel/push.js';
-import { getSupabaseClient } from '../cloud/supabase.js';
+import { getSupabaseForConfig } from '../cloud/supabase.js';
 import { subscribe, type RealtimeSubscription } from '../cloud/realtime.js';
 import { setRealtimeStatus, type RealtimeStatus } from './status.js';
 import { isHostedMode, resolveMcpEndpoint } from '../cloud/api-url.js';
@@ -118,10 +118,7 @@ export async function serveCommand(): Promise<void> {
   // 6. Subscribe to Supabase Realtime for cross-session push (T019)
   let realtimeSub: RealtimeSubscription | null = null;
   try {
-    const supabase = getSupabaseClient(
-      config.supabase_url,
-      config.supabase_service_role_key,
-    );
+    const supabase = getSupabaseForConfig(config);
 
     realtimeSub = subscribe(supabase, config.org_id, projectId, {
       localAuthor: config.author_name,

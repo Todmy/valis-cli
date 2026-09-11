@@ -18,16 +18,24 @@ export function decisionMarkdown(decision: Decision): string {
   return `# ${decision.summary || decision.id}\n\n- **Type:** ${decision.type}\n- **Status:** ${decision.status}\n- **Author:** ${decision.author}\n- **Created:** ${decision.created_at}\n- **Affects:** ${affects}\n- **Decision ID:** ${decision.id}\n\n${decision.detail}\n`;
 }
 
-export function buildExportJson(decisions: Decision[], projectIds: string[]) {
+export interface ExportRelatedRows {
+  audit_entries: unknown[];
+  contradictions: unknown[];
+  decision_edges: unknown[];
+  project_members: unknown[];
+}
+
+export function buildExportJson(
+  decisions: Decision[],
+  projectIds: string[],
+  related: ExportRelatedRows = { audit_entries: [], contradictions: [], decision_edges: [], project_members: [] },
+) {
   return {
     schema_version: EXPORT_SCHEMA_VERSION,
     exported_at: new Date().toISOString(),
     project_ids: projectIds,
     decisions,
-    audit_entries: [],
-    contradictions: [],
-    decision_edges: [],
-    project_members: [],
+    ...related,
   };
 }
 
@@ -49,11 +57,22 @@ export async function exportCommand(options: ExportOptions): Promise<void> {
   }
   const decisions: Decision[] = [];
   for (const projectId of projectIds) decisions.push(...await getAllDecisions(supabase, config.org_id, projectId));
+  const fetchRows = async (table: string) => {
+    const { data, error } = await supabase.from(table).select('*').in('project_id', projectIds);
+    if (error) throw new Error(`Failed to export ${table}: ${error.message}`);
+    return data || [];
+  };
+  const related: ExportRelatedRows = {
+    audit_entries: await fetchRows('audit_entries'),
+    contradictions: await fetchRows('contradictions'),
+    decision_edges: await fetchRows('decision_edges'),
+    project_members: await fetchRows('project_members'),
+  };
 
   if (options.format === 'json') {
     const target = resolve(options.output || 'valis-export.json');
     await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, JSON.stringify(buildExportJson(decisions, projectIds), null, 2) + '\n');
+    await writeFile(target, JSON.stringify(buildExportJson(decisions, projectIds, related), null, 2) + '\n');
     console.log(`Exported ${decisions.length} decisions to ${target}`);
     return;
   }

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { resolveConfig } from '../config/project.js';
 import { getSupabaseForConfig, getAllDecisions, listMemberProjects } from '../cloud/supabase.js';
 import type { Decision } from '../types.js';
+import { HOSTED_API_URL } from '../types.js';
 
 export const EXPORT_SCHEMA_VERSION = 1;
 
@@ -55,6 +56,29 @@ export async function exportCommand(options: ExportOptions): Promise<void> {
     if (!projectId) throw new Error('No project selected. Use --project or configure an active project.');
     projectIds = [projectId];
   }
+  if (config.auth_mode === 'jwt' && projectIds.length === 1) {
+    const token = config.member_api_key || config.api_key;
+    const response = await fetch(`${HOSTED_API_URL}/api/projects/${projectIds[0]}/export`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Hosted export failed (${response.status}): ${await response.text()}`);
+    const body = await response.json() as { schema_version: number; exported_at: string; project_ids: string[]; decisions: Decision[]; audit_entries: unknown[]; contradictions: unknown[]; decision_edges: unknown[]; project_members: unknown[] };
+    const target = options.format === 'json' ? resolve(options.output || 'valis-export.json') : null;
+    if (options.format === 'json') {
+      await mkdir(dirname(target!), { recursive: true });
+      await writeFile(target!, JSON.stringify(body, null, 2) + '\n');
+      console.log(`Exported ${body.decisions.length} decisions to ${target}`);
+      return;
+    }
+    const directory = resolve(options.output || 'valis-export');
+    await mkdir(directory, { recursive: true });
+    const index = ['# Valis decision export', '', `Schema version: ${body.schema_version}`, '', '## Decisions', ''];
+    for (const decision of body.decisions) { const filename = `${decision.id}.md`; await writeFile(join(directory, filename), decisionMarkdown(decision)); index.push(`- [${decision.summary || decision.id}](./${filename})`); }
+    await writeFile(join(directory, 'README.md'), index.join('\n') + '\n');
+    console.log(`Exported ${body.decisions.length} decisions to ${directory}`);
+    return;
+  }
+
   const decisions: Decision[] = [];
   for (const projectId of projectIds) decisions.push(...await getAllDecisions(supabase, config.org_id, projectId));
   const fetchRows = async (table: string) => {

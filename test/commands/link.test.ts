@@ -19,6 +19,7 @@ vi.mock('../../src/config/store.js', () => ({
 
 vi.mock('../../src/cloud/supabase.js', () => ({
   getSupabaseClient: vi.fn().mockReturnValue({}),
+  getSupabaseForConfig: vi.fn().mockReturnValue({}),
   listMemberProjects: (...a: unknown[]) => mockListMemberProjects(...a),
 }));
 

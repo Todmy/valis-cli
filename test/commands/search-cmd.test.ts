@@ -31,6 +31,7 @@ vi.mock('../../src/cloud/qdrant.js', async () => {
 });
 vi.mock('../../src/cloud/supabase.js', () => ({
   getSupabaseClient: vi.fn().mockReturnValue({}),
+  getSupabaseForConfig: vi.fn().mockReturnValue({}),
   listMemberProjects: (...a: unknown[]) => mockListMemberProjects(...a),
 }));
 vi.mock('../../src/cloud/search-proxy.js', () => ({ proxySearch: vi.fn() }));

@@ -110,7 +110,11 @@ export async function serveCommand(): Promise<void> {
     } catch {
       console.error('[proxy] Queue flush failed — will retry on next startup');
     }
-    mcpServer = createProxyMcpServer(config);
+    mcpServer = createProxyMcpServer({
+      ...config,
+      project_id: projectId ?? undefined,
+      project_name: projectName ?? undefined,
+    });
   } else {
     mcpServer = createMcpServer();
   }

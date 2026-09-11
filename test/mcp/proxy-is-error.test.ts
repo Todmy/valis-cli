@@ -120,4 +120,37 @@ describe('createProxyMcpServer — isError reaches the client (gh#331)', () => {
     expect(res.isError).toBeUndefined();
     expect(res.content).toEqual([{ type: 'text', text: '{"results":[]}' }]);
   });
+
+  it('forwards the active project scope and preserves an explicit override (#345)', async () => {
+    const { createProxyMcpServer } = await import('../../src/mcp/server.js');
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const fetchMock = mockRpcResult({ content: [{ type: 'text', text: '{"results":[]}' }] });
+    const server = createProxyMcpServer({
+      supabase_url: 'https://example.invalid',
+      member_api_key: TOKEN,
+      project_id: '11111111-1111-4111-8111-111111111111',
+    } as never);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    try {
+      await client.callTool({ name: 'valis_search', arguments: { query: 'default' } });
+      await client.callTool({
+        name: 'valis_search',
+        arguments: {
+          query: 'override',
+          project_id: '22222222-2222-4222-8222-222222222222',
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+
+    const payloads = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+    expect(payloads[0].params.arguments.project_id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(payloads[1].params.arguments.project_id).toBe('22222222-2222-4222-8222-222222222222');
+  });
 });

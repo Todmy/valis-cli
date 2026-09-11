@@ -928,7 +928,16 @@ export function createProxyMcpServer(config: ValisConfig): McpServer {
       def.schema,
       async (args: Record<string, unknown>) => {
         try {
-          const { content, isError } = await proxyToolCall(endpoint, token, toolName, args);
+          // The stdio wrapper resolves `.valis.json` once at startup. Preserve
+          // that active scope when proxying to the hosted MCP endpoint, while
+          // still allowing a caller to select an explicit scope per call.
+          const scopedArgs =
+            config.project_id &&
+            Object.prototype.hasOwnProperty.call(def.schema, 'project_id') &&
+            args.project_id === undefined
+              ? { ...args, project_id: config.project_id }
+              : args;
+          const { content, isError } = await proxyToolCall(endpoint, token, toolName, scopedArgs);
           // gh#331: the remote's isError flag is the only failure signal in the
           // envelope — forward it, and only when the remote actually set it.
           return {

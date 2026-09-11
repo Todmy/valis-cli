@@ -3,9 +3,24 @@ import {
   recencyDecay,
   importanceScore,
   graphConnectivity,
+  graphConnectivityScores,
   normalizeBm25,
   clusterBoost,
 } from '../../src/search/signals.js';
+
+describe('graphConnectivityScores', () => {
+  it('matches the scalar graphConnectivity result for every id', () => {
+    const rows = [
+      { id: 'a', affects: ['auth'], depends_on: [] },
+      { id: 'b', affects: ['auth'], depends_on: ['a'] },
+      { id: 'c', affects: ['billing'], depends_on: ['a'] },
+    ];
+    const batch = graphConnectivityScores(rows);
+    for (const row of rows) {
+      expect(batch.get(row.id)).toBeCloseTo(graphConnectivity(row.id, rows), 12);
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // recencyDecay

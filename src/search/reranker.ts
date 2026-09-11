@@ -42,7 +42,7 @@ import type {
 import {
   contentAwareRecencyDecay,
   importanceScore,
-  graphConnectivity,
+  graphConnectivityScores,
   normalizeBm25,
   tokenOverlapScore,
   negationAwarenessScore,
@@ -383,10 +383,7 @@ export function stage1Rerank<T extends RerankableResult>(
 
   // --- Pre-compute graph connectivity for every result --------------------
   // (needs the full result set to count inbound refs)
-  const graphScores = new Map<string, number>();
-  for (const r of results) {
-    graphScores.set(r.id, graphConnectivity(r.id, results));
-  }
+  const graphScores = graphConnectivityScores(results);
 
   // --- Compute signals & composite for each result ------------------------
   const reranked: RerankedResult[] = results.map((r, idx) => {

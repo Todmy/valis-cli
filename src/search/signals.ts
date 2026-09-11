@@ -197,6 +197,42 @@ export function graphConnectivity(
   return 0.5 * inboundNorm + 0.5 * areaDensity;
 }
 
+/** Compute graph connectivity for every result in one pass. */
+export function graphConnectivityScores(
+  allResults: Array<{ id: string; depends_on?: string[]; affects?: string[] }>,
+): Map<string, number> {
+  const inboundCounts = new Map<string, number>();
+  const areaIndex = new Map<string, Set<string>>();
+  for (const r of allResults) {
+    inboundCounts.set(r.id, 0);
+    for (const depId of r.depends_on ?? []) {
+      if (inboundCounts.has(depId)) inboundCounts.set(depId, inboundCounts.get(depId)! + 1);
+    }
+    for (const area of r.affects ?? []) {
+      let ids = areaIndex.get(area);
+      if (!ids) areaIndex.set(area, (ids = new Set()));
+      ids.add(r.id);
+    }
+  }
+  const neighbors = new Map<string, Set<string>>();
+  for (const r of allResults) {
+    const set = new Set<string>();
+    for (const area of r.affects ?? []) {
+      for (const peer of areaIndex.get(area) ?? []) if (peer !== r.id) set.add(peer);
+    }
+    neighbors.set(r.id, set);
+  }
+  const maxInbound = Math.max(0, ...inboundCounts.values());
+  const maxNeighbors = Math.max(0, ...[...neighbors.values()].map((s) => s.size));
+  const scores = new Map<string, number>();
+  for (const r of allResults) {
+    const inbound = maxInbound ? Math.log1p(inboundCounts.get(r.id) ?? 0) / Math.log1p(maxInbound) : 0;
+    const area = maxNeighbors ? Math.log1p(neighbors.get(r.id)!.size) / Math.log1p(maxNeighbors) : 0;
+    scores.set(r.id, maxInbound && area ? 0.5 * inbound + 0.5 * area : inbound || area);
+  }
+  return scores;
+}
+
 /**
  * Area co-occurrence density for a single decision within the result set (Q4-C).
  *

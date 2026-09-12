@@ -33,6 +33,9 @@ jobs:
 
       - run: npm run build
 
-      - run: npm test
+      # The full monorepo suite references sibling packages omitted by the
+      # public subtree split. Keep the mirror gate focused on standalone CLI
+      # coverage while build and lint remain full-package checks.
+      - run: npm run test:standalone
 
       - run: npm run lint

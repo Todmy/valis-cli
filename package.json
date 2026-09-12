@@ -16,6 +16,7 @@
     "dev": "tsc --watch",
     "pretest": "npm run gen:schema-version",
     "test": "vitest run",
+    "test:standalone": "vitest run test/config/standalone-tsconfig.test.ts",
     "test:watch": "vitest",
     "prelint": "npm run gen:schema-version",
     "lint": "tsc --noEmit",

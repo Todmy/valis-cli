@@ -1,5 +1,4 @@
 -- 038: project-configurable automatic dismissal of aged proposals.
-
 ALTER TABLE projects
   ADD COLUMN IF NOT EXISTS proposal_auto_dismiss_after_days INTEGER NOT NULL DEFAULT 30;
 

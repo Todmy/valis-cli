@@ -11,7 +11,7 @@
   },
   "scripts": {
     "gen:schema-version": "node scripts/gen-schema-version.mjs",
-    "prebuild": "pnpm run gen:schema-version",
+    "prebuild": "node scripts/gen-schema-version.mjs",
     "build": "tsc",
     "dev": "tsc --watch",
     "pretest": "pnpm run gen:schema-version",

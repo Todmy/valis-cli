@@ -1,4 +1,5 @@
--- Keep the community schema aligned with the hosted Data API grants.
+-- Harden the Data API surface for gap tables: members may read their project
+-- data, while all writes remain behind authenticated service-side routes.
 REVOKE INSERT, UPDATE, DELETE ON public.gap_runs FROM authenticated;
 REVOKE INSERT, UPDATE, DELETE ON public.gap_questions FROM authenticated;
 REVOKE INSERT, UPDATE, DELETE ON public.gap_events FROM authenticated;

@@ -14,15 +14,15 @@
     "prebuild": "node scripts/gen-schema-version.mjs",
     "build": "tsc",
     "dev": "tsc --watch",
-    "pretest": "pnpm run gen:schema-version",
+    "pretest": "npm run gen:schema-version",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prelint": "pnpm run gen:schema-version",
+    "prelint": "npm run gen:schema-version",
     "lint": "tsc --noEmit",
     "bench": "node dist/bin/valis-bench.js",
     "ape": "node dist/bin/valis-ape.js",
     "corpus:fetch:longmemeval": "node --experimental-strip-types scripts/fetch-longmemeval.ts",
-    "prepublishOnly": "pnpm run build && pnpm run test"
+    "prepublishOnly": "npm run build && npm run test"
   },
   "engines": {
     "node": "20.x || 22.x || 24.x"
